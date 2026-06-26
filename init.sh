@@ -12,6 +12,7 @@ TRAEFIK_DIR="/etc/traefik"
 GO_VERSION="1.26.4"
 PANEL_ADDR="0.0.0.0:2424"
 HEALTH_URL="http://127.0.0.1:2424/healthz"
+SERVER_IP=""
 TMP_DIR=""
 GO_BIN=""
 
@@ -75,6 +76,36 @@ ensure_go() {
   log "Go temporal listo: $($GO_BIN version)"
 }
 
+
+detect_server_ip() {
+  local ip_value=""
+  ip_value="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  if [ -z "$ip_value" ]; then
+    ip_value="$(curl -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)"
+  fi
+  if [ -z "$ip_value" ] && command -v ip >/dev/null 2>&1; then
+    ip_value="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}' || true)"
+  fi
+  if [ -z "$ip_value" ]; then
+    ip_value="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  SERVER_IP="$ip_value"
+  if [ -n "$SERVER_IP" ]; then
+    log "IP del servidor detectada: $SERVER_IP"
+  else
+    log "No se pudo detectar IP del servidor; el panel seguira en 0.0.0.0:2424"
+  fi
+}
+
+set_env_value() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
 write_env_file() {
   mkdir -p "$INSTALL_DIR" "$DATA_DIR"
   chmod 700 "$DATA_DIR"
@@ -83,6 +114,7 @@ write_env_file() {
 PANGOLITE_ADDR=$PANEL_ADDR
 PANGOLITE_DATA=$DATA_DIR/pangolite.db
 PANGOLITE_TRAEFIK_DIR=$TRAEFIK_DIR
+PANGOLITE_PUBLIC_IP=$SERVER_IP
 PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=$DATA_DIR/admin-password.txt
 PANGOLITE_SESSION_DAYS=30
@@ -91,6 +123,9 @@ PANGOLITE_SESSION_DAYS=30
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@yahirex.us.kg
 ENV
     chmod 600 "$ENV_FILE"
+  fi
+  if [ -n "$SERVER_IP" ]; then
+    set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"
   fi
 }
 
@@ -206,6 +241,7 @@ main() {
   need_cmd curl
   need_cmd tar
   ensure_go
+  detect_server_ip
   write_env_file
   prepare_runtime_dirs
   build_and_install
@@ -217,7 +253,7 @@ main() {
   cat <<INFO
 
 Panel directo sin redireccion HTTPS:
-  http://IP_DEL_SERVIDOR:2424
+  http://${SERVER_IP:-IP_DEL_SERVIDOR}:2424
 
 Archivos:
   Binario: $BIN_PATH

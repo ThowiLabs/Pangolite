@@ -19,6 +19,7 @@ type Config struct {
 	TraefikDir           string
 	DashboardDomain      string
 	LetsEncryptEmail     string
+	PublicIP             string
 	BootstrapTraefik     bool
 	InsecureDev          bool
 	InitialAdminUser     string
@@ -34,6 +35,7 @@ func LoadConfigFromEnv() Config {
 		TraefikDir:           env("PANGOLITE_TRAEFIK_DIR", "/etc/traefik"),
 		DashboardDomain:      env("PANGOLITE_DASHBOARD_DOMAIN", ""),
 		LetsEncryptEmail:     env("PANGOLITE_LETSENCRYPT_EMAIL", ""),
+		PublicIP:             env("PANGOLITE_PUBLIC_IP", ""),
 		BootstrapTraefik:     os.Getenv("PANGOLITE_BOOTSTRAP_TRAEFIK") == "1",
 		InsecureDev:          os.Getenv("PANGOLITE_INSECURE_DEV") == "1",
 		InitialAdminUser:     env("PANGOLITE_INITIAL_ADMIN_USER", "admin"),
@@ -73,11 +75,8 @@ func (c Config) ValidateForRender() error {
 	if c.TraefikDir == "" {
 		return errors.New("PANGOLITE_TRAEFIK_DIR requerido")
 	}
-	if c.DashboardDomain == "" {
-		return errors.New("PANGOLITE_DASHBOARD_DOMAIN requerido para renderizar Traefik")
-	}
-	if c.LetsEncryptEmail == "" {
-		return errors.New("PANGOLITE_LETSENCRYPT_EMAIL requerido para Let's Encrypt")
+	if c.DashboardDomain != "" && c.LetsEncryptEmail == "" {
+		return errors.New("PANGOLITE_LETSENCRYPT_EMAIL requerido cuando configuras dominio del panel")
 	}
 	return nil
 }
@@ -88,6 +87,7 @@ func ApplyCommonFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.TraefikDir, "traefik-dir", c.TraefikDir, "directorio de configuracion de Traefik")
 	fs.StringVar(&c.DashboardDomain, "dashboard-domain", c.DashboardDomain, "dominio del panel")
 	fs.StringVar(&c.LetsEncryptEmail, "email", c.LetsEncryptEmail, "correo para Let's Encrypt")
+	fs.StringVar(&c.PublicIP, "public-ip", c.PublicIP, "IP publica del servidor para validar DNS")
 	fs.StringVar(&c.InitialAdminUser, "initial-admin-user", c.InitialAdminUser, "usuario admin inicial")
 	fs.StringVar(&c.InitialPasswordFile, "initial-password-file", c.InitialPasswordFile, "archivo donde se guarda la password temporal inicial")
 }
@@ -133,7 +133,7 @@ func PrintServeConfig(c Config) string {
 	if c.InsecureDev {
 		mode = "desarrollo-inseguro"
 	}
-	return fmt.Sprintf("addr=%s db=%s mode=%s session_days=%d", c.Addr, c.DataPath, mode, c.SessionDays)
+	return fmt.Sprintf("addr=%s db=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, mode, c.SessionDays, c.PublicIP)
 }
 
 func sessionDuration(c Config) time.Duration {

@@ -20,10 +20,12 @@ Pangolite está en fase inicial de producto. La base actual incluye:
 - CSRF en operaciones administrativas.
 - CRUD de proyectos/clientes.
 - CRUD de dominios administrados.
+- Configuracion del dominio publico del dashboard con validacion DNS contra la IP del servidor.
 - Clientes de sistema/agentes para servidores NAT/remotos.
 - Recursos HTTP/HTTPS locales o mediante cliente de sistema.
 - Recursos TCP/UDP directos del host Pangolite.
 - Validación de puerto público contra recursos existentes y contra puertos ocupados en el sistema.
+- Suspension de recursos HTTP/HTTPS con respuesta 403, 404 o HTML personalizado basado en plantillas editables.
 - Render de configuración Traefik del sistema.
 
 TCP/UDP mediante cliente de sistema requiere la fase de streams remotos y por ahora está bloqueado para evitar una configuración engañosa.
@@ -74,11 +76,13 @@ cd pangolite
 sudo bash init.sh
 ```
 
-El panel arranca en:
+El panel arranca en la IP detectada por el instalador:
 
 ```text
-http://IP_DEL_SERVIDOR:2424
+http://<IP_DEL_SERVIDOR>:2424
 ```
+
+`init.sh` intenta detectar la IP publica real y la imprime al terminar. Si no puede, usa la IP local de salida como respaldo.
 
 No hay redirección HTTPS inicial. La publicación por dominio/HTTPS se configura después desde Traefik y Pangolite.
 
@@ -124,9 +128,11 @@ Variables principales en `/opt/pangolite/pangolite.env`:
 PANGOLITE_ADDR=0.0.0.0:2424
 PANGOLITE_DATA=/opt/pangolite/data/pangolite.db
 PANGOLITE_TRAEFIK_DIR=/etc/traefik
+PANGOLITE_PUBLIC_IP=<ip-detectada-por-init>
 PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=/opt/pangolite/data/admin-password.txt
 PANGOLITE_SESSION_DAYS=30
+# Opcional: tambien puedes definirlos por env, aunque lo recomendado es hacerlo desde Ajustes.
 # PANGOLITE_DASHBOARD_DOMAIN=pangolin.example.com
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@example.com
 ```
@@ -135,6 +141,34 @@ Después de editar:
 
 ```bash
 sudo systemctl restart pangolite
+sudo /opt/pangolite/pangolite render-traefik
+sudo systemctl restart traefik
+```
+
+
+## Dominio del dashboard
+
+En **Ajustes > Dominio del dashboard** puedes definir el dominio publico del panel, por ejemplo:
+
+```text
+pangolin.yahirex.us.kg
+```
+
+Antes de guardar, Pangolite valida que el dominio resuelva a la IP detectada del servidor. Esa IP queda registrada en:
+
+```env
+PANGOLITE_PUBLIC_IP=<ip-publica>
+```
+
+Si el proveedor cambia la IP o el VPS usa una red especial, puedes editar `/opt/pangolite/pangolite.env` y reiniciar:
+
+```bash
+sudo systemctl restart pangolite
+```
+
+Despues de guardar el dominio/correo ACME desde el panel:
+
+```bash
 sudo /opt/pangolite/pangolite render-traefik
 sudo systemctl restart traefik
 ```
@@ -148,6 +182,17 @@ Al crear recursos TCP/UDP, Pangolite valida:
 3. Que el puerto pueda abrirse en el sistema operativo.
 
 Si un proceso externo usa el puerto, el panel responde con error antes de guardar el recurso.
+
+
+## Suspension de recursos
+
+Los recursos HTTP/HTTPS se pueden suspender sin borrarlos. Pangolite conserva la ruta en Traefik y responde desde el panel con una de estas opciones:
+
+- `403`: acceso prohibido.
+- `404`: no encontrado.
+- HTML personalizado: pagina editable, usando presets como pago pendiente, mantenimiento o servicio suspendido.
+
+Esto permite pausar un dominio de cliente sin perder su configuracion.
 
 ## Comandos útiles
 

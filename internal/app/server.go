@@ -31,8 +31,9 @@ type requestSession struct {
 }
 
 func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
-	if err := store.EnsureManagedDomain(c.DashboardDomain); err != nil && logger != nil {
-		logger.Warn("no se pudo registrar dominio del panel", "domain", c.DashboardDomain, "error", err.Error())
+	effective := store.EffectiveConfig(c)
+	if err := store.EnsureManagedDomain(effective.DashboardDomain); err != nil && logger != nil {
+		logger.Warn("no se pudo registrar dominio del panel", "domain", effective.DashboardDomain, "error", err.Error())
 	}
 	s := &Server{config: c, store: store, hub: NewTunnelHub(64), mux: http.NewServeMux(), log: logger}
 	s.routes()
@@ -80,6 +81,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects", s.requireAuth(s.listProjects))
 	s.mux.HandleFunc("POST /api/projects", s.requireAuth(s.createProject))
 	s.mux.HandleFunc("PATCH /api/projects/{id}", s.requireAuth(s.updateProject))
+	s.mux.HandleFunc("GET /api/settings", s.requireAuth(s.getSettings))
+	s.mux.HandleFunc("PATCH /api/settings", s.requireAuth(s.updateSettings))
+	s.mux.HandleFunc("GET /api/system/network", s.requireAuth(s.getNetworkInfo))
 	s.mux.HandleFunc("GET /api/domains", s.requireAuth(s.listManagedDomains))
 	s.mux.HandleFunc("POST /api/domains", s.requireAuth(s.createManagedDomain))
 	s.mux.HandleFunc("DELETE /api/domains/{id}", s.requireAuth(s.deleteManagedDomain))
@@ -248,6 +252,44 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request, rs reques
 	}
 	s.log.Info("proyecto actualizado", "id", project.ID, "enabled", project.Enabled, "user", rs.User.Username)
 	writeJSON(w, http.StatusOK, project)
+}
+
+func (s *Server) getSettings(w http.ResponseWriter, _ *http.Request, _ requestSession) {
+	settings := s.store.LoadAppSettings(s.config)
+	network := DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain)
+	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": network})
+}
+
+func (s *Server) getNetworkInfo(w http.ResponseWriter, _ *http.Request, _ requestSession) {
+	settings := s.store.LoadAppSettings(s.config)
+	writeJSON(w, http.StatusOK, DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain))
+}
+
+func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	defer r.Body.Close()
+	var req AppSettings
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	req.Normalize()
+	if err := req.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.DashboardDomain != "" {
+		if _, err := ValidateDashboardDomainDNS(req.DashboardDomain, s.config.PublicIP); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	settings, err := s.store.SaveAppSettings(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.log.Info("ajustes actualizados", "dashboard_domain", settings.DashboardDomain, "user", rs.User.Username)
+	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain)})
 }
 
 func (s *Server) listManagedDomains(w http.ResponseWriter, _ *http.Request, _ requestSession) {
@@ -434,7 +476,8 @@ func (s *Server) rotateAgentToken(w http.ResponseWriter, r *http.Request, rs req
 }
 
 func (s *Server) renderTraefik(w http.ResponseWriter, _ *http.Request, _ requestSession) {
-	if err := RenderStaticTraefik(s.config, s.store.ListResources()); err != nil {
+	effective := s.store.EffectiveConfig(s.config)
+	if err := RenderStaticTraefik(effective, s.store.ListResources()); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

@@ -39,6 +39,11 @@ type ManagedDomain struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type AppSettings struct {
+	DashboardDomain  string `json:"dashboardDomain"`
+	LetsEncryptEmail string `json:"letsEncryptEmail"`
+}
+
 type Resource struct {
 	ProjectID            string    `json:"projectId"`
 	ID                   string    `json:"id"`
@@ -106,6 +111,7 @@ var (
 	idRe       = regexp.MustCompile(`^[a-zA-Z0-9_-]{6,64}$`)
 	usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,64}$`)
 	slugRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
+	emailRe    = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 )
 
 func (p *Project) Normalize(now time.Time) {
@@ -180,6 +186,30 @@ func (d ManagedDomain) Validate() error {
 	}
 	if strings.HasPrefix(d.Domain, "localhost") || strings.HasSuffix(d.Domain, ".localhost") {
 		return errors.New("localhost no debe registrarse como dominio administrado")
+	}
+	return nil
+}
+
+func (a *AppSettings) Normalize() {
+	a.DashboardDomain = strings.ToLower(strings.TrimSpace(a.DashboardDomain))
+	a.LetsEncryptEmail = strings.ToLower(strings.TrimSpace(a.LetsEncryptEmail))
+}
+
+func (a AppSettings) Validate() error {
+	if a.DashboardDomain == "" && a.LetsEncryptEmail == "" {
+		return nil
+	}
+	if a.DashboardDomain == "" {
+		return errors.New("dominio del panel requerido")
+	}
+	if !domainRe.MatchString(a.DashboardDomain) {
+		return errors.New("dominio del panel invalido")
+	}
+	if strings.HasPrefix(a.DashboardDomain, "localhost") || strings.HasSuffix(a.DashboardDomain, ".localhost") || strings.HasSuffix(a.DashboardDomain, ".local") {
+		return errors.New("usa un dominio publico real para el panel")
+	}
+	if !emailRe.MatchString(a.LetsEncryptEmail) {
+		return errors.New("correo ACME invalido")
 	}
 	return nil
 }

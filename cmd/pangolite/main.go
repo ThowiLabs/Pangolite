@@ -80,7 +80,8 @@ func serve(args []string, stdout io.Writer) error {
 		logger.Warn("admin inicial creado; cambia la password temporal", "user", cfg.InitialAdminUser, "password_file", cfg.InitialPasswordFile)
 	}
 	if cfg.BootstrapTraefik {
-		if err := app.RenderStaticTraefik(cfg, store.ListResources()); err != nil {
+		effective := store.EffectiveConfig(cfg)
+		if err := app.RenderStaticTraefik(effective, store.ListResources()); err != nil {
 			return err
 		}
 		logger.Info("configuracion inicial de Traefik renderizada", "dir", cfg.TraefikDir)
@@ -126,7 +127,8 @@ func renderTraefik(args []string, stdout io.Writer) error {
 		return err
 	}
 	defer store.Close()
-	if err := app.RenderStaticTraefik(cfg, store.ListResources()); err != nil {
+	effective := store.EffectiveConfig(cfg)
+	if err := app.RenderStaticTraefik(effective, store.ListResources()); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "Configuracion de Traefik escrita en %s\n", cfg.TraefikDir)

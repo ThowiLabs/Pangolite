@@ -84,6 +84,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_domains_domain_unique ON managed_domains(lower(domain))`,
+		`CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS agents (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL DEFAULT 'default' REFERENCES projects(id) ON DELETE CASCADE,
@@ -212,6 +217,65 @@ func (s *Store) EnsureManagedDomain(domain string) error {
 		return fmt.Errorf("asegurar dominio administrado: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) LoadAppSettings(c Config) AppSettings {
+	settings := AppSettings{
+		DashboardDomain:  strings.TrimSpace(c.DashboardDomain),
+		LetsEncryptEmail: strings.TrimSpace(c.LetsEncryptEmail),
+	}
+	if v, ok := s.getSetting("dashboard_domain"); ok {
+		settings.DashboardDomain = v
+	}
+	if v, ok := s.getSetting("lets_encrypt_email"); ok {
+		settings.LetsEncryptEmail = v
+	}
+	settings.Normalize()
+	return settings
+}
+
+func (s *Store) EffectiveConfig(c Config) Config {
+	settings := s.LoadAppSettings(c)
+	c.DashboardDomain = settings.DashboardDomain
+	c.LetsEncryptEmail = settings.LetsEncryptEmail
+	return c
+}
+
+func (s *Store) SaveAppSettings(settings AppSettings) (AppSettings, error) {
+	settings.Normalize()
+	if err := settings.Validate(); err != nil {
+		return AppSettings{}, err
+	}
+	now := formatTime(time.Now().UTC())
+	tx, err := s.db.Begin()
+	if err != nil {
+		return AppSettings{}, fmt.Errorf("abrir transaccion de ajustes: %w", err)
+	}
+	defer tx.Rollback()
+	pairs := map[string]string{
+		"dashboard_domain":   settings.DashboardDomain,
+		"lets_encrypt_email": settings.LetsEncryptEmail,
+	}
+	for key, value := range pairs {
+		if _, err := tx.Exec(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, now); err != nil {
+			return AppSettings{}, fmt.Errorf("guardar ajuste %s: %w", key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return AppSettings{}, fmt.Errorf("confirmar ajustes: %w", err)
+	}
+	if settings.DashboardDomain != "" {
+		_ = s.EnsureManagedDomain(settings.DashboardDomain)
+	}
+	return settings, nil
+}
+
+func (s *Store) getSetting(key string) (string, bool) {
+	var value string
+	if err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, key).Scan(&value); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(value), true
 }
 
 func (s *Store) BootstrapAdmin(username, passwordFile string) (created bool, tempPassword string, err error) {
