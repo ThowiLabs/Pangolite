@@ -649,13 +649,36 @@ func (s *Store) ListResourcesByProject(projectID string) []Resource {
 	return out
 }
 
+func (s *Store) ResourceByID(id string) (Resource, error) {
+	id = strings.TrimSpace(id)
+	if !idRe.MatchString(id) {
+		return Resource{}, errors.New("id de recurso invalido")
+	}
+	r, err := scanResourceRows(s.db.QueryRow(resourceSelectSQL+` WHERE id = ?`, id))
+	if err != nil {
+		return Resource{}, errors.New("recurso no encontrado")
+	}
+	return r, nil
+}
+
 func (s *Store) ResourcePublicPortExists(mode string, port int) (bool, error) {
+	return s.ResourcePublicPortExistsExcept(mode, port, "")
+}
+
+func (s *Store) ResourcePublicPortExistsExcept(mode string, port int, excludeID string) (bool, error) {
 	mode = strings.TrimSpace(mode)
+	excludeID = strings.TrimSpace(excludeID)
 	if mode != ModeTCP && mode != ModeUDP {
 		return false, nil
 	}
 	var existing int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE mode = ? AND public_port = ?`, mode, port).Scan(&existing); err != nil {
+	query := `SELECT COUNT(*) FROM resources WHERE mode = ? AND public_port = ?`
+	args := []any{mode, port}
+	if excludeID != "" {
+		query += ` AND id <> ?`
+		args = append(args, excludeID)
+	}
+	if err := s.db.QueryRow(query, args...).Scan(&existing); err != nil {
 		return false, fmt.Errorf("validar puerto publico: %w", err)
 	}
 	return existing > 0, nil
@@ -697,6 +720,65 @@ func (s *Store) AddResource(r Resource) (Resource, error) {
 		return Resource{}, fmt.Errorf("crear recurso: %w", err)
 	}
 	return r, nil
+}
+
+func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
+	id = strings.TrimSpace(id)
+	current, err := s.ResourceByID(id)
+	if err != nil {
+		return Resource{}, err
+	}
+	now := time.Now().UTC()
+	next.ID = current.ID
+	next.CreatedAt = current.CreatedAt
+	if strings.TrimSpace(next.ProjectID) == "" {
+		next.ProjectID = current.ProjectID
+	}
+	if next.DisabledResponseMode == "" {
+		next.DisabledResponseMode = current.DisabledResponseMode
+	}
+	if next.DisabledStatusCode == 0 {
+		next.DisabledStatusCode = current.DisabledStatusCode
+	}
+	if next.DisabledHTML == "" && current.DisabledHTML != "" && next.DisabledResponseMode == current.DisabledResponseMode {
+		next.DisabledHTML = current.DisabledHTML
+	}
+	next.Normalize(now)
+	if err := next.Validate(); err != nil {
+		return Resource{}, err
+	}
+	if !s.ProjectExists(next.ProjectID) {
+		return Resource{}, errors.New("projectId no existe")
+	}
+	if next.OriginType == OriginAgent && !s.AgentBelongsToProject(next.AgentID, next.ProjectID) {
+		return Resource{}, errors.New("agentId no existe en este proyecto")
+	}
+	if next.Mode == ModeHTTP {
+		var existing int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE mode = 'http' AND domain = ? AND path_prefix = ? AND id <> ?`, next.Domain, next.PathPrefix, next.ID).Scan(&existing); err != nil {
+			return Resource{}, fmt.Errorf("validar ruta HTTP: %w", err)
+		}
+		if existing > 0 {
+			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path")
+		}
+	}
+	if next.Mode == ModeTCP || next.Mode == ModeUDP {
+		exists, err := s.ResourcePublicPortExistsExcept(next.Mode, next.PublicPort, next.ID)
+		if err != nil {
+			return Resource{}, err
+		}
+		if exists {
+			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d", strings.ToUpper(next.Mode), next.PublicPort)
+		}
+	}
+	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, formatTime(next.UpdatedAt), next.ID)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path o puerto publico")
+		}
+		return Resource{}, fmt.Errorf("actualizar recurso: %w", err)
+	}
+	return next, nil
 }
 
 func (s *Store) DeleteResource(id string) error {

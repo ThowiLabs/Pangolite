@@ -283,3 +283,8 @@ Requisitos:
 - El correo ACME debe ser real, no `example.com`.
 
 Pangolite aplica automáticamente cambios HTTP/HTTPS. Si cambias el correo ACME o activas ACME por primera vez, Pangolite escribe la configuración estática y reinicia Traefik de forma controlada.
+
+
+## Edicion de recursos y selector de proyectos
+
+Cada recurso tiene boton **Editar** desde la tabla del proyecto. Los cambios HTTP/HTTPS se aplican por configuracion dinamica de Traefik sin reiniciar. Si cambia un puerto publico TCP/UDP, Pangolite reinicia Traefik de forma controlada porque cambia un entrypoint estatico. El sidebar ahora usa selector desplegable con busqueda y puede ocultarse desde el topbar.

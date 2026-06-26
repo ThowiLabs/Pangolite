@@ -382,23 +382,41 @@ func (s *Server) validatePublicPortForCreate(resource Resource) error {
 	if resource.Mode != ModeTCP && resource.Mode != ModeUDP {
 		return nil
 	}
-	if resource.PublicPort == 80 || resource.PublicPort == 443 {
-		return fmt.Errorf("el puerto publico %d esta reservado para HTTP/HTTPS de Traefik", resource.PublicPort)
+	return s.validatePublicPort(resource.Mode, resource.PublicPort, "", true)
+}
+
+func (s *Server) validatePublicPortForUpdate(current, next Resource) error {
+	if next.Mode != ModeTCP && next.Mode != ModeUDP {
+		return nil
 	}
-	if resource.PublicPort == ListenPortFromAddr(s.config.Addr) {
-		return fmt.Errorf("el puerto publico %d esta reservado por el panel Pangolite", resource.PublicPort)
+	mustCheckSystem := current.Mode != next.Mode || current.PublicPort != next.PublicPort
+	return s.validatePublicPort(next.Mode, next.PublicPort, next.ID, mustCheckSystem)
+}
+
+func (s *Server) validatePublicPort(mode string, port int, excludeID string, checkSystem bool) error {
+	if mode != ModeTCP && mode != ModeUDP {
+		return nil
 	}
-	exists, err := s.store.ResourcePublicPortExists(resource.Mode, resource.PublicPort)
+	if port == 80 || port == 443 {
+		return fmt.Errorf("el puerto publico %d esta reservado para HTTP/HTTPS de Traefik", port)
+	}
+	if port == ListenPortFromAddr(s.config.Addr) {
+		return fmt.Errorf("el puerto publico %d esta reservado por el panel Pangolite", port)
+	}
+	exists, err := s.store.ResourcePublicPortExistsExcept(mode, port, excludeID)
 	if err != nil {
 		return err
 	}
 	if exists {
-		return fmt.Errorf("ya existe un recurso %s usando el puerto publico %d", strings.ToUpper(resource.Mode), resource.PublicPort)
+		return fmt.Errorf("ya existe un recurso %s usando el puerto publico %d", strings.ToUpper(mode), port)
 	}
-	if resource.Mode == ModeTCP {
-		return TCPPortAvailable(resource.PublicPort)
+	if !checkSystem {
+		return nil
 	}
-	return UDPPortAvailable(resource.PublicPort)
+	if mode == ModeTCP {
+		return TCPPortAvailable(port)
+	}
+	return UDPPortAvailable(port)
 }
 
 func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request, rs requestSession) {
@@ -425,25 +443,113 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	}
 	defer r.Body.Close()
 	var req struct {
-		Enabled              bool   `json:"enabled"`
+		ProjectID            string `json:"projectId"`
+		Name                 string `json:"name"`
+		Mode                 string `json:"mode"`
+		Domain               string `json:"domain"`
+		PathPrefix           string `json:"pathPrefix"`
+		PublicPort           int    `json:"publicPort"`
+		BackendScheme        string `json:"backendScheme"`
+		BackendHost          string `json:"backendHost"`
+		BackendPort          int    `json:"backendPort"`
+		OriginType           string `json:"originType"`
+		AgentID              string `json:"agentId"`
+		TLS                  *bool  `json:"tls"`
+		Enabled              *bool  `json:"enabled"`
 		DisabledResponseMode string `json:"disabledResponseMode"`
 		DisabledStatusCode   int    `json:"disabledStatusCode"`
 		DisabledHTML         string `json:"disabledHtml"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
+	current, err := s.store.ResourceByID(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	fullEdit := req.Name != "" || req.Mode != "" || req.Domain != "" || req.PublicPort != 0 || req.BackendHost != "" || req.BackendPort != 0 || req.OriginType != "" || req.PathPrefix != "" || req.BackendScheme != "" || req.TLS != nil || req.ProjectID != ""
 	beforeResources := s.store.ListResources()
-	updated, err := s.store.UpdateResourceControl(id, req.Enabled, req.DisabledResponseMode, req.DisabledStatusCode, req.DisabledHTML)
+	if !fullEdit {
+		enabled := current.Enabled
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		mode := req.DisabledResponseMode
+		if mode == "" {
+			mode = current.DisabledResponseMode
+		}
+		status := req.DisabledStatusCode
+		if status == 0 {
+			status = current.DisabledStatusCode
+		}
+		html := req.DisabledHTML
+		if html == "" {
+			html = current.DisabledHTML
+		}
+		updated, err := s.store.UpdateResourceControl(id, enabled, mode, status, html)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
+		s.log.Info("control de recurso actualizado", "id", id, "enabled", updated.Enabled, "mode", updated.DisabledResponseMode, "user", rs.User.Username, "traefik", traefikResult.Message)
+		w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
+		writeJSON(w, http.StatusOK, map[string]any{"resource": updated, "traefik": traefikResult})
+		return
+	}
+	next := current
+	if req.ProjectID != "" {
+		next.ProjectID = req.ProjectID
+	}
+	if req.Name != "" {
+		next.Name = req.Name
+	}
+	if req.Mode != "" {
+		next.Mode = req.Mode
+	}
+	next.Domain = req.Domain
+	next.PathPrefix = req.PathPrefix
+	next.PublicPort = req.PublicPort
+	next.BackendScheme = req.BackendScheme
+	if req.BackendHost != "" {
+		next.BackendHost = req.BackendHost
+	}
+	if req.BackendPort != 0 {
+		next.BackendPort = req.BackendPort
+	}
+	if req.OriginType != "" {
+		next.OriginType = req.OriginType
+	}
+	next.AgentID = req.AgentID
+	if req.TLS != nil {
+		next.TLS = *req.TLS
+	}
+	if req.Enabled != nil {
+		next.Enabled = *req.Enabled
+	}
+	if req.DisabledResponseMode != "" {
+		next.DisabledResponseMode = req.DisabledResponseMode
+	}
+	if req.DisabledStatusCode != 0 {
+		next.DisabledStatusCode = req.DisabledStatusCode
+	}
+	next.DisabledHTML = req.DisabledHTML
+	next.Normalize(time.Now().UTC())
+	if err := s.validatePublicPortForUpdate(current, next); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	updated, err := s.store.UpdateResource(id, next)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
-	s.log.Info("control de recurso actualizado", "id", id, "enabled", updated.Enabled, "mode", updated.DisabledResponseMode, "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.log.Info("recurso editado", "id", id, "mode", updated.Mode, "name", updated.Name, "user", rs.User.Username, "traefik", traefikResult.Message)
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, map[string]any{"resource": updated, "traefik": traefikResult})
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request, _ requestSession) {
