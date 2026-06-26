@@ -1,0 +1,8 @@
+module github.com/thowilabs/pangolite
+
+go 1.23
+
+require (
+	golang.org/x/crypto v0.40.0
+	modernc.org/sqlite v1.38.2
+)

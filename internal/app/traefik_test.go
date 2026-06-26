@@ -1,0 +1,72 @@
+package app
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+func TestBuildTraefikConfigHTTPAndTCPUDP(t *testing.T) {
+	resources := []Resource{
+		{ID: "http01", Name: "Panel", Mode: ModeHTTP, Domain: "app.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8081, TLS: true, Enabled: true},
+		{ID: "agent1", Name: "Casa", Mode: ModeHTTP, Domain: "casa.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 3000, AgentID: "agent01", TLS: true, Enabled: true},
+		{ID: "tcp001", Name: "SSH", Mode: ModeTCP, PublicPort: 2222, BackendHost: "10.0.0.10", BackendPort: 22, Enabled: true},
+		{ID: "udp001", Name: "Game", Mode: ModeUDP, PublicPort: 25565, BackendHost: "10.0.0.11", BackendPort: 25565, Enabled: true},
+	}
+	cfg := BuildTraefikConfig(resources)
+	if cfg.HTTP == nil || len(cfg.HTTP.Routers) != 4 || len(cfg.HTTP.Services) != 2 {
+		t.Fatalf("http config inesperada: %#v", cfg.HTTP)
+	}
+	if cfg.TCP == nil || len(cfg.TCP.Routers) != 1 || len(cfg.TCP.Services) != 1 {
+		t.Fatalf("tcp config inesperada: %#v", cfg.TCP)
+	}
+	if cfg.UDP == nil || len(cfg.UDP.Routers) != 1 || len(cfg.UDP.Services) != 1 {
+		t.Fatalf("udp config inesperada: %#v", cfg.UDP)
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil || len(b) == 0 {
+		t.Fatalf("json invalido: %v", err)
+	}
+}
+
+func TestResourceValidation(t *testing.T) {
+	bad := Resource{Name: "x", Mode: ModeHTTP, Domain: "localhost", BackendScheme: "ftp", BackendHost: "127.0.0.1", BackendPort: 80}
+	bad.Normalize(time.Now())
+	if err := bad.Validate(); err == nil {
+		t.Fatal("se esperaba error de validacion")
+	}
+	badAgent := Resource{Name: "x", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, AgentID: "agent01"}
+	badAgent.Normalize(time.Now())
+	if err := badAgent.Validate(); err == nil {
+		t.Fatal("se esperaba error de agentId en TCP")
+	}
+	good := Resource{Name: "x", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22}
+	good.Normalize(time.Now())
+	if err := good.Validate(); err != nil {
+		t.Fatalf("no se esperaba error: %v", err)
+	}
+}
+
+func TestACMEEnabledSkipsPlaceholderValues(t *testing.T) {
+	if ACMEEnabled(Config{DashboardDomain: "pangolite.localhost", LetsEncryptEmail: "admin@example.com"}) {
+		t.Fatal("no debe activar ACME con dominio localhost y correo example.com")
+	}
+	if !ACMEEnabled(Config{DashboardDomain: "proxy.example.mx", LetsEncryptEmail: "admin@example.mx"}) {
+		t.Fatal("debe activar ACME con dominio y correo reales")
+	}
+}
+
+func TestBuildTraefikConfigDisabledHTTPRoutesToPanel(t *testing.T) {
+	resources := []Resource{
+		{ID: "disabled01", Name: "Cliente", Mode: ModeHTTP, Domain: "cliente.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "10.0.0.20", BackendPort: 8080, TLS: true, Enabled: false, DisabledResponseMode: DisabledResponse403, DisabledStatusCode: 403},
+	}
+	cfg := BuildTraefikConfig(resources)
+	if cfg.HTTP == nil || len(cfg.HTTP.Services) != 1 {
+		t.Fatalf("http config inesperada: %#v", cfg.HTTP)
+	}
+	for _, svc := range cfg.HTTP.Services {
+		if got := svc.LoadBalancer.Servers[0].URL; got != "http://127.0.0.1:2424" {
+			t.Fatalf("servicio suspendido debe enrutar a Pangolite, got %s", got)
+		}
+	}
+}

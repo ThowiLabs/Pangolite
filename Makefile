@@ -1,0 +1,13 @@
+.PHONY: tidy test build run
+
+tidy:
+	go mod tidy
+
+test:
+	go test ./...
+
+build:
+	go build -trimpath -ldflags='-s -w' -o bin/pangolite ./cmd/pangolite
+
+run:
+	PANGOLITE_ADDR=127.0.0.1:2424 PANGOLITE_DATA=./data/pangolite.db go run ./cmd/pangolite serve
