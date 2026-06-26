@@ -26,7 +26,9 @@ Pangolite está en fase inicial de producto. La base actual incluye:
 - Recursos TCP/UDP directos del host Pangolite.
 - Validación de puerto público contra recursos existentes y contra puertos ocupados en el sistema.
 - Suspension de recursos HTTP/HTTPS con respuesta 403, 404 o HTML personalizado basado en plantillas editables.
-- Render de configuración Traefik del sistema.
+- Instalación y configuración de Traefik del sistema desde `init.sh`.
+- Recarga automática de HTTP/HTTPS mediante file provider con `watch=true`.
+- Aplicación automática de cambios desde la UI; no se pide al usuario aplicar Traefik manualmente.
 
 TCP/UDP mediante cliente de sistema requiere la fase de streams remotos y por ahora está bloqueado para evitar una configuración engañosa.
 
@@ -63,8 +65,8 @@ Servidor Linux con:
 - `systemd`
 - `curl`
 - `tar`
-- Traefik instalado si se quiere publicar HTTP/HTTPS/TCP/UDP por puertos públicos.
 - Go >= 1.23, o internet para que `init.sh` descargue Go temporalmente.
+- Internet para que `init.sh` descargue Traefik si no está instalado.
 
 El instalador usa Go temporal si no encuentra una versión compatible y borra los archivos temporales al terminar.
 
@@ -94,8 +96,8 @@ No hay redirección HTTPS inicial. La publicación por dominio/HTTPS se configur
 /opt/pangolite/data/admin-password.txt   Contraseña temporal inicial
 /opt/pangolite/pangolite.env             Variables de entorno
 /etc/systemd/system/pangolite.service    Servicio systemd
-/etc/traefik/traefik.yml                 Config estática renderizada
-/etc/traefik/pangolite-dynamic-base.yml  Config base dinámica
+/etc/traefik/traefik.yml                 Config estática gestionada
+/etc/traefik/dynamic/pangolite-dashboard.yml Config dinámica del dashboard
 /etc/traefik/acme.json                   Certificados ACME
 ```
 
@@ -137,13 +139,13 @@ PANGOLITE_SESSION_DAYS=30
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@example.com
 ```
 
-Después de editar:
+Después de editar variables de entorno, reinicia Pangolite:
 
 ```bash
 sudo systemctl restart pangolite
-sudo /opt/pangolite/pangolite render-traefik
-sudo systemctl restart traefik
 ```
+
+Los cambios hechos desde la UI aplican Traefik automáticamente cuando es posible.
 
 
 ## Dominio del dashboard
@@ -166,12 +168,32 @@ Si el proveedor cambia la IP o el VPS usa una red especial, puedes editar `/opt/
 sudo systemctl restart pangolite
 ```
 
-Despues de guardar el dominio/correo ACME desde el panel:
+Después de guardar el dominio/correo ACME desde el panel, Pangolite escribe la configuración dinámica en `/etc/traefik/dynamic/`. Traefik la detecta automáticamente mediante `providers.file.watch=true`, sin reiniciar ni cortar recursos HTTP/HTTPS existentes.
 
-```bash
-sudo /opt/pangolite/pangolite render-traefik
-sudo systemctl restart traefik
+Solo los cambios que agregan o eliminan puertos TCP/UDP públicos requieren tocar entrypoints estáticos. Pangolite lo detecta y ejecuta un reinicio controlado de Traefik automáticamente.
+
+## Recarga automática de Traefik
+
+Pangolite instala o detecta Traefik del sistema y genera una configuración estática con:
+
+```yaml
+providers:
+  http:
+    endpoint: http://127.0.0.1:2424/api/v1/traefik-config
+    pollInterval: 5s
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
 ```
+
+Esto significa:
+
+- Recursos HTTP/HTTPS: Traefik consulta a Pangolite y se actualiza automáticamente.
+- Dominio del dashboard: se escribe como archivo dinámico y Traefik lo recarga automáticamente.
+- Suspensión 403/404/HTML: se aplica sin reiniciar.
+- TCP/UDP nuevos: requieren entrypoints estáticos; Pangolite valida puertos, escribe la config y reinicia Traefik de forma automática.
+
+El usuario no debe ejecutar `render-traefik` para el flujo normal del panel. Ese comando queda como herramienta de reparación/diagnóstico.
 
 ## Validación de puertos
 
@@ -200,7 +222,6 @@ Esto permite pausar un dominio de cliente sin perder su configuracion.
 sudo systemctl status pangolite --no-pager
 sudo journalctl -u pangolite -f
 sudo /opt/pangolite/pangolite render-traefik
-sudo systemctl restart traefik
 ```
 
 Healthcheck:
@@ -214,8 +235,11 @@ curl http://127.0.0.1:2424/healthz
 ```bash
 go mod tidy
 go test ./...
+go build -buildvcs=false -trimpath -ldflags='-s -w' -o bin/pangolite ./cmd/pangolite
 go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 ```
+
+`-buildvcs=false` es intencional para que los ZIPs limpios sin `.git` compilen de forma reproducible.
 
 ## Seguridad
 
@@ -238,3 +262,24 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 ## Licencia
 
 Pendiente de definir.
+
+## Certificados del dashboard
+
+Si el navegador muestra `TRAEFIK DEFAULT CERT`, Traefik todavía no tiene un certificado ACME válido para ese dominio o no pudo usarlo.
+
+Revisión rápida:
+
+```bash
+sudo ls -l /etc/traefik/acme.json
+sudo grep -n "TU_DOMINIO" /etc/traefik/acme.json || true
+sudo journalctl -u traefik -n 200 --no-pager | grep -iE 'acme|certificate|error|TU_DOMINIO'
+```
+
+Requisitos:
+
+- El dominio del dashboard debe resolver a la IP pública del servidor.
+- Los puertos 80 y 443 deben llegar a este servidor.
+- `/etc/traefik/acme.json` debe existir y tener permisos `0600`.
+- El correo ACME debe ser real, no `example.com`.
+
+Pangolite aplica automáticamente cambios HTTP/HTTPS. Si cambias el correo ACME o activas ACME por primera vez, Pangolite escribe la configuración estática y reinicia Traefik de forma controlada.

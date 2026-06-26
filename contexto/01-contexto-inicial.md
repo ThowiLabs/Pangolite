@@ -13,7 +13,7 @@ Crear el repositorio limpio de Pangolite como proyecto Go instalable directament
 - Usuario inicial: `admin`.
 - Password mínima: 6 caracteres.
 - Traefik: instalado y ejecutado en el sistema, no en Docker.
-- Config Traefik: `/etc/traefik/traefik.yml`, `/etc/traefik/pangolite-dynamic-base.yml`, `/etc/traefik/acme.json`.
+- Config Traefik: `/etc/traefik/traefik.yml`, `/etc/traefik/dynamic/pangolite-dashboard.yml`, `/etc/traefik/acme.json`.
 - `init.sh` verifica dependencias, descarga Go temporal si falta, compila, instala, crea systemd y limpia temporales.
 - No se entrega `.git` ni commit en este ZIP.
 

@@ -131,7 +131,7 @@ func renderTraefik(args []string, stdout io.Writer) error {
 	if err := app.RenderStaticTraefik(effective, store.ListResources()); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Configuracion de Traefik escrita en %s\n", cfg.TraefikDir)
+	fmt.Fprintf(stdout, "Configuracion de Traefik escrita en %s. HTTP/HTTPS usa recarga dinamica; TCP/UDP nuevos requieren reinicio controlado de Traefik.\n", cfg.TraefikDir)
 	return nil
 }
 

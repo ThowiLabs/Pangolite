@@ -50,4 +50,4 @@ Agregar configuración del dominio público del dashboard desde el panel y valid
 - Implementar streams TCP/UDP remotos por cliente de sistema.
 
 # Próximos pasos
-Validar en VPS con `sudo bash init.sh`, configurar `pangolin.yahirex.us.kg` desde Ajustes y renderizar Traefik.
+Validar en VPS con `sudo bash init.sh`, configurar `pangolin.yahirex.us.kg` desde Ajustes y confirmar que Traefik se aplique automáticamente.

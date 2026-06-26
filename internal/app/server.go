@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -267,6 +268,11 @@ func (s *Server) getNetworkInfo(w http.ResponseWriter, _ *http.Request, _ reques
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs requestSession) {
 	defer r.Body.Close()
+	before := s.store.LoadAppSettings(s.config)
+	beforeConfig := s.config
+	beforeConfig.DashboardDomain = before.DashboardDomain
+	beforeConfig.LetsEncryptEmail = before.LetsEncryptEmail
+
 	var req AppSettings
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
@@ -288,8 +294,19 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.log.Info("ajustes actualizados", "dashboard_domain", settings.DashboardDomain, "user", rs.User.Username)
-	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain)})
+
+	afterConfig := s.config
+	afterConfig.DashboardDomain = settings.DashboardDomain
+	afterConfig.LetsEncryptEmail = settings.LetsEncryptEmail
+	domainChanged := strings.TrimSpace(beforeConfig.DashboardDomain) != strings.TrimSpace(afterConfig.DashboardDomain)
+	emailChanged := strings.TrimSpace(beforeConfig.LetsEncryptEmail) != strings.TrimSpace(afterConfig.LetsEncryptEmail)
+	acmeStateChanged := ACMEEnabled(beforeConfig) != ACMEEnabled(afterConfig)
+	traefikResult := s.applyTraefikDynamicOnly()
+	if domainChanged || emailChanged || acmeStateChanged {
+		traefikResult = s.applyTraefikStaticAndRestart()
+	}
+	s.log.Info("ajustes actualizados", "dashboard_domain", settings.DashboardDomain, "user", rs.User.Username, "traefik", traefikResult.Message)
+	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain), "traefik": traefikResult})
 }
 
 func (s *Server) listManagedDomains(w http.ResponseWriter, _ *http.Request, _ requestSession) {
@@ -349,18 +366,24 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	beforeResources := s.store.ListResources()
 	created, err := s.store.AddResource(resource)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username)
+	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
+	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
+	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 	writeJSON(w, http.StatusCreated, created)
 }
 
 func (s *Server) validatePublicPortForCreate(resource Resource) error {
 	if resource.Mode != ModeTCP && resource.Mode != ModeUDP {
 		return nil
+	}
+	if resource.PublicPort == 80 || resource.PublicPort == 443 {
+		return fmt.Errorf("el puerto publico %d esta reservado para HTTP/HTTPS de Traefik", resource.PublicPort)
 	}
 	if resource.PublicPort == ListenPortFromAddr(s.config.Addr) {
 		return fmt.Errorf("el puerto publico %d esta reservado por el panel Pangolite", resource.PublicPort)
@@ -384,12 +407,14 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request, rs reque
 		writeError(w, http.StatusBadRequest, "id requerido")
 		return
 	}
+	beforeResources := s.store.ListResources()
 	if err := s.store.DeleteResource(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.log.Info("recurso eliminado", "id", id, "user", rs.User.Username)
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
+	s.log.Info("recurso eliminado", "id", id, "user", rs.User.Username, "traefik", traefikResult.Message)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "traefik": traefikResult})
 }
 
 func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, rs requestSession) {
@@ -409,12 +434,15 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
+	beforeResources := s.store.ListResources()
 	updated, err := s.store.UpdateResourceControl(id, req.Enabled, req.DisabledResponseMode, req.DisabledStatusCode, req.DisabledHTML)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.log.Info("control de recurso actualizado", "id", id, "enabled", updated.Enabled, "mode", updated.DisabledResponseMode, "user", rs.User.Username)
+	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
+	s.log.Info("control de recurso actualizado", "id", id, "enabled", updated.Enabled, "mode", updated.DisabledResponseMode, "user", rs.User.Username, "traefik", traefikResult.Message)
+	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -476,12 +504,70 @@ func (s *Server) rotateAgentToken(w http.ResponseWriter, r *http.Request, rs req
 }
 
 func (s *Server) renderTraefik(w http.ResponseWriter, _ *http.Request, _ requestSession) {
-	effective := s.store.EffectiveConfig(s.config)
-	if err := RenderStaticTraefik(effective, s.store.ListResources()); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	result := s.applyTraefikStaticAndRestart()
+	if !result.OK {
+		writeError(w, http.StatusBadRequest, result.Message)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "configuracion de Traefik renderizada; reinicia Traefik si agregaste puertos TCP/UDP"})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": result.Message, "traefik": result})
+}
+
+type TraefikApplyResult struct {
+	OK             bool   `json:"ok"`
+	Message        string `json:"message"`
+	Restarted      bool   `json:"restarted"`
+	StaticChanged  bool   `json:"staticChanged"`
+	DynamicChanged bool   `json:"dynamicChanged"`
+}
+
+func (s *Server) applyTraefikDynamicOnly() TraefikApplyResult {
+	if !s.config.AutoTraefik {
+		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false}
+	}
+	effective := s.store.EffectiveConfig(s.config)
+	if err := RenderDynamicTraefik(effective); err != nil {
+		s.log.Warn("no se pudo actualizar configuracion dinamica de Traefik", "error", err.Error())
+		return TraefikApplyResult{OK: false, Message: "no se pudo actualizar Traefik: " + err.Error(), DynamicChanged: false}
+	}
+	return TraefikApplyResult{OK: true, Message: "Traefik recargara la configuracion dinamica automaticamente", DynamicChanged: true}
+}
+
+func (s *Server) applyTraefikAfterResourceChange(before []Resource) TraefikApplyResult {
+	if !s.config.AutoTraefik {
+		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false}
+	}
+	after := s.store.ListResources()
+	if TraefikPortSignature(before) != TraefikPortSignature(after) {
+		return s.applyTraefikStaticAndRestart()
+	}
+	return TraefikApplyResult{OK: true, Message: "Traefik detectara el cambio por configuracion dinamica", DynamicChanged: true}
+}
+
+func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
+	if !s.config.AutoTraefik {
+		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", StaticChanged: false}
+	}
+	effective := s.store.EffectiveConfig(s.config)
+	if err := RenderStaticTraefik(effective, s.store.ListResources()); err != nil {
+		s.log.Warn("no se pudo renderizar Traefik", "error", err.Error())
+		return TraefikApplyResult{OK: false, Message: "no se pudo renderizar Traefik: " + err.Error()}
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return TraefikApplyResult{OK: true, Message: "configuracion escrita; systemctl no disponible para reiniciar Traefik", StaticChanged: true}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "traefik")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		s.log.Warn("no se pudo reiniciar Traefik", "error", msg)
+		return TraefikApplyResult{OK: false, Message: "configuracion escrita, pero Traefik no reinicio: " + msg, StaticChanged: true}
+	}
+	return TraefikApplyResult{OK: true, Message: "Traefik actualizado automaticamente", Restarted: true, StaticChanged: true, DynamicChanged: true}
 }
 
 func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {

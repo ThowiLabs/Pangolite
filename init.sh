@@ -9,6 +9,7 @@ BIN_PATH="$INSTALL_DIR/pangolite"
 ENV_FILE="$INSTALL_DIR/pangolite.env"
 SERVICE_FILE="/etc/systemd/system/pangolite.service"
 TRAEFIK_DIR="/etc/traefik"
+TRAEFIK_VERSION="3.7.5"
 GO_VERSION="1.26.4"
 PANEL_ADDR="0.0.0.0:2424"
 HEALTH_URL="http://127.0.0.1:2424/healthz"
@@ -43,6 +44,16 @@ arch_go() {
   esac
 }
 
+arch_traefik() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    armv7l|armv7) echo "armv7" ;;
+    *) fail "arquitectura no soportada para Traefik: $(uname -m)" ;;
+  esac
+}
+
+
 version_ok() {
   local v raw major minor
   raw="$($1 version 2>/dev/null || true)"
@@ -74,6 +85,56 @@ ensure_go() {
   GO_BIN="$TMP_DIR/go/bin/go"
   [ -x "$GO_BIN" ] || fail "no se pudo preparar Go temporal"
   log "Go temporal listo: $($GO_BIN version)"
+}
+
+
+ensure_traefik() {
+  mkdir -p "$TRAEFIK_DIR" "$TRAEFIK_DIR/dynamic"
+  touch "$TRAEFIK_DIR/acme.json"
+  chmod 600 "$TRAEFIK_DIR/acme.json"
+
+  local traefik_bin=""
+  if command -v traefik >/dev/null 2>&1; then
+    traefik_bin="$(command -v traefik)"
+    log "Traefik detectado: $(traefik version 2>/dev/null | head -1 || true)"
+  else
+    log "Traefik no esta instalado; descargando Traefik v$TRAEFIK_VERSION"
+    need_cmd curl
+    need_cmd tar
+    local arch url tarball work
+    arch="$(arch_traefik)"
+    work="$(mktemp -d)"
+    tarball="$work/traefik.tar.gz"
+    url="https://github.com/traefik/traefik/releases/download/v${TRAEFIK_VERSION}/traefik_v${TRAEFIK_VERSION}_linux_${arch}.tar.gz"
+    curl -fsSL "$url" -o "$tarball"
+    tar -C "$work" -xzf "$tarball"
+    install -m 0755 "$work/traefik" /usr/local/bin/traefik
+    rm -rf "$work"
+    traefik_bin="/usr/local/bin/traefik"
+    log "Traefik instalado en $traefik_bin"
+  fi
+
+  if ! systemctl list-unit-files 2>/dev/null | grep -q '^traefik\.service'; then
+    cat > /etc/systemd/system/traefik.service <<SERVICE
+[Unit]
+Description=Traefik reverse proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$traefik_bin --configFile=$TRAEFIK_DIR/traefik.yml
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+    systemctl daemon-reload
+    log "Servicio systemd de Traefik creado"
+  fi
 }
 
 
@@ -118,6 +179,7 @@ PANGOLITE_PUBLIC_IP=$SERVER_IP
 PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=$DATA_DIR/admin-password.txt
 PANGOLITE_SESSION_DAYS=30
+PANGOLITE_AUTO_TRAEFIK=1
 # Opcional: configura dominio/correo para que Traefik publique el panel por HTTP/HTTPS.
 # PANGOLITE_DASHBOARD_DOMAIN=pangolin.yahirex.us.kg
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@yahirex.us.kg
@@ -143,7 +205,7 @@ build_and_install() {
   log "Ejecutando pruebas"
   "$GO_BIN" test ./...
   log "Compilando binario"
-  "$GO_BIN" build -trimpath -ldflags='-s -w' -o "$BIN_PATH.tmp" ./cmd/pangolite
+  "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$BIN_PATH.tmp" ./cmd/pangolite
   install -m 0755 "$BIN_PATH.tmp" "$BIN_PATH"
   rm -f "$BIN_PATH.tmp"
   log "Binario instalado en $BIN_PATH"
@@ -194,17 +256,13 @@ wait_health() {
 }
 
 configure_traefik_if_available() {
-  if ! command -v traefik >/dev/null 2>&1 && ! systemctl list-unit-files 2>/dev/null | grep -q '^traefik\.service'; then
-    log "Traefik no detectado; se omite configuracion. Instala Traefik y ejecuta: $BIN_PATH render-traefik && systemctl restart traefik"
-    return
-  fi
-  mkdir -p "$TRAEFIK_DIR"
+  mkdir -p "$TRAEFIK_DIR" "$TRAEFIK_DIR/dynamic"
   if [ -f "$TRAEFIK_DIR/traefik.yml" ] && ! grep -q 'managed by Pangolite' "$TRAEFIK_DIR/traefik.yml"; then
     local backup="$TRAEFIK_DIR/traefik.yml.backup-$(date +%Y%m%d%H%M%S)"
     cp "$TRAEFIK_DIR/traefik.yml" "$backup"
     log "Backup de Traefik creado: $backup"
   fi
-  log "Renderizando configuracion base de Traefik del sistema"
+  log "Escribiendo configuracion de Traefik con file provider watch"
   set -a
   # shellcheck disable=SC1090
   . "$ENV_FILE"
@@ -212,17 +270,22 @@ configure_traefik_if_available() {
   "$BIN_PATH" render-traefik
   touch "$TRAEFIK_DIR/acme.json"
   chmod 600 "$TRAEFIK_DIR/acme.json"
-  if systemctl list-unit-files 2>/dev/null | grep -q '^traefik\.service'; then
-    systemctl enable traefik >/dev/null 2>&1 || true
+  systemctl daemon-reload
+  systemctl enable --now traefik >/dev/null 2>&1 || true
+  if ! systemctl is-active --quiet traefik; then
     systemctl restart traefik || {
       journalctl -u traefik -n 120 --no-pager || true
-      fail "Traefik no pudo reiniciar. Revisa puertos ocupados o configuracion previa."
+      fail "Traefik no pudo iniciar. Revisa puertos ocupados o configuracion previa."
     }
-    log "Traefik reiniciado"
   else
-    log "No existe servicio systemd traefik; la config quedo en $TRAEFIK_DIR"
+    systemctl restart traefik || {
+      journalctl -u traefik -n 120 --no-pager || true
+      fail "Traefik no pudo recargar configuracion estatica inicial."
+    }
   fi
+  log "Traefik activo; HTTP/HTTPS se actualizara automaticamente por configuracion dinamica"
 }
+
 
 print_credentials() {
   log "Credenciales iniciales"
@@ -244,6 +307,7 @@ main() {
   detect_server_ip
   write_env_file
   prepare_runtime_dirs
+  ensure_traefik
   build_and_install
   write_service
   wait_health
@@ -264,7 +328,7 @@ Archivos:
 Comandos utiles:
   systemctl status pangolite --no-pager
   journalctl -u pangolite -f
-  $BIN_PATH render-traefik && systemctl restart traefik
+  $BIN_PATH render-traefik # normalmente la UI aplica cambios automaticamente
 
 INFO
 }

@@ -26,6 +26,7 @@ type Config struct {
 	InitialPasswordFile  string
 	SessionDays          int
 	CookieSecureOverride string
+	AutoTraefik          bool
 }
 
 func LoadConfigFromEnv() Config {
@@ -42,6 +43,7 @@ func LoadConfigFromEnv() Config {
 		InitialPasswordFile:  env("PANGOLITE_INITIAL_PASSWORD_FILE", ""),
 		SessionDays:          envInt("PANGOLITE_SESSION_DAYS", 30),
 		CookieSecureOverride: strings.TrimSpace(os.Getenv("PANGOLITE_COOKIE_SECURE")),
+		AutoTraefik:          env("PANGOLITE_AUTO_TRAEFIK", "1") != "0",
 	}
 }
 

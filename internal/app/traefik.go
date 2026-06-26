@@ -33,7 +33,12 @@ type HTTPRouter struct {
 }
 
 type TLSConfig struct {
-	CertResolver string `json:"certResolver,omitempty"`
+	CertResolver string      `json:"certResolver,omitempty"`
+	Domains      []TLSDomain `json:"domains,omitempty"`
+}
+
+type TLSDomain struct {
+	Main string `json:"main"`
 }
 
 type HTTPService struct {
@@ -181,6 +186,7 @@ type StaticTraefikData struct {
 	ACMEEnabled      bool
 	TCPPorts         []int
 	UDPPorts         []int
+	DynamicDir       string
 }
 
 func RenderStaticTraefik(c Config, resources []Resource) error {
@@ -190,6 +196,9 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 	if err := os.MkdirAll(c.TraefikDir, 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(c.TraefikDir, "dynamic"), 0o755); err != nil {
+		return err
+	}
 	data := StaticTraefikData{
 		DashboardDomain:  c.DashboardDomain,
 		LetsEncryptEmail: c.LetsEncryptEmail,
@@ -197,6 +206,7 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 		PanelURL:         "http://127.0.0.1:2424",
 		PanelEnabled:     strings.TrimSpace(c.DashboardDomain) != "",
 		ACMEEnabled:      ACMEEnabled(c),
+		DynamicDir:       filepath.Join(c.TraefikDir, "dynamic"),
 		TCPPorts:         uniquePorts(resources, ModeTCP),
 		UDPPorts:         uniquePorts(resources, ModeUDP),
 	}
@@ -207,7 +217,7 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 	if err := renderFile(filepath.Join(c.TraefikDir, "traefik.yml"), traefikYAMLTemplate, data, 0o644); err != nil {
 		return err
 	}
-	if err := renderFile(filepath.Join(c.TraefikDir, "pangolite-dynamic-base.yml"), dynamicBaseYAMLTemplate, data, 0o644); err != nil {
+	if err := RenderDynamicTraefik(c); err != nil {
 		return err
 	}
 	acme := filepath.Join(c.TraefikDir, "acme.json")
@@ -216,7 +226,43 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 			return err
 		}
 	}
+	if err := os.Chmod(acme, 0o600); err != nil {
+		return err
+	}
 	return nil
+}
+
+func RenderDynamicTraefik(c Config) error {
+	if err := c.ValidateForRender(); err != nil {
+		return err
+	}
+	dynamicDir := filepath.Join(c.TraefikDir, "dynamic")
+	if err := os.MkdirAll(dynamicDir, 0o755); err != nil {
+		return err
+	}
+	data := StaticTraefikData{
+		DashboardDomain:  c.DashboardDomain,
+		LetsEncryptEmail: c.LetsEncryptEmail,
+		PanelURL:         "http://127.0.0.1:2424",
+		PanelEnabled:     strings.TrimSpace(c.DashboardDomain) != "",
+		ACMEEnabled:      ACMEEnabled(c),
+		DynamicDir:       filepath.Join(c.TraefikDir, "dynamic"),
+	}
+	if port := ListenPortFromAddr(c.Addr); port > 0 {
+		data.PanelURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+	}
+	return renderFile(filepath.Join(dynamicDir, "pangolite-dashboard.yml"), dynamicDashboardYAMLTemplate, data, 0o644)
+}
+
+func TraefikPortSignature(resources []Resource) string {
+	var parts []string
+	for _, port := range uniquePorts(resources, ModeTCP) {
+		parts = append(parts, fmt.Sprintf("tcp:%d", port))
+	}
+	for _, port := range uniquePorts(resources, ModeUDP) {
+		parts = append(parts, fmt.Sprintf("udp:%d", port))
+	}
+	return strings.Join(parts, ",")
 }
 
 func renderFile(path, tpl string, data any, perm os.FileMode) error {
@@ -290,7 +336,8 @@ providers:
     endpoint: {{ printf "%q" .ControlURL }}
     pollInterval: 5s
   file:
-    filename: /etc/traefik/pangolite-dynamic-base.yml
+    directory: {{ printf "%q" .DynamicDir }}
+    watch: true
 
 log:
   level: INFO
@@ -332,7 +379,7 @@ ping:
   entryPoint: web
 `
 
-const dynamicBaseYAMLTemplate = `# managed by Pangolite - base dynamic config
+const dynamicDashboardYAMLTemplate = `# managed by Pangolite - base dynamic config
 http:
   middlewares:
     redirect-to-https:
@@ -357,6 +404,8 @@ http:
         - websecure
       tls:
         certResolver: letsencrypt
+        domains:
+          - main: {{ printf "%q" .DashboardDomain }}
 {{- else }}
     pangolite-panel:
       rule: "Host(` + "`" + `{{ .DashboardDomain }}` + "`" + `)"
