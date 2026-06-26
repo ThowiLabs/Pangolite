@@ -298,3 +298,37 @@ Si el navegador administrador no tiene acceso al CDN, el panel sigue funcionando
 ### Pulido de producto
 
 El panel evita textos internos de desarrollo en la interfaz visible. El sidebar muestra marca de producto, selector de proyecto y estado operativo. El dashboard global incluye un bloque de operación para revisar dominio del panel, IP pública detectada y validación DNS sin entrar a la configuración.
+
+## Clientes NAT y túneles remotos
+
+Pangolite incluye un binario de cliente NAT independiente. El instalador principal compila y publica el cliente en:
+
+```text
+/opt/pangolite/pangolite-client
+/opt/pangolite/public/pangolite-client-linux-amd64
+```
+
+Al crear o rotar un cliente desde el panel, Pangolite muestra un comando listo para copiar en el servidor remoto:
+
+```bash
+curl -fsSL https://panel.example.com/download/pangolite-client-linux-amd64 -o /tmp/pangolite-client \
+  && chmod +x /tmp/pangolite-client \
+  && sudo /tmp/pangolite-client --install --server-url https://panel.example.com --agent-id ID --token TOKEN
+```
+
+El cliente detecta systemd u OpenRC, se copia a `/opt/pangolite-client/`, guarda sus credenciales en un archivo privado y arranca como servicio. Para eliminarlo completamente del servidor remoto:
+
+```bash
+sudo /opt/pangolite-client/pangolite-client --remove
+```
+
+Capacidades iniciales del cliente NAT:
+
+- HTTP/HTTPS remoto detrás de NAT mediante cola saliente.
+- TCP remoto detrás de NAT mediante stream persistente sobre WebSocket.
+- UDP remoto mediante intercambio de datagramas de solicitud/respuesta.
+- Heartbeat mediante polling autenticado.
+- Rotación de token desde el panel.
+- Instalación y eliminación automática del servicio del cliente.
+
+Para recursos TCP/UDP remotos, Pangolite crea un puerto interno local de puente, Traefik publica el puerto público y el cliente NAT abre una conexión saliente hacia el panel. No se requiere abrir puertos en el servidor remoto.

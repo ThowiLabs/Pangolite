@@ -107,6 +107,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			domain TEXT,
 			path_prefix TEXT,
 			public_port INTEGER,
+			tunnel_port INTEGER,
 			backend_scheme TEXT,
 			backend_host TEXT NOT NULL,
 			backend_port INTEGER NOT NULL,
@@ -154,6 +155,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "resources", "disabled_html", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "resources", "tunnel_port", "INTEGER"); err != nil {
 		return err
 	}
 	return nil
@@ -611,7 +615,7 @@ func (s *Store) DeleteManagedDomain(id string) error {
 	return nil
 }
 
-const resourceSelectSQL = `SELECT id,project_id,name,mode,COALESCE(domain,''),COALESCE(path_prefix,''),COALESCE(public_port,0),COALESCE(backend_scheme,''),backend_host,backend_port,COALESCE(origin_type,'local'),COALESCE(agent_id,''),tls,enabled,COALESCE(disabled_response_mode,'403'),COALESCE(disabled_status_code,403),COALESCE(disabled_html,''),created_at,updated_at FROM resources`
+const resourceSelectSQL = `SELECT id,project_id,name,mode,COALESCE(domain,''),COALESCE(path_prefix,''),COALESCE(public_port,0),COALESCE(tunnel_port,0),COALESCE(backend_scheme,''),backend_host,backend_port,COALESCE(origin_type,'local'),COALESCE(agent_id,''),tls,enabled,COALESCE(disabled_response_mode,'403'),COALESCE(disabled_status_code,403),COALESCE(disabled_html,''),created_at,updated_at FROM resources`
 
 func (s *Store) ListResources() []Resource {
 	rows, err := s.db.Query(resourceSelectSQL + ` ORDER BY created_at ASC`)
@@ -703,6 +707,9 @@ func (s *Store) AddResource(r Resource) (Resource, error) {
 	if r.OriginType == OriginAgent && !s.AgentBelongsToProject(r.AgentID, r.ProjectID) {
 		return Resource{}, errors.New("agentId no existe en este proyecto")
 	}
+	if err := s.prepareTunnelPort(&r, ""); err != nil {
+		return Resource{}, err
+	}
 	if r.Mode == ModeHTTP {
 		var existing int
 		if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE mode = 'http' AND domain = ? AND path_prefix = ?`, r.Domain, r.PathPrefix).Scan(&existing); err != nil {
@@ -712,7 +719,7 @@ func (s *Store) AddResource(r Resource) (Resource, error) {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path")
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO resources(id,project_id,name,mode,domain,path_prefix,public_port,backend_scheme,backend_host,backend_port,origin_type,agent_id,tls,enabled,disabled_response_mode,disabled_status_code,disabled_html,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.ProjectID, r.Name, r.Mode, nullableString(r.Domain), nullableString(r.PathPrefix), nullableInt(r.PublicPort), nullableString(r.BackendScheme), r.BackendHost, r.BackendPort, r.OriginType, nullableString(r.AgentID), boolInt(r.TLS), boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
+	_, err := s.db.Exec(`INSERT INTO resources(id,project_id,name,mode,domain,path_prefix,public_port,tunnel_port,backend_scheme,backend_host,backend_port,origin_type,agent_id,tls,enabled,disabled_response_mode,disabled_status_code,disabled_html,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.ProjectID, r.Name, r.Mode, nullableString(r.Domain), nullableString(r.PathPrefix), nullableInt(r.PublicPort), nullableInt(r.TunnelPort), nullableString(r.BackendScheme), r.BackendHost, r.BackendPort, r.OriginType, nullableString(r.AgentID), boolInt(r.TLS), boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path o puerto publico")
@@ -753,6 +760,12 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 	if next.OriginType == OriginAgent && !s.AgentBelongsToProject(next.AgentID, next.ProjectID) {
 		return Resource{}, errors.New("agentId no existe en este proyecto")
 	}
+	if next.OriginType == current.OriginType && next.Mode == current.Mode && next.AgentID == current.AgentID && current.TunnelPort > 0 {
+		next.TunnelPort = current.TunnelPort
+	}
+	if err := s.prepareTunnelPort(&next, next.ID); err != nil {
+		return Resource{}, err
+	}
 	if next.Mode == ModeHTTP {
 		var existing int
 		if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE mode = 'http' AND domain = ? AND path_prefix = ? AND id <> ?`, next.Domain, next.PathPrefix, next.ID).Scan(&existing); err != nil {
@@ -771,7 +784,7 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d", strings.ToUpper(next.Mode), next.PublicPort)
 		}
 	}
-	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, formatTime(next.UpdatedAt), next.ID)
+	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, tunnel_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableInt(next.TunnelPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, formatTime(next.UpdatedAt), next.ID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path o puerto publico")
@@ -779,6 +792,47 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 		return Resource{}, fmt.Errorf("actualizar recurso: %w", err)
 	}
 	return next, nil
+}
+
+func (s *Store) prepareTunnelPort(r *Resource, excludeID string) error {
+	if r == nil {
+		return nil
+	}
+	if !r.UsesAgent() || (r.Mode != ModeTCP && r.Mode != ModeUDP) {
+		r.TunnelPort = 0
+		return nil
+	}
+	if r.TunnelPort > 0 {
+		return nil
+	}
+	used := map[int]bool{}
+	rows, err := s.db.Query(`SELECT COALESCE(tunnel_port,0) FROM resources WHERE COALESCE(tunnel_port,0) > 0 AND id <> ?`, strings.TrimSpace(excludeID))
+	if err == nil {
+		for rows.Next() {
+			var p int
+			if rows.Scan(&p) == nil && p > 0 {
+				used[p] = true
+			}
+		}
+		_ = rows.Close()
+	}
+	for port := 42000; port <= 49999; port++ {
+		if used[port] {
+			continue
+		}
+		if r.Mode == ModeTCP {
+			if err := TCPPortAvailable(port); err != nil {
+				continue
+			}
+		} else {
+			if err := UDPPortAvailable(port); err != nil {
+				continue
+			}
+		}
+		r.TunnelPort = port
+		return nil
+	}
+	return errors.New("no hay puertos internos disponibles para el puente del cliente NAT")
 }
 
 func (s *Store) DeleteResource(id string) error {
@@ -1059,7 +1113,7 @@ func scanResourceRows(row resourceScanner) (Resource, error) {
 	var r Resource
 	var tls, enabled int
 	var createdAt, updatedAt string
-	if err := row.Scan(&r.ID, &r.ProjectID, &r.Name, &r.Mode, &r.Domain, &r.PathPrefix, &r.PublicPort, &r.BackendScheme, &r.BackendHost, &r.BackendPort, &r.OriginType, &r.AgentID, &tls, &enabled, &r.DisabledResponseMode, &r.DisabledStatusCode, &r.DisabledHTML, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.ProjectID, &r.Name, &r.Mode, &r.Domain, &r.PathPrefix, &r.PublicPort, &r.TunnelPort, &r.BackendScheme, &r.BackendHost, &r.BackendPort, &r.OriginType, &r.AgentID, &tls, &enabled, &r.DisabledResponseMode, &r.DisabledStatusCode, &r.DisabledHTML, &createdAt, &updatedAt); err != nil {
 		return Resource{}, err
 	}
 	r.TLS = tls == 1

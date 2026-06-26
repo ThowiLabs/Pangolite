@@ -13,16 +13,19 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"nhooyr.io/websocket"
 )
 
 const sessionCookieName = "pangolite_session"
 
 type Server struct {
-	config Config
-	store  *Store
-	hub    *TunnelHub
-	mux    *http.ServeMux
-	log    *slog.Logger
+	config  Config
+	store   *Store
+	hub     *TunnelHub
+	bridges *BridgeManager
+	mux     *http.ServeMux
+	log     *slog.Logger
 }
 
 type requestSession struct {
@@ -36,7 +39,8 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	if err := store.EnsureManagedDomain(effective.DashboardDomain); err != nil && logger != nil {
 		logger.Warn("no se pudo registrar dominio del panel", "domain", effective.DashboardDomain, "error", err.Error())
 	}
-	s := &Server{config: c, store: store, hub: NewTunnelHub(64), mux: http.NewServeMux(), log: logger}
+	hub := NewTunnelHub(64)
+	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger}
 	s.routes()
 	return s
 }
@@ -46,6 +50,10 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	if err := s.refreshBridgeListeners(); err != nil && s.log != nil {
+		s.log.Warn("no se pudieron preparar puentes de clientes NAT", "error", err.Error())
+	}
+	defer s.bridges.Close()
 	srv := &http.Server{Addr: s.config.Addr, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() {
@@ -99,6 +107,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/render-traefik", s.requireAuth(s.renderTraefik))
 	s.mux.HandleFunc("POST /api/agent/poll", s.agentPoll)
 	s.mux.HandleFunc("POST /api/agent/jobs/{id}/response", s.agentJobResponse)
+	s.mux.HandleFunc("POST /api/agent/stream-poll", s.agentStreamPoll)
+	s.mux.HandleFunc("GET /api/agent/streams/{id}", s.agentStreamSocket)
+	s.mux.HandleFunc("GET /download/pangolite-client-linux-amd64", s.downloadClientLinuxAMD64)
 	s.mux.HandleFunc("/", s.publicOrIndex)
 }
 
@@ -576,8 +587,35 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request, rs requestS
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.log.Info("agente creado", "id", agent.ID, "name", agent.Name, "user", rs.User.Username)
+	s.attachAgentCommands(r, &agent)
+	s.log.Info("cliente NAT creado", "id", agent.ID, "name", agent.Name, "user", rs.User.Username)
 	writeJSON(w, http.StatusCreated, agent)
+}
+
+func (s *Server) attachAgentCommands(r *http.Request, agent *Agent) {
+	if agent == nil || agent.Token == "" {
+		return
+	}
+	base := s.publicBaseURL(r)
+	downloadURL := strings.TrimRight(base, "/") + "/download/pangolite-client-linux-amd64"
+	agent.InstallCommand = fmt.Sprintf("curl -fsSL %s -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s --agent-id %s --token %s", shellQuote(downloadURL), shellQuote(base), shellQuote(agent.ID), shellQuote(agent.Token))
+	agent.RemoveCommand = "sudo /opt/pangolite-client/pangolite-client --remove"
+}
+
+func (s *Server) publicBaseURL(r *http.Request) string {
+	effective := s.store.EffectiveConfig(s.config)
+	if strings.TrimSpace(effective.DashboardDomain) != "" {
+		return "https://" + strings.TrimSpace(effective.DashboardDomain)
+	}
+	host := "127.0.0.1:2424"
+	if r != nil && strings.TrimSpace(r.Host) != "" {
+		host = r.Host
+	}
+	return "http://" + host
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func (s *Server) disableAgent(w http.ResponseWriter, r *http.Request, rs requestSession) {
@@ -605,7 +643,8 @@ func (s *Server) rotateAgentToken(w http.ResponseWriter, r *http.Request, rs req
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.log.Info("token de agente rotado", "id", id, "user", rs.User.Username)
+	s.attachAgentCommands(r, &agent)
+	s.log.Info("token de cliente NAT rotado", "id", id, "user", rs.User.Username)
 	writeJSON(w, http.StatusOK, agent)
 }
 
@@ -639,6 +678,9 @@ func (s *Server) applyTraefikDynamicOnly() TraefikApplyResult {
 }
 
 func (s *Server) applyTraefikAfterResourceChange(before []Resource) TraefikApplyResult {
+	if err := s.refreshBridgeListeners(); err != nil && s.log != nil {
+		s.log.Warn("no se pudieron sincronizar puentes de clientes NAT", "error", err.Error())
+	}
 	if !s.config.AutoTraefik {
 		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false}
 	}
@@ -674,6 +716,28 @@ func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
 		return TraefikApplyResult{OK: false, Message: "configuracion escrita, pero Traefik no reinicio: " + msg, StaticChanged: true}
 	}
 	return TraefikApplyResult{OK: true, Message: "Traefik actualizado automaticamente", Restarted: true, StaticChanged: true, DynamicChanged: true}
+}
+
+func (s *Server) refreshBridgeListeners() error {
+	if s.bridges == nil {
+		return nil
+	}
+	return s.bridges.Sync(s.store.ListResources())
+}
+
+func (s *Server) downloadClientLinuxAMD64(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(os.Getenv("PANGOLITE_CLIENT_LINUX_AMD64"))
+	if path == "" {
+		path = "/opt/pangolite/public/pangolite-client-linux-amd64"
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		writeError(w, http.StatusNotFound, "cliente linux amd64 no disponible en este servidor")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="pangolite-client-linux-amd64"`)
+	http.ServeFile(w, r, path)
 }
 
 func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {
@@ -722,6 +786,55 @@ func (s *Server) agentJobResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) agentStreamPoll(w http.ResponseWriter, r *http.Request) {
+	agentID, token := agentCredentials(r)
+	if _, ok := s.store.AuthenticateAgent(agentID, token); !ok {
+		writeError(w, http.StatusUnauthorized, "credenciales de cliente invalidas")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), AgentPollTimeout)
+	defer cancel()
+	job, ok, err := s.hub.PollStream(ctx, agentID)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		writeError(w, http.StatusInternalServerError, "no se pudo consultar streams")
+		return
+	}
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
+	agentID, token := agentCredentials(r)
+	if _, ok := s.store.AuthenticateAgent(agentID, token); !ok {
+		writeError(w, http.StatusUnauthorized, "credenciales de cliente invalidas")
+		return
+	}
+	streamID := r.PathValue("id")
+	if streamID == "" {
+		writeError(w, http.StatusBadRequest, "stream id requerido")
+		return
+	}
+	sess, ok := s.hub.AttachStream(streamID, agentID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "stream no encontrado o expirado")
+		return
+	}
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("websocket de stream rechazado", "stream", streamID, "error", err.Error())
+		}
+		return
+	}
+	defer s.hub.CompleteStream(streamID)
+	if err := bridgeWebSocketNetConn(r.Context(), ws, sess.ClientConn); err != nil && s.log != nil {
+		s.log.Debug("stream TCP cerrado", "stream", streamID, "agent", agentID, "error", err.Error())
+	}
 }
 
 func (s *Server) publicOrIndex(w http.ResponseWriter, r *http.Request) {
@@ -804,6 +917,7 @@ func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource 
 	}
 	job := AgentJob{
 		ID:           jobID,
+		Kind:         ModeHTTP,
 		ResourceID:   resource.ID,
 		Method:       r.Method,
 		Path:         r.URL.EscapedPath(),

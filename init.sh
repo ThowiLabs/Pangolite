@@ -6,6 +6,9 @@ MODULE="github.com/thowilabs/pangolite"
 INSTALL_DIR="/opt/pangolite"
 DATA_DIR="$INSTALL_DIR/data"
 BIN_PATH="$INSTALL_DIR/pangolite"
+CLIENT_BIN_PATH="$INSTALL_DIR/pangolite-client"
+PUBLIC_DIR="$INSTALL_DIR/public"
+CLIENT_PUBLIC_BIN="$PUBLIC_DIR/pangolite-client-linux-amd64"
 ENV_FILE="$INSTALL_DIR/pangolite.env"
 SERVICE_FILE="/etc/systemd/system/pangolite.service"
 TRAEFIK_DIR="/etc/traefik"
@@ -180,12 +183,14 @@ PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=$DATA_DIR/admin-password.txt
 PANGOLITE_SESSION_DAYS=30
 PANGOLITE_AUTO_TRAEFIK=1
+PANGOLITE_CLIENT_LINUX_AMD64=$CLIENT_PUBLIC_BIN
 # Opcional: configura dominio/correo para que Traefik publique el panel por HTTP/HTTPS.
 # PANGOLITE_DASHBOARD_DOMAIN=pangolin.yahirex.us.kg
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@yahirex.us.kg
 ENV
     chmod 600 "$ENV_FILE"
   fi
+  set_env_value PANGOLITE_CLIENT_LINUX_AMD64 "$CLIENT_PUBLIC_BIN"
   if [ -n "$SERVER_IP" ]; then
     set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"
   fi
@@ -193,7 +198,7 @@ ENV
 
 prepare_runtime_dirs() {
   log "Preparando directorios de ejecucion"
-  mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$TRAEFIK_DIR"
+  mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$TRAEFIK_DIR" "$PUBLIC_DIR"
   chmod 755 "$INSTALL_DIR"
   chmod 700 "$DATA_DIR"
   chmod 755 "$TRAEFIK_DIR"
@@ -205,10 +210,17 @@ build_and_install() {
   log "Ejecutando pruebas"
   "$GO_BIN" test ./...
   log "Compilando binario"
-  "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$BIN_PATH.tmp" ./cmd/pangolite
+  CGO_ENABLED=0 "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$BIN_PATH.tmp" ./cmd/pangolite
   install -m 0755 "$BIN_PATH.tmp" "$BIN_PATH"
   rm -f "$BIN_PATH.tmp"
   log "Binario instalado en $BIN_PATH"
+  log "Compilando cliente NAT estatico"
+  CGO_ENABLED=0 "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$CLIENT_BIN_PATH.tmp" ./cmd/pangolite-client
+  install -m 0755 "$CLIENT_BIN_PATH.tmp" "$CLIENT_BIN_PATH"
+  mkdir -p "$PUBLIC_DIR"
+  install -m 0755 "$CLIENT_BIN_PATH.tmp" "$CLIENT_PUBLIC_BIN"
+  rm -f "$CLIENT_BIN_PATH.tmp"
+  log "Cliente NAT instalado en $CLIENT_BIN_PATH y publicado para descarga en $CLIENT_PUBLIC_BIN"
 }
 
 write_service() {
@@ -321,6 +333,8 @@ Panel directo sin redireccion HTTPS:
 
 Archivos:
   Binario: $BIN_PATH
+  Cliente NAT: $CLIENT_BIN_PATH
+  Descarga cliente: http://${SERVER_IP:-IP_DEL_SERVIDOR}:2424/download/pangolite-client-linux-amd64
   SQLite: $DATA_DIR/pangolite.db
   Password temporal: $DATA_DIR/admin-password.txt
   Env: $ENV_FILE

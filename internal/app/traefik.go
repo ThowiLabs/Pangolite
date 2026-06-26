@@ -156,14 +156,22 @@ func BuildTraefikConfig(resources []Resource) TraefikConfig {
 			}
 			ep := fmt.Sprintf("tcp-%d", r.PublicPort)
 			cfg.TCP.Routers[router] = TCPRouter{Rule: "HostSNI(`*`)", EntryPoints: []string{ep}, Service: svc}
-			cfg.TCP.Services[svc] = TCPService{LoadBalancer: TCPUDPLoadBalancer{Servers: []TCPUDPServer{{Address: r.ServiceAddress()}}}}
+			address := r.ServiceAddress()
+			if r.UsesAgent() {
+				address = r.BridgeAddress()
+			}
+			cfg.TCP.Services[svc] = TCPService{LoadBalancer: TCPUDPLoadBalancer{Servers: []TCPUDPServer{{Address: address}}}}
 		case ModeUDP:
 			if cfg.UDP == nil {
 				cfg.UDP = &UDPConfig{Routers: map[string]UDPRouter{}, Services: map[string]UDPService{}}
 			}
 			ep := fmt.Sprintf("udp-%d", r.PublicPort)
 			cfg.UDP.Routers[router] = UDPRouter{EntryPoints: []string{ep}, Service: svc}
-			cfg.UDP.Services[svc] = UDPService{LoadBalancer: TCPUDPLoadBalancer{Servers: []TCPUDPServer{{Address: r.ServiceAddress()}}}}
+			address := r.ServiceAddress()
+			if r.UsesAgent() {
+				address = r.BridgeAddress()
+			}
+			cfg.UDP.Services[svc] = UDPService{LoadBalancer: TCPUDPLoadBalancer{Servers: []TCPUDPServer{{Address: address}}}}
 		}
 	}
 

@@ -26,7 +26,7 @@ Eliminar mensajes heredados que pedían renderizar Traefik manualmente al guarda
 - `README.md`.
 
 # Problemas encontrados
-El mensaje “Ajustes guardados. Renderiza Traefik para aplicar el dominio del panel.” seguía en el JavaScript del panel y confundía al administrador. Además, si el dominio cambiaba pero ACME ya estaba activo y el correo era el mismo, el backend solo aplicaba configuración dinámica.
+El mensaje heredado pedía aplicar Traefik manualmente después de guardar el dominio del panel y confundía al administrador. Además, si el dominio cambiaba pero ACME ya estaba activo y el correo era el mismo, el backend solo aplicaba configuración dinámica.
 
 # Soluciones implementadas
 - Se considera cambio estático cuando cambia el dominio del dashboard, el correo ACME o el estado de ACME.

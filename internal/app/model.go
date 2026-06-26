@@ -67,25 +67,29 @@ type Resource struct {
 }
 
 type Agent struct {
-	ProjectID string    `json:"projectId"`
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Token     string    `json:"token,omitempty"`
-	TokenHash string    `json:"-"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	LastSeen  time.Time `json:"lastSeen,omitempty"`
+	ProjectID      string    `json:"projectId"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Token          string    `json:"token,omitempty"`
+	TokenHash      string    `json:"-"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	LastSeen       time.Time `json:"lastSeen,omitempty"`
+	InstallCommand string    `json:"installCommand,omitempty"`
+	RemoveCommand  string    `json:"removeCommand,omitempty"`
 }
 
 type AgentPublic struct {
-	ProjectID string    `json:"projectId"`
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	LastSeen  time.Time `json:"lastSeen,omitempty"`
+	ProjectID      string    `json:"projectId"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	LastSeen       time.Time `json:"lastSeen,omitempty"`
+	InstallCommand string    `json:"installCommand,omitempty"`
+	RemoveCommand  string    `json:"removeCommand,omitempty"`
 }
 
 type User struct {
@@ -285,8 +289,10 @@ func (r *Resource) Validate() error {
 	if r.AgentID != "" && !idRe.MatchString(r.AgentID) {
 		return errors.New("agentId invalido")
 	}
-	if r.OriginType == OriginAgent && r.Mode != ModeHTTP {
-		return errors.New("TCP/UDP mediante cliente de sistema requiere la fase de streams remotos")
+	if r.OriginType == OriginAgent && (r.Mode == ModeTCP || r.Mode == ModeUDP) && r.TunnelPort != 0 {
+		if r.TunnelPort < 1024 || r.TunnelPort > 65535 {
+			return errors.New("tunnelPort interno invalido")
+		}
 	}
 	if r.DisabledResponseMode != DisabledResponse403 && r.DisabledResponseMode != DisabledResponse404 && r.DisabledResponseMode != DisabledResponseHTML {
 		return errors.New("disabledResponseMode debe ser 403, 404 o html")
@@ -337,6 +343,13 @@ func (r Resource) ServiceURL() string {
 
 func (r Resource) ServiceAddress() string {
 	return fmt.Sprintf("%s:%d", r.BackendHost, r.BackendPort)
+}
+
+func (r Resource) BridgeAddress() string {
+	if r.TunnelPort <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("127.0.0.1:%d", r.TunnelPort)
 }
 
 func (a *Agent) Normalize(now time.Time) {
