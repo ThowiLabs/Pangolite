@@ -1,6 +1,6 @@
 # Arquitectura de Pangolite
 
-Pangolite es un control plane ligero en Go inspirado en Pangolin. El objetivo es exponer recursos de proyectos/clientes usando Traefik como edge proxy y SQLite como almacenamiento local.
+Pangolite es un plataforma de administración en Go inspirado en Pangolin. El objetivo es exponer recursos de proyectos/clientes usando Traefik como edge proxy y SQLite como almacenamiento local.
 
 ## Componentes
 

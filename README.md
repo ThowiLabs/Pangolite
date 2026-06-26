@@ -1,6 +1,6 @@
 # Pangolite
 
-Pangolite es un panel ligero de proxy y túneles inspirado en Pangolin, escrito en Go para servidores Linux. Está pensado para administrar proyectos/clientes, dominios, recursos HTTP/HTTPS/TCP/UDP y clientes de sistema para redes NAT/remotas, usando Traefik instalado directamente en el sistema.
+Pangolite es una plataforma de administración de proxys y túneles escrita en Go para servidores Linux. Permite administrar proyectos/clientes, dominios, recursos HTTP/HTTPS/TCP/UDP y servidores conectados, usando Traefik instalado directamente en el sistema.
 
 Repositorio previsto:
 
@@ -10,7 +10,7 @@ github.com/thowilabs/pangolite
 
 ## Estado del proyecto
 
-Pangolite está en fase inicial de producto. La base actual incluye:
+La base actual incluye:
 
 - Panel web en Go.
 - SQLite embebido para usuarios, sesiones, proyectos, dominios, clientes de sistema y recursos.
@@ -288,3 +288,13 @@ Pangolite aplica automáticamente cambios HTTP/HTTPS. Si cambias el correo ACME 
 ## Edicion de recursos y selector de proyectos
 
 Cada recurso tiene boton **Editar** desde la tabla del proyecto. Los cambios HTTP/HTTPS se aplican por configuracion dinamica de Traefik sin reiniciar. Si cambia un puerto publico TCP/UDP, Pangolite reinicia Traefik de forma controlada porque cambia un entrypoint estatico. El sidebar ahora usa selector desplegable con busqueda y puede ocultarse desde el topbar.
+
+### Dashboard global y selector de proyecto
+
+La ruta `/projects` funciona como dashboard global. Muestra métricas agregadas, gráficos de recursos por proyecto y estado de recursos usando Chart.js por CDN. El selector de proyecto vive arriba del sidebar porque define el contexto de todo el flujo: recursos, clientes de sistema y acciones rápidas.
+
+Si el navegador administrador no tiene acceso al CDN, el panel sigue funcionando y muestra un fallback textual para los gráficos.
+
+### Pulido de producto
+
+El panel evita textos internos de desarrollo en la interfaz visible. El sidebar muestra marca de producto, selector de proyecto y estado operativo. El dashboard global incluye un bloque de operación para revisar dominio del panel, IP pública detectada y validación DNS sin entrar a la configuración.

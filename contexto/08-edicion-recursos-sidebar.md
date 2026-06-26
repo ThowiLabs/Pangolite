@@ -2,7 +2,7 @@
 2026-06-26
 
 # Objetivo
-Mejorar la experiencia enterprise del panel agregando edición completa de recursos, recarga automática de Traefik y un selector de proyecto en el sidebar inspirado en SB Admin Pro.
+Mejorar la experiencia enterprise del panel agregando edición completa de recursos, recarga automática de Traefik y un selector de proyecto en el sidebar con patrón de navegación administrativa.
 
 # Decisiones tomadas
 - Los recursos ahora se editan desde un modal con botón `Editar` por fila.
@@ -21,7 +21,7 @@ Mejorar la experiencia enterprise del panel agregando edición completa de recur
 # Librerías usadas
 - `golang.org/x/crypto/bcrypt` para contraseñas.
 - `modernc.org/sqlite` para SQLite sin CGO.
-- SB Admin Pro CSS local y Bootstrap Icons por CDN para iconografía.
+- CSS local de interfaz y Bootstrap Icons por CDN para iconografía.
 
 # Archivos importantes modificados
 - `internal/app/server.go`
