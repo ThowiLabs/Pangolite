@@ -70,3 +70,18 @@ func TestBuildTraefikConfigDisabledHTTPRoutesToPanel(t *testing.T) {
 		}
 	}
 }
+
+func TestTraefikHelpListsCommand(t *testing.T) {
+	withoutCheck := `Commands:
+    healthcheck    Calls Traefik /ping endpoint.
+    version        Shows the current Traefik version.`
+	if traefikHelpListsCommand(withoutCheck, "check") {
+		t.Fatal("no debe detectar check cuando no aparece en la lista de comandos")
+	}
+	withCheck := `Commands:
+    check          Checks the Traefik configuration.
+    healthcheck    Calls Traefik /ping endpoint.`
+	if !traefikHelpListsCommand(withCheck, "check") {
+		t.Fatal("debe detectar check cuando aparece en la lista de comandos")
+	}
+}

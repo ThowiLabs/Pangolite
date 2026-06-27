@@ -378,6 +378,34 @@ func ValidateTraefikConfig(c Config) error {
 	if err != nil {
 		return nil
 	}
+	if traefikSupportsCheckCommand(traefikBin) {
+		return validateTraefikWithCheck(traefikBin, path)
+	}
+	return validateTraefikWithDryStart(traefikBin, path)
+}
+
+func traefikSupportsCheckCommand(traefikBin string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, traefikBin, "--help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return traefikHelpListsCommand(string(out), "check")
+}
+
+func traefikHelpListsCommand(helpOutput, command string) bool {
+	for _, line := range strings.Split(helpOutput, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) > 0 && fields[0] == command {
+			return true
+		}
+	}
+	return false
+}
+
+func validateTraefikWithCheck(traefikBin, path string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, traefikBin, "check", "--configFile", path)
@@ -390,6 +418,65 @@ func ValidateTraefikConfig(c Config) error {
 		return fmt.Errorf("validacion Traefik fallo; se restauro la configuracion anterior: %s", msg)
 	}
 	return nil
+}
+
+func validateTraefikWithDryStart(traefikBin, path string) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	tmpDir, err := os.MkdirTemp("", "pangolite-traefik-check-*")
+	if err != nil {
+		return nil
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpPath := filepath.Join(tmpDir, "traefik.yml")
+	checkedConfig := rewriteTraefikEntryPointsForDryStart(string(content))
+	if err := os.WriteFile(tmpPath, []byte(checkedConfig), 0o600); err != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, traefikBin, "--configFile", tmpPath)
+	cmd.Env = append(os.Environ(), "TRAEFIK_GLOBAL_SENDANONYMOUSUSAGE=false")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil
+	}
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("validacion Traefik fallo; se restauro la configuracion anterior: %s", msg)
+	}
+	return nil
+}
+
+func rewriteTraefikEntryPointsForDryStart(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "address:") {
+			continue
+		}
+		firstQuote := strings.Index(line, "\"")
+		lastQuote := strings.LastIndex(line, "\"")
+		if firstQuote < 0 || lastQuote <= firstQuote {
+			continue
+		}
+		current := line[firstQuote+1 : lastQuote]
+		replacement := "127.0.0.1:0"
+		if strings.HasSuffix(current, "/udp") {
+			replacement += "/udp"
+		} else if strings.HasSuffix(current, "/tcp") {
+			replacement += "/tcp"
+		}
+		lines[i] = line[:firstQuote+1] + replacement + line[lastQuote:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderFile(path, tpl string, data any, perm os.FileMode) error {
