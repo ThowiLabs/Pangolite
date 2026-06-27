@@ -5,12 +5,12 @@
     {{if .Resources}}
       {{range .Resources}}
       <tr class="{{resourceRowClass .}}">
-        <td><div class="resource-name">{{.Name}}</div><div class="resource-tags"><span class="resource-tag tag-mode">{{resourceModeLabel .Mode}}</span><span class="resource-tag {{if .Enabled}}tag-ok{{else}}tag-danger{{end}}">{{resourceStatusText .}}</span><span class="resource-tag tag-muted">Resp: {{.DisabledStatusCode}}</span><span class="resource-tag tag-muted" data-health-tag="{{.ID}}">Health: -</span></div></td>
-        <td class="font-mono compact-cell">{{resourceEntry .}}</td>
-        <td class="font-mono compact-cell">{{resourceBackend .}}</td>
-        <td>{{resourceOrigin .}}</td>
-        <td>{{if eq .OriginType "agent"}}{{resourceAgentName .AgentID}}{{else}}-{{end}}</td>
-        <td class="text-end"><button class="btn btn-sm {{if .Enabled}}btn-outline-danger{{else}}btn-outline-secondary{{end}}" type="button" onclick="{{if .Enabled}}openResourceAction('{{.ID}}'){{else}}quickActivate('{{.ID}}'){{end}}"><i class="bi {{if .Enabled}}bi-pause-circle{{else}}bi-play-circle{{end}}"></i> {{if .Enabled}}Suspender{{else}}Activar{{end}}</button> <button class="btn btn-sm btn-outline-secondary" type="button" onclick="openEditResource('{{.ID}}')"><i class="bi bi-pencil-square"></i> Editar</button> <button class="btn btn-sm btn-outline-danger" type="button" onclick="deleteResource('{{.ID}}')" aria-label="Eliminar recurso"><i class="bi bi-trash"></i></button></td>
+        <td data-label="Recurso"><div class="resource-name">{{.Name}}</div><div class="resource-tags"><span class="resource-tag tag-primary">{{resourceModeLabel .Mode}}</span><span class="resource-tag {{if .Enabled}}tag-success{{else}}tag-danger{{end}}">{{resourceStatusText .}}</span><span class="resource-tag tag-muted">Resp: {{.DisabledStatusCode}}</span><span class="resource-tag tag-muted" data-health-tag="{{.ID}}">Health: -</span></div></td>
+        <td data-label="Entrada" class="font-mono compact-cell">{{resourceEntry .}}</td>
+        <td data-label="Backend" class="font-mono compact-cell">{{resourceBackend .}}</td>
+        <td data-label="Origen">{{resourceOrigin .}}</td>
+        <td data-label="Cliente de sistema">{{if eq .OriginType "agent"}}{{resourceAgentName .AgentID}}{{else}}-{{end}}</td>
+        <td data-label="Acciones" class="text-end"><button class="btn btn-sm {{if .Enabled}}btn-outline-danger{{else}}btn-outline-secondary{{end}}" type="button" onclick="{{if .Enabled}}openResourceAction('{{.ID}}'){{else}}quickActivate('{{.ID}}'){{end}}"><i class="bi {{if .Enabled}}bi-pause-circle{{else}}bi-play-circle{{end}}"></i> {{if .Enabled}}Suspender{{else}}Activar{{end}}</button> <button class="btn btn-sm btn-outline-secondary" type="button" onclick="openEditResource('{{.ID}}')"><i class="bi bi-pencil-square"></i> Editar</button> <button class="btn btn-sm btn-outline-danger" type="button" onclick="deleteResource('{{.ID}}')" aria-label="Eliminar recurso"><i class="bi bi-trash"></i></button></td>
       </tr>
       {{end}}
     {{else}}

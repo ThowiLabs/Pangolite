@@ -26,6 +26,11 @@ import (
 
 const sessionCookieName = "pangolite_session"
 
+type loginAttempt struct {
+	Fails       int
+	LockedUntil time.Time
+}
+
 type Server struct {
 	config  Config
 	store   *Store
@@ -33,6 +38,9 @@ type Server struct {
 	bridges *BridgeManager
 	mux     *http.ServeMux
 	log     *slog.Logger
+
+	loginMu       sync.Mutex
+	loginAttempts map[string]loginAttempt
 
 	traefikRestartMu    sync.Mutex
 	traefikRestartTimer *time.Timer
@@ -54,7 +62,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	}
 	c = effective
 	hub := NewTunnelHub(64)
-	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger}
+	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}}
 	s.routes()
 	return s
 }
@@ -111,6 +119,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/system/network", s.requireAuth(s.getNetworkInfo))
 	s.mux.HandleFunc("GET /api/certificates/status", s.requireAuth(s.getCertificateStatus))
 	s.mux.HandleFunc("GET /api/system/logs", s.requireAuth(s.getSystemLogs))
+	s.mux.HandleFunc("GET /api/system/logs/download", s.requireAuth(s.downloadSystemLogs))
 	s.mux.HandleFunc("GET /api/audit", s.requireAuth(s.listAudit))
 	s.mux.HandleFunc("GET /api/backups", s.requireAuth(s.listBackups))
 	s.mux.HandleFunc("POST /api/backups", s.requireAuth(s.createBackup))
@@ -180,12 +189,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		req.Username = r.Form.Get("username")
 		req.Password = r.Form.Get("password")
 	}
+	if retryAt, blocked := s.loginBlocked(req.Username, r); blocked {
+		s.log.Warn("login bloqueado temporalmente", "user", NormalizeUsername(req.Username), "remote", clientIPForRateLimit(r), "retry_at", retryAt.Format(time.RFC3339))
+		writeError(w, http.StatusTooManyRequests, "demasiados intentos fallidos; espera unos minutos antes de intentar otra vez")
+		return
+	}
 	user, ok := s.store.AuthenticateUser(req.Username, req.Password)
 	if !ok {
-		s.log.Warn("login fallido", "user", NormalizeUsername(req.Username), "remote", r.RemoteAddr)
+		s.recordLoginFailure(req.Username, r)
+		s.log.Warn("login fallido", "user", NormalizeUsername(req.Username), "remote", clientIPForRateLimit(r))
 		writeError(w, http.StatusUnauthorized, "usuario o contraseña invalidos")
 		return
 	}
+	s.recordLoginSuccess(req.Username, r)
 	rawID, sess, err := s.store.CreateSession(user.ID, sessionDuration(s.config))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "no se pudo crear sesion")
@@ -194,6 +210,56 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.setSessionCookie(w, r, rawID, sess.ExpiresAt)
 	s.log.Info("login correcto", "user", user.Username)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": publicUser(user), "csrfToken": sess.CSRFToken})
+}
+
+func (s *Server) loginKey(username string, r *http.Request) string {
+	return NormalizeUsername(username) + "|" + clientIPForRateLimit(r)
+}
+
+func (s *Server) loginBlocked(username string, r *http.Request) (time.Time, bool) {
+	if s.loginAttempts == nil {
+		return time.Time{}, false
+	}
+	key := s.loginKey(username, r)
+	now := time.Now().UTC()
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	attempt := s.loginAttempts[key]
+	if attempt.LockedUntil.After(now) {
+		return attempt.LockedUntil, true
+	}
+	if attempt.LockedUntil.Before(now) && !attempt.LockedUntil.IsZero() {
+		delete(s.loginAttempts, key)
+	}
+	return time.Time{}, false
+}
+
+func (s *Server) recordLoginFailure(username string, r *http.Request) {
+	if s.loginAttempts == nil {
+		return
+	}
+	key := s.loginKey(username, r)
+	now := time.Now().UTC()
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	attempt := s.loginAttempts[key]
+	if attempt.LockedUntil.Before(now) {
+		attempt.LockedUntil = time.Time{}
+	}
+	attempt.Fails++
+	if attempt.Fails >= 5 {
+		attempt.LockedUntil = now.Add(10 * time.Minute)
+	}
+	s.loginAttempts[key] = attempt
+}
+
+func (s *Server) recordLoginSuccess(username string, r *http.Request) {
+	if s.loginAttempts == nil {
+		return
+	}
+	s.loginMu.Lock()
+	delete(s.loginAttempts, s.loginKey(username, r))
+	s.loginMu.Unlock()
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request, rs requestSession) {
@@ -351,12 +417,31 @@ func (s *Server) getSystemLogs(w http.ResponseWriter, r *http.Request, _ request
 			limit = parsed
 		}
 	}
+	if limit > defaultMaxLogLines {
+		limit = defaultMaxLogLines
+	}
 	lines, err := ReadLastLogLines(s.config.LogPath, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": s.config.LogPath, "maxEntries": defaultMaxLogLines, "lines": lines})
+}
+
+func (s *Server) downloadSystemLogs(w http.ResponseWriter, r *http.Request, _ requestSession) {
+	path := strings.TrimSpace(s.config.LogPath)
+	if path == "" {
+		writeError(w, http.StatusNotFound, "logs no configurados")
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		writeError(w, http.StatusNotFound, "archivo de logs no disponible")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="pangolite.log"`)
+	http.ServeFile(w, r, path)
 }
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs requestSession) {
@@ -547,7 +632,7 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "public_port", created.PublicPort, "tunnel_port", created.TunnelPort, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
 	s.recordAudit(r, rs, "resource.create", "resource", created.ID, created.ProjectID, map[string]any{"name": created.Name, "mode": created.Mode, "origin": created.OriginType, "publicPort": created.PublicPort, "agentId": created.AgentID, "traefik": traefikResult.Message})
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(w, http.StatusCreated, map[string]any{"resource": created, "traefik": traefikResult})
 }
 
 func (s *Server) validatePublicPortForCreate(resource Resource) error {
@@ -889,9 +974,21 @@ func (s *Server) publicBaseURL(r *http.Request) string {
 	}
 	host := "127.0.0.1:2424"
 	if r != nil && strings.TrimSpace(r.Host) != "" {
-		host = r.Host
+		host = cleanPublicHost(r.Host)
 	}
 	return "http://" + host
+}
+
+func cleanPublicHost(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.Trim(host, "[]")
+	if strings.ContainsAny(host, " \t\n\r'\"`$;&|<>\\") {
+		return "127.0.0.1:2424"
+	}
+	if host == "" || len(host) > 253 {
+		return "127.0.0.1:2424"
+	}
+	return host
 }
 
 func shellQuote(value string) string {
@@ -957,12 +1054,14 @@ func (s *Server) renderTraefik(w http.ResponseWriter, r *http.Request, rs reques
 }
 
 type TraefikApplyResult struct {
-	OK             bool   `json:"ok"`
-	Message        string `json:"message"`
-	Restarted      bool   `json:"restarted"`
-	StaticChanged  bool   `json:"staticChanged"`
-	DynamicChanged bool   `json:"dynamicChanged"`
-	ServiceManager string `json:"serviceManager,omitempty"`
+	OK              bool   `json:"ok"`
+	Message         string `json:"message"`
+	Restarted       bool   `json:"restarted"`
+	RestartRequired bool   `json:"restartRequired"`
+	StaticChanged   bool   `json:"staticChanged"`
+	DynamicChanged  bool   `json:"dynamicChanged"`
+	ServiceManager  string `json:"serviceManager,omitempty"`
+	Warning         string `json:"warning,omitempty"`
 }
 
 func (s *Server) applyTraefikDynamicOnly() TraefikApplyResult {
@@ -1002,10 +1101,10 @@ func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
 	}
 	manager := DetectServiceManager()
 	if !manager.Available() {
-		return TraefikApplyResult{OK: true, Message: "configuracion estatica escrita; no se detecto gestor de servicios para reiniciar Traefik automaticamente", StaticChanged: true, ServiceManager: manager.String()}
+		return TraefikApplyResult{OK: true, Message: "configuracion estatica escrita; no se detecto gestor de servicios para reiniciar Traefik automaticamente", RestartRequired: true, StaticChanged: true, ServiceManager: manager.String(), Warning: "Este cambio agrego o retiro entrypoints TCP/UDP. Reinicia Traefik manualmente para aplicarlo."}
 	}
 	s.scheduleTraefikRestart("cambio de entrypoints TCP/UDP")
-	return TraefikApplyResult{OK: true, Message: fmt.Sprintf("Traefik se reiniciara en segundo plano con %s para aplicar entrypoints TCP/UDP", manager.String()), Restarted: false, StaticChanged: true, DynamicChanged: true, ServiceManager: manager.String()}
+	return TraefikApplyResult{OK: true, Message: fmt.Sprintf("Traefik se reiniciara en segundo plano con %s para aplicar entrypoints TCP/UDP", manager.String()), Restarted: false, RestartRequired: true, StaticChanged: true, DynamicChanged: true, ServiceManager: manager.String(), Warning: "Para agregar o quitar tuneles TCP/UDP Traefik debe reiniciar su servicio global y las conexiones activas podrian cortarse unos segundos."}
 }
 
 func (s *Server) scheduleTraefikRestart(reason string) {
@@ -1152,14 +1251,36 @@ func (s *Server) checkResourceHealth(ctx context.Context, res Resource) (out Res
 
 func (s *Server) touchAgentFromRequest(agentID string, r *http.Request) {
 	s.store.TouchAgent(agentID, AgentHeartbeat{
-		OS:        r.Header.Get("X-Pangolite-Client-OS"),
-		Arch:      r.Header.Get("X-Pangolite-Client-Arch"),
-		Hostname:  r.Header.Get("X-Pangolite-Client-Hostname"),
-		PrivateIP: r.Header.Get("X-Pangolite-Client-Private-IP"),
-		PublicIP:  requestPublicIP(r),
-		Version:   r.Header.Get("X-Pangolite-Client-Version"),
-		LastError: r.Header.Get("X-Pangolite-Client-Last-Error"),
+		OS:        safeHeaderValue(r.Header.Get("X-Pangolite-Client-OS"), 32),
+		Arch:      safeHeaderValue(r.Header.Get("X-Pangolite-Client-Arch"), 32),
+		Hostname:  safeHeaderValue(r.Header.Get("X-Pangolite-Client-Hostname"), 120),
+		PrivateIP: safeHeaderValue(r.Header.Get("X-Pangolite-Client-Private-IP"), 64),
+		PublicIP:  safeHeaderValue(requestPublicIP(r), 64),
+		Version:   safeHeaderValue(r.Header.Get("X-Pangolite-Client-Version"), 48),
+		LastError: safeHeaderValue(r.Header.Get("X-Pangolite-Client-Last-Error"), 240),
 	})
+}
+
+func safeHeaderValue(value string, max int) string {
+	value = strings.TrimSpace(value)
+	value = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, value)
+	if max > 0 && len(value) > max {
+		value = value[:max]
+	}
+	return value
+}
+
+func clientIPForRateLimit(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && strings.TrimSpace(host) != "" {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func requestPublicIP(r *http.Request) string {
@@ -1729,6 +1850,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }

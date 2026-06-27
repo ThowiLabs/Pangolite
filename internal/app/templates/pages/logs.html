@@ -7,12 +7,30 @@
         <div class="card-title">Diagnostico operativo</div>
         <div id="logsPath" class="log-path">Archivo: {{if .LogPath}}{{.LogPath}}{{else}}no configurado{{end}} · maximo {{.MaxLogEntries}} entradas</div>
       </div>
-      <div class="d-flex gap-2">
-        <button class="btn btn-outline-secondary" onclick="loadLogs()"><i class="bi bi-arrow-clockwise"></i> Actualizar</button>
-        <button class="btn btn-outline-secondary" onclick="copyLogs(this)"><i class="bi bi-clipboard"></i> Copiar</button>
+      <div class="d-flex gap-2 flex-wrap">
+        <button class="btn btn-outline-secondary" type="button" onclick="loadLogs()"><i class="bi bi-arrow-clockwise"></i> Actualizar</button>
+        <button class="btn btn-outline-secondary" type="button" onclick="copyLogs(this)"><i class="bi bi-clipboard"></i> Copiar</button>
+        <button class="btn btn-outline-secondary" type="button" onclick="downloadLogs()"><i class="bi bi-download"></i> Descargar</button>
+        <button class="btn btn-outline-secondary" type="button" onclick="clearLogsView()"><i class="bi bi-eraser"></i> Limpiar vista</button>
       </div>
     </div>
     <div class="card-body">
+      <div class="grid grid-2 mb-3 logs-filter-grid">
+        <div>
+          <label class="form-label" for="logsSearch">Buscar</label>
+          <input id="logsSearch" class="form-control" placeholder="error, traefik, puerto, cliente...">
+        </div>
+        <div>
+          <label class="form-label" for="logsLevel">Nivel</label>
+          <select id="logsLevel" class="form-select">
+            <option value="all">Todos</option>
+            <option value="error">Errores</option>
+            <option value="warn">Advertencias</option>
+            <option value="info">Info</option>
+            <option value="other">Otros</option>
+          </select>
+        </div>
+      </div>
       <div id="logsBox" class="log-view font-mono">
         {{if .LogLines}}
           {{range .LogLines}}<span class="{{logLineClass .}}">{{.}}</span>{{end}}

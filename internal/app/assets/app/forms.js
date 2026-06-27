@@ -151,13 +151,15 @@ async function createResourceFromForm(e){
   try{
     const payload=createResourcePayload();
     if(!payload.name)throw new Error('Nombre del recurso requerido');
+    if(!await confirmTraefikRestartIfNeeded(payload))return false;
     showBusy('Creando recurso','Validando puerto, cliente de sistema, backend y aplicando Traefik');
-    await api('/api/resources',{method:'POST',body:JSON.stringify(payload)});
+    const createResp=await api('/api/resources',{method:'POST',body:JSON.stringify(payload)});
     let cert=null;
     if(payload.mode==='http')cert=await fetchCertificateStatus(payload.domain,payload.tls,'certStatusCreate');
     await reloadProjects();
     await loadProjectData(currentProject.id);
-    const notice='El recurso '+payload.name+' se creó correctamente.'+(cert?' SSL: '+certText(cert)+'.':'');
+    const tmsg=traefikNotice(createResp);
+    const notice='El recurso '+payload.name+' se creó correctamente.'+(cert?' SSL: '+certText(cert)+'.':'')+(tmsg?'\n\n'+tmsg:'');
     hideBusy();busyClosed=true;
     goNotice('/projects/'+currentProject.id+'/resources','Recurso creado',notice);
   }catch(err){msg(err.message,true)}finally{if(!busyClosed)hideBusy()}
@@ -176,24 +178,28 @@ async function saveResourceEdit(e){
   try{
     const id=fieldValue('editResourceId');if(!id)throw new Error('Recurso no seleccionado');
     const payload=createResourcePayload('edit');
+    const current=resources.find(x=>x.id===id)||null;
+    if(!await confirmTraefikRestartIfNeeded(payload,current))return false;
     showBusy('Guardando recurso','Validando cambios y aplicando Traefik');
-    await api('/api/resources/'+id,{method:'PATCH',body:JSON.stringify(payload)});
+    const editResp=await api('/api/resources/'+id,{method:'PATCH',body:JSON.stringify(payload)});
     let cert=null;
     if(payload.mode==='http')cert=await fetchCertificateStatus(payload.domain,payload.tls,'certStatusEdit');
     closeResourceEditModal();
     await reloadProjects();
     if(currentProject)await loadProjectData(currentProject.id);
-    msg('Recurso actualizado'+(cert?'. SSL: '+certText(cert)+'.':''));
+    const tmsg=traefikNotice(editResp);
+    msg('Recurso actualizado'+(cert?'. SSL: '+certText(cert)+'.':'')+(tmsg?' '+tmsg:''));
   }catch(err){msg(err.message,true)}finally{hideBusy()}
   return false;
 }
 async function deleteResource(id){
   const r=resources.find(x=>x.id===id);
-  if(!await confirmAction('Eliminar recurso','Se eliminara '+(r?r.name:shortID(id))+' y Pangolite aplicara Traefik automaticamente.','Eliminar recurso'))return;
+  const deleteBody='Se eliminara '+(r?r.name:shortID(id))+' y Pangolite aplicara Traefik automaticamente.'+((r&&(r.mode==='tcp'||r.mode==='udp'))?' Este recurso usa puerto TCP/UDP, por lo que Traefik podria reiniciarse para retirar el entryPoint.':'');
+  if(!await confirmAction('Eliminar recurso',deleteBody,'Eliminar recurso'))return;
   try{
-    await api('/api/resources/'+id,{method:'DELETE'});
+    const delResp=await api('/api/resources/'+id,{method:'DELETE'});
     removeResourceLocal(id);
-    msg('Recurso eliminado');
+    msg('Recurso eliminado'+(traefikNotice(delResp)?'. '+traefikNotice(delResp):''));
     refreshCurrentProjectSoft();
   }catch(err){msg(err.message,true)}
 }

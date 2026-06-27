@@ -406,6 +406,9 @@ func (r *Resource) Validate() error {
 		}
 	}
 	if r.Mode == ModeHTTP {
+		if len(r.PathPrefix) > 200 || strings.ContainsAny(r.PathPrefix, "`\n\r\t") || strings.Contains(r.PathPrefix, " ") {
+			return errors.New("pathPrefix contiene caracteres no permitidos")
+		}
 		if r.ProtectionMode != ProtectionNone && r.ProtectionMode != ProtectionPassword && r.ProtectionMode != ProtectionSession {
 			return errors.New("protectionMode debe ser none, password o session")
 		}
