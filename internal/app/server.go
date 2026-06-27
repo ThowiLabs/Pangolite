@@ -101,6 +101,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/settings", s.requireAuth(s.getSettings))
 	s.mux.HandleFunc("PATCH /api/settings", s.requireAuth(s.updateSettings))
 	s.mux.HandleFunc("GET /api/system/network", s.requireAuth(s.getNetworkInfo))
+	s.mux.HandleFunc("GET /api/certificates/status", s.requireAuth(s.getCertificateStatus))
 	s.mux.HandleFunc("GET /api/system/logs", s.requireAuth(s.getSystemLogs))
 	s.mux.HandleFunc("GET /api/audit", s.requireAuth(s.listAudit))
 	s.mux.HandleFunc("GET /api/backups", s.requireAuth(s.listBackups))
@@ -311,8 +312,19 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, rs reques
 
 func (s *Server) getSettings(w http.ResponseWriter, _ *http.Request, _ requestSession) {
 	settings := s.store.LoadAppSettings(s.config)
+	effective := s.store.EffectiveConfig(s.config)
 	network := DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain)
-	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": network})
+	certificate := ResolveCertificateStatus(effective, settings.DashboardDomain, settings.DashboardDomain != "")
+	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": network, "certificate": certificate})
+}
+
+func (s *Server) getCertificateStatus(w http.ResponseWriter, r *http.Request, _ requestSession) {
+	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
+	sslEnabled := true
+	if raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("ssl"))); raw == "0" || raw == "false" || raw == "no" {
+		sslEnabled = false
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"certificate": ResolveCertificateStatus(s.store.EffectiveConfig(s.config), domain, sslEnabled)})
 }
 
 func (s *Server) getNetworkInfo(w http.ResponseWriter, _ *http.Request, _ requestSession) {
@@ -359,6 +371,13 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 			return
 		}
 	}
+	candidateConfig := s.config
+	candidateConfig.DashboardDomain = req.DashboardDomain
+	candidateConfig.LetsEncryptEmail = req.LetsEncryptEmail
+	if !ACMEEnabled(candidateConfig) && s.hasHTTPSSLResources() {
+		writeError(w, http.StatusBadRequest, "no puedes desactivar ACME mientras existan recursos web con SSL activo; desactiva Usar SSL en esos recursos primero")
+		return
+	}
 	settings, err := s.store.SaveAppSettings(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -377,7 +396,8 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 	}
 	s.log.Info("ajustes actualizados", "dashboard_domain", settings.DashboardDomain, "user", rs.User.Username, "traefik", traefikResult.Message)
 	s.recordAudit(r, rs, "settings.update", "settings", "dashboard", "", map[string]any{"dashboardDomain": settings.DashboardDomain, "acmeEmailSet": settings.LetsEncryptEmail != "", "traefik": traefikResult.Message})
-	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain), "traefik": traefikResult})
+	certificate := ResolveCertificateStatus(afterConfig, settings.DashboardDomain, settings.DashboardDomain != "")
+	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain), "certificate": certificate, "traefik": traefikResult})
 }
 
 func (s *Server) listManagedDomains(w http.ResponseWriter, _ *http.Request, _ requestSession) {
@@ -440,6 +460,10 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := s.validateHTTPSSL(resource); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	beforeResources := s.store.ListResources()
 	created, err := s.store.AddResource(resource)
 	if err != nil {
@@ -467,6 +491,23 @@ func (s *Server) validatePublicPortForUpdate(current, next Resource) error {
 	}
 	mustCheckSystem := current.Mode != next.Mode || current.PublicPort != next.PublicPort
 	return s.validatePublicPort(next.Mode, next.PublicPort, next.ID, mustCheckSystem)
+}
+
+func (s *Server) validateHTTPSSL(resource Resource) error {
+	resource.Normalize(time.Now().UTC())
+	if resource.Mode == ModeHTTP && resource.TLS && !ACMEEnabled(s.store.EffectiveConfig(s.config)) {
+		return errors.New("para usar SSL configura primero un correo ACME real en Ajustes o desactiva Usar SSL")
+	}
+	return nil
+}
+
+func (s *Server) hasHTTPSSLResources() bool {
+	for _, resource := range s.store.ListResources() {
+		if resource.Mode == ModeHTTP && resource.TLS {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) validatePublicPort(mode string, port int, excludeID string, checkSystem bool) error {
@@ -623,6 +664,10 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	next.Normalize(time.Now().UTC())
 	if err := s.validatePublicPortForUpdate(current, next); err != nil {
 		s.log.Warn("validacion de puerto publico en edicion fallo", "resource", id, "mode", next.Mode, "public_port", next.PublicPort, "origin", next.OriginType, "agent", next.AgentID, "user", rs.User.Username, "error", err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.validateHTTPSSL(next); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

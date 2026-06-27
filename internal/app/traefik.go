@@ -309,12 +309,8 @@ func uniquePorts(resources []Resource, mode string) []int {
 }
 
 func ACMEEnabled(c Config) bool {
-	domain := strings.ToLower(strings.TrimSpace(c.DashboardDomain))
 	email := strings.ToLower(strings.TrimSpace(c.LetsEncryptEmail))
-	if domain == "" || email == "" {
-		return false
-	}
-	if domain == "pangolite.localhost" || strings.HasSuffix(domain, ".localhost") || strings.HasSuffix(domain, ".local") {
+	if email == "" {
 		return false
 	}
 	if strings.HasSuffix(email, "@example.com") || strings.HasSuffix(email, "@example.org") || strings.HasSuffix(email, "@example.net") {

@@ -48,11 +48,11 @@ func TestResourceValidation(t *testing.T) {
 }
 
 func TestACMEEnabledSkipsPlaceholderValues(t *testing.T) {
-	if ACMEEnabled(Config{DashboardDomain: "pangolite.localhost", LetsEncryptEmail: "admin@example.com"}) {
-		t.Fatal("no debe activar ACME con dominio localhost y correo example.com")
+	if ACMEEnabled(Config{LetsEncryptEmail: "admin@example.com"}) {
+		t.Fatal("no debe activar ACME con correo example.com")
 	}
-	if !ACMEEnabled(Config{DashboardDomain: "proxy.example.mx", LetsEncryptEmail: "admin@example.mx"}) {
-		t.Fatal("debe activar ACME con dominio y correo reales")
+	if !ACMEEnabled(Config{LetsEncryptEmail: "admin@example.mx"}) {
+		t.Fatal("debe activar ACME con correo real aunque el panel no tenga dominio")
 	}
 }
 

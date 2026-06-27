@@ -189,8 +189,8 @@ PANGOLITE_AUTO_TRAEFIK=1
 PANGOLITE_CLIENT_LINUX_AMD64=$CLIENT_PUBLIC_BIN
 PANGOLITE_CLIENT_WINDOWS_AMD64=$CLIENT_PUBLIC_WINDOWS_BIN
 # Opcional: configura dominio/correo para que Traefik publique el panel por HTTP/HTTPS.
-# PANGOLITE_DASHBOARD_DOMAIN=pangolin.yahirex.us.kg
-# PANGOLITE_LETSENCRYPT_EMAIL=admin@yahirex.us.kg
+# PANGOLITE_DASHBOARD_DOMAIN=panel.midominio.com
+# PANGOLITE_LETSENCRYPT_EMAIL=admin@midominio.com
 ENV
     chmod 600 "$ENV_FILE"
   fi

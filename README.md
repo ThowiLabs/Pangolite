@@ -172,8 +172,8 @@ PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=/opt/pangolite/data/admin-password.txt
 PANGOLITE_SESSION_DAYS=30
 # Opcional: tambien puedes definirlos por env, aunque lo recomendado es hacerlo desde Ajustes.
-# PANGOLITE_DASHBOARD_DOMAIN=pangolin.example.com
-# PANGOLITE_LETSENCRYPT_EMAIL=admin@example.com
+# PANGOLITE_DASHBOARD_DOMAIN=panel.midominio.com
+# PANGOLITE_LETSENCRYPT_EMAIL=admin@midominio.com
 ```
 
 Después de editar variables de entorno, reinicia Pangolite:
@@ -190,7 +190,7 @@ Los cambios hechos desde la UI aplican Traefik automáticamente cuando es posibl
 En **Ajustes > Dominio del dashboard** puedes definir el dominio publico del panel, por ejemplo:
 
 ```text
-pangolin.yahirex.us.kg
+panel.midominio.com
 ```
 
 Antes de guardar, Pangolite valida que el dominio resuelva a la IP detectada del servidor. Esa IP queda registrada en:
@@ -206,6 +206,8 @@ sudo systemctl restart pangolite
 ```
 
 Después de guardar el dominio/correo ACME desde el panel, Pangolite escribe la configuración dinámica en `/etc/traefik/dynamic/`. Traefik la detecta automáticamente mediante `providers.file.watch=true`, sin reiniciar ni cortar recursos HTTP/HTTPS existentes.
+
+El correo ACME también puede quedar configurado aunque todavía no publiques el panel con dominio propio. Esto permite crear recursos web con el switch **Usar SSL** activado. Si desactivas el switch en un recurso, Pangolite publica solo HTTP y no elimina certificados que Traefik ya haya generado.
 
 Solo los cambios que agregan o eliminan puertos TCP/UDP públicos requieren tocar entrypoints estáticos. Pangolite lo detecta y ejecuta un reinicio controlado de Traefik automáticamente.
 
@@ -337,7 +339,7 @@ Requisitos:
 - `/etc/traefik/acme.json` debe existir y tener permisos `0600`.
 - El correo ACME debe ser real, no `example.com`.
 
-Pangolite aplica automáticamente cambios HTTP/HTTPS. Si cambias el correo ACME o activas ACME por primera vez, Pangolite escribe la configuración estática y reinicia Traefik de forma controlada.
+Pangolite aplica automáticamente cambios HTTP/HTTPS. Si cambias el correo ACME o activas ACME por primera vez, Pangolite escribe la configuración estática y reinicia Traefik de forma controlada. El panel muestra si el certificado está generado, pendiente/en proceso, desactivado o si falta configurar ACME.
 
 
 ## Edicion de recursos y selector de proyectos
@@ -366,9 +368,9 @@ Pangolite incluye un binario de cliente NAT independiente. El instalador princip
 Al crear o rotar un cliente desde el panel, Pangolite muestra un comando listo para copiar en el servidor remoto:
 
 ```bash
-curl -fsSL https://panel.example.com/download/pangolite-client-linux-amd64 -o /tmp/pangolite-client \
+curl -fsSL https://panel.midominio.com/download/pangolite-client-linux-amd64 -o /tmp/pangolite-client \
   && chmod +x /tmp/pangolite-client \
-  && sudo /tmp/pangolite-client --install --server-url https://panel.example.com --agent-id ID --token TOKEN
+  && sudo /tmp/pangolite-client --install --server-url https://panel.midominio.com --agent-id ID --token TOKEN
 ```
 
 El cliente detecta systemd u OpenRC, se copia a `/opt/pangolite-client/`, guarda sus credenciales en un archivo privado y arranca como servicio. Para eliminarlo completamente del servidor remoto:

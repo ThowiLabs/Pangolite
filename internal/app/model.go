@@ -245,16 +245,18 @@ func (a AppSettings) Validate() error {
 	if a.DashboardDomain == "" && a.LetsEncryptEmail == "" {
 		return nil
 	}
-	if a.DashboardDomain == "" {
-		return errors.New("dominio del panel requerido")
+	if a.DashboardDomain != "" {
+		if !domainRe.MatchString(a.DashboardDomain) {
+			return errors.New("dominio del panel invalido")
+		}
+		if strings.HasPrefix(a.DashboardDomain, "localhost") || strings.HasSuffix(a.DashboardDomain, ".localhost") || strings.HasSuffix(a.DashboardDomain, ".local") {
+			return errors.New("usa un dominio publico real para el panel")
+		}
+		if a.LetsEncryptEmail == "" {
+			return errors.New("correo ACME requerido cuando configuras dominio del panel")
+		}
 	}
-	if !domainRe.MatchString(a.DashboardDomain) {
-		return errors.New("dominio del panel invalido")
-	}
-	if strings.HasPrefix(a.DashboardDomain, "localhost") || strings.HasSuffix(a.DashboardDomain, ".localhost") || strings.HasSuffix(a.DashboardDomain, ".local") {
-		return errors.New("usa un dominio publico real para el panel")
-	}
-	if !emailRe.MatchString(a.LetsEncryptEmail) {
+	if a.LetsEncryptEmail != "" && !emailRe.MatchString(a.LetsEncryptEmail) {
 		return errors.New("correo ACME invalido")
 	}
 	return nil
