@@ -536,3 +536,27 @@ body{
     pointer-events:auto;
   }
 }
+
+
+/* Capa superior global: los modales y confirmaciones siempre deben quedar sobre header, footer, sidebar y perilla. */
+.modal-lite{
+  z-index:140!important;
+}
+.modal-lite.open{
+  display:flex;
+}
+.modal-card{
+  position:relative;
+  z-index:141;
+}
+body.modal-open .topbar,
+body.modal-open .app-footer,
+body.modal-open .global-sidebar-toggle,
+body.modal-open .sidebar,
+body.modal-open .sidebar-scrim{
+  pointer-events:none;
+}
+body.modal-open .modal-lite,
+body.modal-open .modal-lite *{
+  pointer-events:auto;
+}
