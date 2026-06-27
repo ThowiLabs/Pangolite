@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -45,6 +47,9 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	effective := store.EffectiveConfig(c)
 	if err := store.EnsureManagedDomain(effective.DashboardDomain); err != nil && logger != nil {
 		logger.Warn("no se pudo registrar dominio del panel", "domain", effective.DashboardDomain, "error", err.Error())
+	}
+	if err := EnsureSuspensionTemplates(c.SuspensionTemplateDir); err != nil && logger != nil {
+		logger.Warn("no se pudieron preparar plantillas de suspension", "dir", c.SuspensionTemplateDir, "error", err.Error())
 	}
 	hub := NewTunnelHub(64)
 	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger}
@@ -112,6 +117,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/domains/{id}", s.requireAuth(s.deleteManagedDomain))
 	s.mux.HandleFunc("GET /api/resources", s.requireAuth(s.listResources))
 	s.mux.HandleFunc("GET /api/resources/health", s.requireAuth(s.resourceHealth))
+	s.mux.HandleFunc("GET /api/suspension-templates", s.requireAuth(s.listSuspensionTemplates))
+	s.mux.HandleFunc("POST /api/suspension-templates", s.requireAuth(s.createSuspensionTemplate))
+	s.mux.HandleFunc("GET /api/suspension-templates/{id}", s.requireAuth(s.getSuspensionTemplate))
+	s.mux.HandleFunc("PUT /api/suspension-templates/{id}", s.requireAuth(s.updateSuspensionTemplate))
 	s.mux.HandleFunc("POST /api/resources", s.requireAuth(s.createResource))
 	s.mux.HandleFunc("PATCH /api/resources/{id}", s.requireAuth(s.updateResourceControl))
 	s.mux.HandleFunc("DELETE /api/resources/{id}", s.requireAuth(s.deleteResource))
@@ -447,6 +456,61 @@ func (s *Server) listResources(w http.ResponseWriter, r *http.Request, _ request
 	writeJSON(w, http.StatusOK, map[string]any{"resources": resources})
 }
 
+func (s *Server) listSuspensionTemplates(w http.ResponseWriter, _ *http.Request, _ requestSession) {
+	templates, err := ListSuspensionTemplates(s.config.SuspensionTemplateDir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"templates": templates, "variables": []string{"$nombredominio", "$dominio", "$nombrerecurso", "$recurso", "$proyecto", "$codigo", "$motivo", "$fecha"}})
+}
+
+func (s *Server) getSuspensionTemplate(w http.ResponseWriter, r *http.Request, _ requestSession) {
+	template, err := ReadSuspensionTemplate(s.config.SuspensionTemplateDir, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, template)
+}
+
+func (s *Server) createSuspensionTemplate(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	defer r.Body.Close()
+	var req struct {
+		ID   string `json:"id"`
+		HTML string `json:"html"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 160<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	template, err := SaveSuspensionTemplate(s.config.SuspensionTemplateDir, req.ID, req.HTML)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.recordAudit(r, rs, "template.create", "suspension_template", template.ID, "", map[string]any{"path": template.Path})
+	writeJSON(w, http.StatusCreated, template)
+}
+
+func (s *Server) updateSuspensionTemplate(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	defer r.Body.Close()
+	var req struct {
+		HTML string `json:"html"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 160<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	template, err := SaveSuspensionTemplate(s.config.SuspensionTemplateDir, r.PathValue("id"), req.HTML)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.recordAudit(r, rs, "template.update", "suspension_template", template.ID, "", map[string]any{"path": template.Path})
+	writeJSON(w, http.StatusOK, template)
+}
+
 func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs requestSession) {
 	defer r.Body.Close()
 	var resource Resource
@@ -455,6 +519,10 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 		return
 	}
 	resource.Enabled = true
+	if err := s.prepareResourceSecurity(&resource); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.validatePublicPortForCreate(resource); err != nil {
 		s.log.Warn("validacion de puerto publico fallo", "mode", resource.Mode, "public_port", resource.PublicPort, "origin", resource.OriginType, "agent", resource.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -497,6 +565,44 @@ func (s *Server) validateHTTPSSL(resource Resource) error {
 	resource.Normalize(time.Now().UTC())
 	if resource.Mode == ModeHTTP && resource.TLS && !ACMEEnabled(s.store.EffectiveConfig(s.config)) {
 		return errors.New("para usar SSL configura primero un correo ACME real en Ajustes o desactiva Usar SSL")
+	}
+	return nil
+}
+
+func (s *Server) prepareResourceSecurity(resource *Resource) error {
+	if resource == nil {
+		return nil
+	}
+	resource.ProtectionMode = strings.ToLower(strings.TrimSpace(resource.ProtectionMode))
+	resource.ProtectionLoginMode = strings.ToLower(strings.TrimSpace(resource.ProtectionLoginMode))
+	if resource.ProtectionMode == "" {
+		resource.ProtectionMode = ProtectionNone
+	}
+	if resource.ProtectionLoginMode == "" {
+		resource.ProtectionLoginMode = ProtectionLoginHTML
+	}
+	if resource.ProtectionMode == ProtectionPassword {
+		if strings.TrimSpace(resource.ProtectionPassword) != "" {
+			hash, err := HashProtectionPassword(resource.ProtectionPassword)
+			if err != nil {
+				return err
+			}
+			resource.ProtectionHash = hash
+		}
+	} else {
+		resource.ProtectionHash = ""
+	}
+	resource.ProtectionPassword = ""
+	if resource.DisabledResponseMode == DisabledResponseHTML {
+		if strings.TrimSpace(resource.DisabledTemplateID) != "" {
+			if _, err := ReadSuspensionTemplate(s.config.SuspensionTemplateDir, resource.DisabledTemplateID); err != nil {
+				return err
+			}
+		} else if strings.TrimSpace(resource.DisabledHTML) != "" {
+			if err := ValidateSuspensionHTML(resource.DisabledHTML); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -583,6 +689,10 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		DisabledResponseMode string `json:"disabledResponseMode"`
 		DisabledStatusCode   int    `json:"disabledStatusCode"`
 		DisabledHTML         string `json:"disabledHtml"`
+		DisabledTemplateID   string `json:"disabledTemplateId"`
+		ProtectionMode       string `json:"protectionMode"`
+		ProtectionLoginMode  string `json:"protectionLoginMode"`
+		ProtectionPassword   string `json:"protectionPassword"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
@@ -593,7 +703,7 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	fullEdit := req.Name != "" || req.Mode != "" || req.Domain != "" || req.PublicPort != 0 || req.BackendHost != "" || req.BackendPort != 0 || req.OriginType != "" || req.PathPrefix != "" || req.BackendScheme != "" || req.TLS != nil || req.ProjectID != ""
+	fullEdit := req.Name != "" || req.Mode != "" || req.Domain != "" || req.PublicPort != 0 || req.BackendHost != "" || req.BackendPort != 0 || req.OriginType != "" || req.PathPrefix != "" || req.BackendScheme != "" || req.TLS != nil || req.ProjectID != "" || req.ProtectionMode != "" || req.ProtectionLoginMode != "" || req.ProtectionPassword != ""
 	beforeResources := s.store.ListResources()
 	if !fullEdit {
 		enabled := current.Enabled
@@ -612,7 +722,24 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		if html == "" {
 			html = current.DisabledHTML
 		}
-		updated, err := s.store.UpdateResourceControl(id, enabled, mode, status, html)
+		templateID := req.DisabledTemplateID
+		if templateID == "" {
+			templateID = current.DisabledTemplateID
+		}
+		if mode == DisabledResponseHTML {
+			if templateID != "" {
+				if _, err := ReadSuspensionTemplate(s.config.SuspensionTemplateDir, templateID); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			} else if strings.TrimSpace(html) != "" {
+				if err := ValidateSuspensionHTML(html); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+		}
+		updated, err := s.store.UpdateResourceControl(id, enabled, mode, status, html, templateID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -661,6 +788,18 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		next.DisabledStatusCode = req.DisabledStatusCode
 	}
 	next.DisabledHTML = req.DisabledHTML
+	next.DisabledTemplateID = req.DisabledTemplateID
+	if req.ProtectionMode != "" {
+		next.ProtectionMode = req.ProtectionMode
+	}
+	if req.ProtectionLoginMode != "" {
+		next.ProtectionLoginMode = req.ProtectionLoginMode
+	}
+	next.ProtectionPassword = req.ProtectionPassword
+	if err := s.prepareResourceSecurity(&next); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	next.Normalize(time.Now().UTC())
 	if err := s.validatePublicPortForUpdate(current, next); err != nil {
 		s.log.Warn("validacion de puerto publico en edicion fallo", "resource", id, "mode", next.Mode, "public_port", next.PublicPort, "origin", next.OriginType, "agent", next.AgentID, "user", rs.User.Username, "error", err.Error())
@@ -1170,8 +1309,15 @@ func (s *Server) publicOrIndex(w http.ResponseWriter, r *http.Request) {
 			s.serveDisabledResource(w, r, resource)
 			return
 		}
+		if !s.ensureResourceAccess(w, r, resource) {
+			return
+		}
 		if resource.UsesAgent() {
 			s.proxyViaAgent(w, r, resource)
+			return
+		}
+		if resource.ProtectionMode != ProtectionNone {
+			s.proxyLocalResource(w, r, resource)
 			return
 		}
 	}
@@ -1203,11 +1349,17 @@ func (s *Server) serveDisabledResource(w http.ResponseWriter, r *http.Request, r
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(status)
 		if r.Method != http.MethodHead {
-			html := resource.DisabledHTML
-			if strings.TrimSpace(html) == "" {
-				html = defaultDisabledHTML(resource.Name, status)
+			htmlText := resource.DisabledHTML
+			if strings.TrimSpace(resource.DisabledTemplateID) != "" {
+				if tpl, err := ReadSuspensionTemplate(s.config.SuspensionTemplateDir, resource.DisabledTemplateID); err == nil {
+					project, _ := s.store.ProjectByID(resource.ProjectID)
+					htmlText = RenderSuspensionHTML(tpl.HTML, SuspensionTemplateVars{Resource: resource, Project: project, Status: status, Reason: "Recurso suspendido", Now: time.Now().UTC()})
+				}
 			}
-			_, _ = w.Write([]byte(html))
+			if strings.TrimSpace(htmlText) == "" {
+				htmlText = defaultDisabledHTML(resource.Name, status)
+			}
+			_, _ = w.Write([]byte(htmlText))
 		}
 	default:
 		http.Error(w, "403 recurso deshabilitado", http.StatusForbidden)
@@ -1229,6 +1381,133 @@ func htmlEscape(value string) string {
 	value = strings.ReplaceAll(value, "'", "&#39;")
 	return value
 }
+
+func (s *Server) ensureResourceAccess(w http.ResponseWriter, r *http.Request, resource Resource) bool {
+	if resource.ProtectionMode == ProtectionNone {
+		return true
+	}
+	switch resource.ProtectionMode {
+	case ProtectionSession:
+		if rs, ok := s.currentSession(r); ok && !rs.User.ForcePasswordChange {
+			return true
+		}
+		s.serveResourceSessionLogin(w, r, resource)
+		return false
+	case ProtectionPassword:
+		if resource.ProtectionLoginMode == ProtectionLoginBasic {
+			_, password, ok := r.BasicAuth()
+			if ok && VerifyProtectionPassword(resource.ProtectionHash, password) {
+				return true
+			}
+			w.Header().Set("WWW-Authenticate", `Basic realm="Pangolite recurso protegido"`)
+			writeError(w, http.StatusUnauthorized, "credenciales requeridas")
+			return false
+		}
+		if s.hasResourcePasswordCookie(r, resource) {
+			return true
+		}
+		if r.Method == http.MethodPost && strings.TrimSpace(r.FormValue("pangolite_resource_password")) != "" {
+			if VerifyProtectionPassword(resource.ProtectionHash, r.FormValue("pangolite_resource_password")) {
+				s.setResourcePasswordCookie(w, r, resource)
+				http.Redirect(w, r, r.URL.Path, http.StatusFound)
+				return false
+			}
+			s.serveResourcePasswordLogin(w, r, resource, "Contraseña incorrecta")
+			return false
+		}
+		s.serveResourcePasswordLogin(w, r, resource, "")
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Server) resourceAccessCookieName(resource Resource) string {
+	return "pangolite_resource_" + safeName(resource.ID)
+}
+
+func (s *Server) resourceAccessCookieValue(resource Resource) string {
+	return hashToken(resource.ID + ":" + resource.ProtectionHash)
+}
+
+func (s *Server) hasResourcePasswordCookie(r *http.Request, resource Resource) bool {
+	cookie, err := r.Cookie(s.resourceAccessCookieName(resource))
+	if err != nil {
+		return false
+	}
+	return cookie.Value == s.resourceAccessCookieValue(resource)
+}
+
+func (s *Server) setResourcePasswordCookie(w http.ResponseWriter, r *http.Request, resource Resource) {
+	secure := r.TLS != nil
+	if forwarded := strings.ToLower(r.Header.Get("X-Forwarded-Proto")); forwarded == "https" {
+		secure = true
+	}
+	http.SetCookie(w, &http.Cookie{Name: s.resourceAccessCookieName(resource), Value: s.resourceAccessCookieValue(resource), Path: "/", MaxAge: 86400, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
+}
+
+func (s *Server) serveResourcePasswordLogin(w http.ResponseWriter, r *http.Request, resource Resource, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusUnauthorized)
+	if r.Method == http.MethodHead {
+		return
+	}
+	msg := "Este recurso está protegido por contraseña."
+	if message != "" {
+		msg = message
+	}
+	_, _ = w.Write([]byte(fmt.Sprintf(resourceLoginHTML, htmlEscape(resource.Name), htmlEscape(resource.Domain), htmlEscape(msg), htmlEscape(r.URL.Path))))
+}
+
+func (s *Server) serveResourceSessionLogin(w http.ResponseWriter, r *http.Request, resource Resource) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusUnauthorized)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write([]byte(fmt.Sprintf(resourceSessionHTML, htmlEscape(resource.Name), htmlEscape(resource.Domain))))
+}
+
+func (s *Server) proxyLocalResource(w http.ResponseWriter, r *http.Request, resource Resource) {
+	scheme := resource.BackendScheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	target, err := url.Parse(fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(resource.BackendHost, fmt.Sprint(resource.BackendPort))))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "backend invalido")
+		return
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = target.Host
+		req.Header.Set("X-Forwarded-Host", r.Host)
+		req.Header.Set("X-Forwarded-Proto", forwardedProto(r))
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
+		if s.log != nil {
+			s.log.Warn("proxy local fallo", "resource", resource.ID, "error", err.Error())
+		}
+		writeError(w, http.StatusBadGateway, "backend no disponible")
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func forwardedProto(r *http.Request) string {
+	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		return proto
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+const resourceLoginHTML = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Recurso protegido</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:-apple-system,system-ui,Segoe UI,Arial,sans-serif}.card{width:min(440px,calc(100vw - 32px));padding:30px;border:1px solid rgba(255,255,255,.16);border-radius:22px;background:rgba(255,255,255,.08);box-shadow:0 24px 70px rgba(0,0,0,.42)}p{color:#cbd5e1}.muted{font-size:13px;color:#94a3b8}.input{box-sizing:border-box;width:100%%;padding:13px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:#050505;color:#fff}.btn{margin-top:14px;width:100%%;padding:13px;border:0;border-radius:12px;background:linear-gradient(135deg,#8b5cf6,#22d3ee);color:#fff;font-weight:800}</style></head><body><main class="card"><div class="muted">%s · %s</div><h1>Recurso protegido</h1><p>%s</p><form method="post" action="%s"><input class="input" type="password" name="pangolite_resource_password" autocomplete="current-password" placeholder="Contraseña" autofocus required><button class="btn" type="submit">Entrar</button></form></main></body></html>`
+
+const resourceSessionHTML = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sesión requerida</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:-apple-system,system-ui,Segoe UI,Arial,sans-serif}.card{width:min(460px,calc(100vw - 32px));padding:30px;border:1px solid rgba(255,255,255,.16);border-radius:22px;background:rgba(255,255,255,.08);box-shadow:0 24px 70px rgba(0,0,0,.42)}p{color:#cbd5e1}.muted{font-size:13px;color:#94a3b8}.btn{display:inline-block;margin-top:14px;padding:13px 18px;border-radius:12px;background:linear-gradient(135deg,#8b5cf6,#22d3ee);color:#fff;text-decoration:none;font-weight:800}</style></head><body><main class="card"><div class="muted">%s · %s</div><h1>Sesión Pangolite requerida</h1><p>Este recurso solo está disponible para usuarios con sesión iniciada en Pangolite desde este dominio.</p><a class="btn" href="/login">Iniciar sesión</a></main></body></html>`
 
 func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource Resource) {
 	defer r.Body.Close()

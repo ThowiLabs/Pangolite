@@ -126,6 +126,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			disabled_response_mode TEXT NOT NULL DEFAULT '403',
 			disabled_status_code INTEGER NOT NULL DEFAULT 403,
 			disabled_html TEXT NOT NULL DEFAULT '',
+			disabled_template_id TEXT NOT NULL DEFAULT '',
+			protection_mode TEXT NOT NULL DEFAULT 'none',
+			protection_login_mode TEXT NOT NULL DEFAULT 'html',
+			protection_hash TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -191,6 +195,16 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := s.ensureColumn(ctx, "resources", "disabled_html", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	for _, col := range []struct{ name, def string }{
+		{"disabled_template_id", "TEXT NOT NULL DEFAULT ''"},
+		{"protection_mode", "TEXT NOT NULL DEFAULT 'none'"},
+		{"protection_login_mode", "TEXT NOT NULL DEFAULT 'html'"},
+		{"protection_hash", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureColumn(ctx, "resources", col.name, col.def); err != nil {
+			return err
+		}
 	}
 	if err := s.ensureColumn(ctx, "resources", "tunnel_port", "INTEGER"); err != nil {
 		return err
@@ -707,7 +721,7 @@ func (s *Store) DeleteManagedDomain(id string) error {
 	return nil
 }
 
-const resourceSelectSQL = `SELECT id,project_id,name,mode,COALESCE(domain,''),COALESCE(path_prefix,''),COALESCE(public_port,0),COALESCE(tunnel_port,0),COALESCE(backend_scheme,''),backend_host,backend_port,COALESCE(origin_type,'local'),COALESCE(agent_id,''),tls,enabled,COALESCE(disabled_response_mode,'403'),COALESCE(disabled_status_code,403),COALESCE(disabled_html,''),created_at,updated_at FROM resources`
+const resourceSelectSQL = `SELECT id,project_id,name,mode,COALESCE(domain,''),COALESCE(path_prefix,''),COALESCE(public_port,0),COALESCE(tunnel_port,0),COALESCE(backend_scheme,''),backend_host,backend_port,COALESCE(origin_type,'local'),COALESCE(agent_id,''),tls,enabled,COALESCE(disabled_response_mode,'403'),COALESCE(disabled_status_code,403),COALESCE(disabled_html,''),COALESCE(disabled_template_id,''),COALESCE(protection_mode,'none'),COALESCE(protection_login_mode,'html'),COALESCE(protection_hash,''),created_at,updated_at FROM resources`
 
 func (s *Store) ListResources() []Resource {
 	rows, err := s.db.Query(resourceSelectSQL + ` ORDER BY created_at ASC`)
@@ -833,7 +847,7 @@ func (s *Store) AddResource(r Resource) (Resource, error) {
 			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d: %s (%s)", strings.ToUpper(r.Mode), r.PublicPort, conflict.Name, conflict.ID)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO resources(id,project_id,name,mode,domain,path_prefix,public_port,tunnel_port,backend_scheme,backend_host,backend_port,origin_type,agent_id,tls,enabled,disabled_response_mode,disabled_status_code,disabled_html,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.ProjectID, r.Name, r.Mode, nullableString(r.Domain), nullableString(r.PathPrefix), nullableInt(r.PublicPort), nullableInt(r.TunnelPort), nullableString(r.BackendScheme), r.BackendHost, r.BackendPort, r.OriginType, nullableString(r.AgentID), boolInt(r.TLS), boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
+	_, err := s.db.Exec(`INSERT INTO resources(id,project_id,name,mode,domain,path_prefix,public_port,tunnel_port,backend_scheme,backend_host,backend_port,origin_type,agent_id,tls,enabled,disabled_response_mode,disabled_status_code,disabled_html,disabled_template_id,protection_mode,protection_login_mode,protection_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.ProjectID, r.Name, r.Mode, nullableString(r.Domain), nullableString(r.PathPrefix), nullableInt(r.PublicPort), nullableInt(r.TunnelPort), nullableString(r.BackendScheme), r.BackendHost, r.BackendPort, r.OriginType, nullableString(r.AgentID), boolInt(r.TLS), boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, r.DisabledTemplateID, r.ProtectionMode, r.ProtectionLoginMode, r.ProtectionHash, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path o puerto publico")
@@ -863,6 +877,18 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 	}
 	if next.DisabledHTML == "" && current.DisabledHTML != "" && next.DisabledResponseMode == current.DisabledResponseMode {
 		next.DisabledHTML = current.DisabledHTML
+	}
+	if next.DisabledTemplateID == "" && current.DisabledTemplateID != "" && next.DisabledResponseMode == current.DisabledResponseMode {
+		next.DisabledTemplateID = current.DisabledTemplateID
+	}
+	if next.ProtectionMode == "" {
+		next.ProtectionMode = current.ProtectionMode
+	}
+	if next.ProtectionLoginMode == "" {
+		next.ProtectionLoginMode = current.ProtectionLoginMode
+	}
+	if next.ProtectionHash == "" && next.ProtectionMode == current.ProtectionMode {
+		next.ProtectionHash = current.ProtectionHash
 	}
 	next.Normalize(now)
 	if err := next.Validate(); err != nil {
@@ -898,7 +924,7 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d: %s (%s)", strings.ToUpper(next.Mode), next.PublicPort, conflict.Name, conflict.ID)
 		}
 	}
-	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, tunnel_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableInt(next.TunnelPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, formatTime(next.UpdatedAt), next.ID)
+	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, tunnel_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, disabled_template_id = ?, protection_mode = ?, protection_login_mode = ?, protection_hash = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableInt(next.TunnelPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, next.DisabledTemplateID, next.ProtectionMode, next.ProtectionLoginMode, next.ProtectionHash, formatTime(next.UpdatedAt), next.ID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path o puerto publico")
@@ -961,7 +987,7 @@ func (s *Store) DeleteResource(id string) error {
 	return nil
 }
 
-func (s *Store) UpdateResourceControl(id string, enabled bool, responseMode string, statusCode int, html string) (Resource, error) {
+func (s *Store) UpdateResourceControl(id string, enabled bool, responseMode string, statusCode int, html string, templateID string) (Resource, error) {
 	id = strings.TrimSpace(id)
 	if !idRe.MatchString(id) {
 		return Resource{}, errors.New("id de recurso invalido")
@@ -975,11 +1001,12 @@ func (s *Store) UpdateResourceControl(id string, enabled bool, responseMode stri
 	r.DisabledResponseMode = responseMode
 	r.DisabledStatusCode = statusCode
 	r.DisabledHTML = html
+	r.DisabledTemplateID = templateID
 	r.Normalize(time.Now().UTC())
 	if err := r.Validate(); err != nil {
 		return Resource{}, err
 	}
-	_, err = s.db.Exec(`UPDATE resources SET enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, updated_at = ? WHERE id = ?`, boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, formatTime(r.UpdatedAt), r.ID)
+	_, err = s.db.Exec(`UPDATE resources SET enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, disabled_template_id = ?, updated_at = ? WHERE id = ?`, boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, r.DisabledTemplateID, formatTime(r.UpdatedAt), r.ID)
 	if err != nil {
 		return Resource{}, fmt.Errorf("actualizar control del recurso: %w", err)
 	}
@@ -1272,7 +1299,7 @@ func (s *Store) FindHTTPPanelResource(host, path string) (Resource, bool) {
 	if path == "" {
 		path = "/"
 	}
-	rows, err := s.db.Query(resourceSelectSQL+` WHERE mode = 'http' AND domain = ? AND (enabled = 0 OR COALESCE(origin_type,'local') = 'agent') ORDER BY length(COALESCE(path_prefix,'')) DESC`, host)
+	rows, err := s.db.Query(resourceSelectSQL+` WHERE mode = 'http' AND domain = ? AND (enabled = 0 OR COALESCE(origin_type,'local') = 'agent' OR COALESCE(protection_mode,'none') <> 'none') ORDER BY length(COALESCE(path_prefix,'')) DESC`, host)
 	if err != nil {
 		return Resource{}, false
 	}
@@ -1348,7 +1375,7 @@ func scanResourceRows(row resourceScanner) (Resource, error) {
 	var r Resource
 	var tls, enabled int
 	var createdAt, updatedAt string
-	if err := row.Scan(&r.ID, &r.ProjectID, &r.Name, &r.Mode, &r.Domain, &r.PathPrefix, &r.PublicPort, &r.TunnelPort, &r.BackendScheme, &r.BackendHost, &r.BackendPort, &r.OriginType, &r.AgentID, &tls, &enabled, &r.DisabledResponseMode, &r.DisabledStatusCode, &r.DisabledHTML, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.ProjectID, &r.Name, &r.Mode, &r.Domain, &r.PathPrefix, &r.PublicPort, &r.TunnelPort, &r.BackendScheme, &r.BackendHost, &r.BackendPort, &r.OriginType, &r.AgentID, &tls, &enabled, &r.DisabledResponseMode, &r.DisabledStatusCode, &r.DisabledHTML, &r.DisabledTemplateID, &r.ProtectionMode, &r.ProtectionLoginMode, &r.ProtectionHash, &createdAt, &updatedAt); err != nil {
 		return Resource{}, err
 	}
 	r.TLS = tls == 1
@@ -1365,6 +1392,12 @@ func scanResourceRows(row resourceScanner) (Resource, error) {
 	}
 	if r.DisabledStatusCode == 0 {
 		r.DisabledStatusCode = 403
+	}
+	if r.ProtectionMode == "" {
+		r.ProtectionMode = ProtectionNone
+	}
+	if r.ProtectionLoginMode == "" {
+		r.ProtectionLoginMode = ProtectionLoginHTML
 	}
 	r.CreatedAt = parseTime(createdAt)
 	r.UpdatedAt = parseTime(updatedAt)
@@ -1418,4 +1451,23 @@ func nullableInt(v int) any {
 		return nil
 	}
 	return v
+}
+
+func HashProtectionPassword(password string) (string, error) {
+	password = strings.TrimSpace(password)
+	if len(password) < 6 {
+		return "", errors.New("password de proteccion debe tener al menos 6 caracteres")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("hashear password de proteccion: %w", err)
+	}
+	return string(hash), nil
+}
+
+func VerifyProtectionPassword(hash, password string) bool {
+	if strings.TrimSpace(hash) == "" || password == "" {
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }

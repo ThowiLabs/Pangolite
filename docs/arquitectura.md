@@ -61,3 +61,11 @@ runit    -> servicios /etc/sv + symlink a /var/service o /service
 ```
 
 El workflow manual de releases genera paquetes Linux `amd64`, `arm64`, `386` y `armv7`, además de clientes descargables para Linux amd64 y Windows amd64.
+
+## Suspensión y protección de recursos web
+
+Pangolite soporta suspensión de recursos HTTP por respuesta simple, plantilla HTML física o HTML personalizado. Las plantillas viven en disco bajo `PANGOLITE_SUSPENSION_TEMPLATE_DIR` y se crean con defaults editables si el directorio está vacío.
+
+Para evitar inyección accidental, el panel valida HTML de suspensión antes de guardarlo o aplicarlo a un recurso. Las plantillas admiten variables de reemplazo como `$nombredominio`, `$nombrerecurso`, `$proyecto`, `$codigo`, `$motivo` y `$fecha`.
+
+La protección de recursos HTTP se implementa haciendo que Traefik envíe esos recursos a Pangolite en vez de enviarlos directo al backend. Pangolite valida contraseña específica, sesión activa del panel o prompt básico según configuración, y luego reenvía el tráfico al backend local o al cliente de sistema remoto.

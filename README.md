@@ -459,3 +459,18 @@ Pangolite incluye una Zona de peligro por proyecto. Desde ahí se puede renombra
 La eliminación de clientes de sistema es una acción fuerte: elimina el cliente de sistema y todos los recursos vinculados a ese cliente de sistema. Para evitar errores, el panel solicita la contraseña del administrador actual antes de ejecutar la eliminación.
 
 Los cambios que eliminan recursos aplican Traefik automáticamente. Si hay puertos TCP/UDP involucrados, Pangolite agrupa el reinicio controlado para reducir cortes y evitar acciones repetidas.
+
+### Suspensión avanzada y protección de recursos
+
+Los recursos web pueden suspenderse desde la tabla de acciones con un único botón. Al suspender, Pangolite permite elegir entre una suspensión simple, una plantilla HTML física existente o HTML personalizado validado.
+
+Las plantillas de suspensión se guardan como archivos `.html` en `PANGOLITE_SUSPENSION_TEMPLATE_DIR`; si no se define, se usa `/opt/pangolite/data/templates/suspension`. Las plantillas pueden usar variables seguras como `$nombredominio`, `$nombrerecurso`, `$proyecto`, `$codigo`, `$motivo` y `$fecha`.
+
+El validador rechaza etiquetas y atributos peligrosos como `script`, `iframe`, `object`, `embed`, `svg`, formularios, atributos `on*`, URLs `javascript:` y `data:text/html`.
+
+También se puede proteger un recurso web antes de enviarlo al backend:
+
+- **Contraseña específica:** muestra una pantalla HTML de login o, si se elige, un prompt básico útil para APIs.
+- **Sesión Pangolite:** solo permite pasar a usuarios con sesión iniciada en Pangolite desde ese dominio.
+
+Cuando un recurso web tiene protección activa, Traefik lo enruta primero por Pangolite para validar el acceso y después Pangolite lo proxyfica hacia el backend local o remoto.

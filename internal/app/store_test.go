@@ -86,7 +86,7 @@ func TestStoreUpdateResourceControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := store.UpdateResourceControl(created.ID, false, DisabledResponseHTML, 403, "<h1>Suspendido</h1>")
+	updated, err := store.UpdateResourceControl(created.ID, false, DisabledResponseHTML, 403, "<h1>Suspendido</h1>", "")
 	if err != nil {
 		t.Fatal(err)
 	}

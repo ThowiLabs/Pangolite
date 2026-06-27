@@ -19,6 +19,13 @@ const (
 	DisabledResponse403  = "403"
 	DisabledResponse404  = "404"
 	DisabledResponseHTML = "html"
+
+	ProtectionNone     = "none"
+	ProtectionPassword = "password"
+	ProtectionSession  = "session"
+
+	ProtectionLoginHTML  = "html"
+	ProtectionLoginBasic = "basic"
 )
 
 type Project struct {
@@ -63,6 +70,11 @@ type Resource struct {
 	DisabledResponseMode string    `json:"disabledResponseMode"`
 	DisabledStatusCode   int       `json:"disabledStatusCode"`
 	DisabledHTML         string    `json:"disabledHtml,omitempty"`
+	DisabledTemplateID   string    `json:"disabledTemplateId,omitempty"`
+	ProtectionMode       string    `json:"protectionMode"`
+	ProtectionLoginMode  string    `json:"protectionLoginMode"`
+	ProtectionHash       string    `json:"-"`
+	ProtectionPassword   string    `json:"protectionPassword,omitempty"`
 	CreatedAt            time.Time `json:"createdAt"`
 	UpdatedAt            time.Time `json:"updatedAt"`
 }
@@ -153,11 +165,12 @@ type Session struct {
 }
 
 var (
-	domainRe   = regexp.MustCompile(`(?i)^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
-	idRe       = regexp.MustCompile(`^[a-zA-Z0-9_-]{6,64}$`)
-	usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,64}$`)
-	slugRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
-	emailRe    = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+	domainRe     = regexp.MustCompile(`(?i)^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+	idRe         = regexp.MustCompile(`^[a-zA-Z0-9_-]{6,64}$`)
+	usernameRe   = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,64}$`)
+	slugRe       = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
+	emailRe      = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+	templateIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$`)
 )
 
 func (p *Project) Normalize(now time.Time) {
@@ -284,6 +297,21 @@ func (r *Resource) Normalize(now time.Time) {
 	}
 	r.DisabledResponseMode = strings.ToLower(strings.TrimSpace(r.DisabledResponseMode))
 	r.DisabledHTML = strings.TrimSpace(r.DisabledHTML)
+	r.DisabledTemplateID = strings.TrimSpace(r.DisabledTemplateID)
+	r.ProtectionMode = strings.ToLower(strings.TrimSpace(r.ProtectionMode))
+	r.ProtectionPassword = strings.TrimSpace(r.ProtectionPassword)
+	r.ProtectionLoginMode = strings.ToLower(strings.TrimSpace(r.ProtectionLoginMode))
+	if r.ProtectionMode == "" {
+		r.ProtectionMode = ProtectionNone
+	}
+	if r.ProtectionLoginMode == "" {
+		r.ProtectionLoginMode = ProtectionLoginHTML
+	}
+	if r.Mode != ModeHTTP {
+		r.ProtectionMode = ProtectionNone
+		r.ProtectionLoginMode = ProtectionLoginHTML
+		r.ProtectionHash = ""
+	}
 	if r.DisabledResponseMode == "" {
 		r.DisabledResponseMode = DisabledResponse403
 	}
@@ -338,6 +366,9 @@ func (r *Resource) Validate() error {
 	if r.DisabledResponseMode != DisabledResponse403 && r.DisabledResponseMode != DisabledResponse404 && r.DisabledResponseMode != DisabledResponseHTML {
 		return errors.New("disabledResponseMode debe ser 403, 404 o html")
 	}
+	if r.DisabledTemplateID != "" && !templateIDRe.MatchString(r.DisabledTemplateID) {
+		return errors.New("disabledTemplateId invalido")
+	}
 	if r.DisabledResponseMode == DisabledResponse403 {
 		r.DisabledStatusCode = 403
 	}
@@ -353,6 +384,15 @@ func (r *Resource) Validate() error {
 		}
 	}
 	if r.Mode == ModeHTTP {
+		if r.ProtectionMode != ProtectionNone && r.ProtectionMode != ProtectionPassword && r.ProtectionMode != ProtectionSession {
+			return errors.New("protectionMode debe ser none, password o session")
+		}
+		if r.ProtectionLoginMode != ProtectionLoginHTML && r.ProtectionLoginMode != ProtectionLoginBasic {
+			return errors.New("protectionLoginMode debe ser html o basic")
+		}
+		if r.ProtectionMode == ProtectionPassword && r.ProtectionHash == "" {
+			return errors.New("password de proteccion requerido")
+		}
 		if !domainRe.MatchString(r.Domain) {
 			return errors.New("domain invalido para recurso HTTP")
 		}

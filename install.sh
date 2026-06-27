@@ -441,6 +441,7 @@ PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=$DATA_DIR/admin-password.txt
 PANGOLITE_LOG_FILE=$DATA_DIR/pangolite.log
 PANGOLITE_BACKUP_DIR=$DATA_DIR/backups
+PANGOLITE_SUSPENSION_TEMPLATE_DIR=$DATA_DIR/templates/suspension
 PANGOLITE_SESSION_DAYS=30
 PANGOLITE_AUTO_TRAEFIK=1
 PANGOLITE_CLIENT_LINUX_AMD64=$PUBLIC_DIR/pangolite-client-linux-amd64
@@ -455,6 +456,7 @@ ENV
   set_env_value PANGOLITE_TRAEFIK_DIR "$TRAEFIK_DIR"
   set_env_value PANGOLITE_LOG_FILE "$DATA_DIR/pangolite.log"
   set_env_value PANGOLITE_BACKUP_DIR "$DATA_DIR/backups"
+  set_env_value PANGOLITE_SUSPENSION_TEMPLATE_DIR "$DATA_DIR/templates/suspension"
   set_env_value PANGOLITE_CLIENT_LINUX_AMD64 "$PUBLIC_DIR/pangolite-client-linux-amd64"
   set_env_value PANGOLITE_CLIENT_WINDOWS_AMD64 "$PUBLIC_DIR/pangolite-client-windows-amd64.exe"
   [ -n "$SERVER_IP" ] && set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"

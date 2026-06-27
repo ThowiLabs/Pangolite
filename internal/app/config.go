@@ -14,40 +14,42 @@ import (
 )
 
 type Config struct {
-	Addr                 string
-	DataPath             string
-	TraefikDir           string
-	DashboardDomain      string
-	LetsEncryptEmail     string
-	PublicIP             string
-	BootstrapTraefik     bool
-	InsecureDev          bool
-	InitialAdminUser     string
-	InitialPasswordFile  string
-	SessionDays          int
-	CookieSecureOverride string
-	AutoTraefik          bool
-	LogPath              string
-	BackupDir            string
+	Addr                  string
+	DataPath              string
+	TraefikDir            string
+	DashboardDomain       string
+	LetsEncryptEmail      string
+	PublicIP              string
+	BootstrapTraefik      bool
+	InsecureDev           bool
+	InitialAdminUser      string
+	InitialPasswordFile   string
+	SessionDays           int
+	CookieSecureOverride  string
+	AutoTraefik           bool
+	LogPath               string
+	BackupDir             string
+	SuspensionTemplateDir string
 }
 
 func LoadConfigFromEnv() Config {
 	return Config{
-		Addr:                 env("PANGOLITE_ADDR", "0.0.0.0:2424"),
-		DataPath:             env("PANGOLITE_DATA", "/opt/pangolite/data/pangolite.db"),
-		TraefikDir:           env("PANGOLITE_TRAEFIK_DIR", "/etc/traefik"),
-		DashboardDomain:      env("PANGOLITE_DASHBOARD_DOMAIN", ""),
-		LetsEncryptEmail:     env("PANGOLITE_LETSENCRYPT_EMAIL", ""),
-		PublicIP:             env("PANGOLITE_PUBLIC_IP", ""),
-		BootstrapTraefik:     os.Getenv("PANGOLITE_BOOTSTRAP_TRAEFIK") == "1",
-		InsecureDev:          os.Getenv("PANGOLITE_INSECURE_DEV") == "1",
-		InitialAdminUser:     env("PANGOLITE_INITIAL_ADMIN_USER", "admin"),
-		InitialPasswordFile:  env("PANGOLITE_INITIAL_PASSWORD_FILE", ""),
-		SessionDays:          envInt("PANGOLITE_SESSION_DAYS", 30),
-		CookieSecureOverride: strings.TrimSpace(os.Getenv("PANGOLITE_COOKIE_SECURE")),
-		AutoTraefik:          env("PANGOLITE_AUTO_TRAEFIK", "1") != "0",
-		LogPath:              env("PANGOLITE_LOG_FILE", ""),
-		BackupDir:            env("PANGOLITE_BACKUP_DIR", ""),
+		Addr:                  env("PANGOLITE_ADDR", "0.0.0.0:2424"),
+		DataPath:              env("PANGOLITE_DATA", "/opt/pangolite/data/pangolite.db"),
+		TraefikDir:            env("PANGOLITE_TRAEFIK_DIR", "/etc/traefik"),
+		DashboardDomain:       env("PANGOLITE_DASHBOARD_DOMAIN", ""),
+		LetsEncryptEmail:      env("PANGOLITE_LETSENCRYPT_EMAIL", ""),
+		PublicIP:              env("PANGOLITE_PUBLIC_IP", ""),
+		BootstrapTraefik:      os.Getenv("PANGOLITE_BOOTSTRAP_TRAEFIK") == "1",
+		InsecureDev:           os.Getenv("PANGOLITE_INSECURE_DEV") == "1",
+		InitialAdminUser:      env("PANGOLITE_INITIAL_ADMIN_USER", "admin"),
+		InitialPasswordFile:   env("PANGOLITE_INITIAL_PASSWORD_FILE", ""),
+		SessionDays:           envInt("PANGOLITE_SESSION_DAYS", 30),
+		CookieSecureOverride:  strings.TrimSpace(os.Getenv("PANGOLITE_COOKIE_SECURE")),
+		AutoTraefik:           env("PANGOLITE_AUTO_TRAEFIK", "1") != "0",
+		LogPath:               env("PANGOLITE_LOG_FILE", ""),
+		BackupDir:             env("PANGOLITE_BACKUP_DIR", ""),
+		SuspensionTemplateDir: env("PANGOLITE_SUSPENSION_TEMPLATE_DIR", ""),
 	}
 }
 
@@ -64,6 +66,9 @@ func (c *Config) ResolveBootstrapPaths() {
 	}
 	if strings.TrimSpace(c.BackupDir) == "" {
 		c.BackupDir = filepath.Join(base, "backups")
+	}
+	if strings.TrimSpace(c.SuspensionTemplateDir) == "" {
+		c.SuspensionTemplateDir = filepath.Join(base, "templates", "suspension")
 	}
 }
 
@@ -104,6 +109,7 @@ func ApplyCommonFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.InitialPasswordFile, "initial-password-file", c.InitialPasswordFile, "archivo donde se guarda la password temporal inicial")
 	fs.StringVar(&c.LogPath, "log-file", c.LogPath, "archivo de logs rotativo")
 	fs.StringVar(&c.BackupDir, "backup-dir", c.BackupDir, "directorio de respaldos SQLite")
+	fs.StringVar(&c.SuspensionTemplateDir, "suspension-template-dir", c.SuspensionTemplateDir, "directorio de plantillas HTML de suspension")
 }
 
 func newSecret(bytesLen int) (string, error) {
@@ -147,7 +153,7 @@ func PrintServeConfig(c Config) string {
 	if c.InsecureDev {
 		mode = "desarrollo-inseguro"
 	}
-	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, c.LogPath, c.BackupDir, mode, c.SessionDays, c.PublicIP)
+	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s templates=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, c.LogPath, c.BackupDir, c.SuspensionTemplateDir, mode, c.SessionDays, c.PublicIP)
 }
 
 func sessionDuration(c Config) time.Duration {
