@@ -24,6 +24,20 @@ Internet -> Traefik -> servicio alcanzable desde el VPS Pangolite
 Internet -> Traefik -> Pangolite -> cliente de sistema -> servicio remoto HTTP
 ```
 
-### Recurso TCP/UDP remoto
+### Recurso TCP remoto
 
-Pendiente. Requiere streams persistentes entre Pangolite y el cliente de sistema.
+```text
+Internet -> Traefik TCP entrypoint -> Pangolite bridge 127.0.0.1:<tunnel_port> -> WebSocket stream -> cliente de sistema -> servicio TCP remoto
+```
+
+### Recurso UDP remoto
+
+```text
+Internet -> Traefik UDP entrypoint -> Pangolite bridge 127.0.0.1:<tunnel_port> -> job/datagrama autenticado -> cliente de sistema -> servicio UDP remoto
+```
+
+## Seguridad operativa
+
+- Las acciones administrativas críticas se registran en `audit_events`.
+- Los respaldos SQLite se generan con `VACUUM INTO` para obtener una copia consistente sin detener el panel. La creación usa el modal reutilizable del panel para pedir un prefijo opcional y no ejecuta nada si se cancela.
+- La restauración se mantiene como operación manual segura: detener servicio, reemplazar base y reiniciar.

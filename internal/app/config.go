@@ -28,6 +28,7 @@ type Config struct {
 	CookieSecureOverride string
 	AutoTraefik          bool
 	LogPath              string
+	BackupDir            string
 }
 
 func LoadConfigFromEnv() Config {
@@ -46,6 +47,7 @@ func LoadConfigFromEnv() Config {
 		CookieSecureOverride: strings.TrimSpace(os.Getenv("PANGOLITE_COOKIE_SECURE")),
 		AutoTraefik:          env("PANGOLITE_AUTO_TRAEFIK", "1") != "0",
 		LogPath:              env("PANGOLITE_LOG_FILE", ""),
+		BackupDir:            env("PANGOLITE_BACKUP_DIR", ""),
 	}
 }
 
@@ -59,6 +61,9 @@ func (c *Config) ResolveBootstrapPaths() {
 	}
 	if strings.TrimSpace(c.LogPath) == "" {
 		c.LogPath = filepath.Join(base, "pangolite.log")
+	}
+	if strings.TrimSpace(c.BackupDir) == "" {
+		c.BackupDir = filepath.Join(base, "backups")
 	}
 }
 
@@ -98,6 +103,7 @@ func ApplyCommonFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.InitialAdminUser, "initial-admin-user", c.InitialAdminUser, "usuario admin inicial")
 	fs.StringVar(&c.InitialPasswordFile, "initial-password-file", c.InitialPasswordFile, "archivo donde se guarda la password temporal inicial")
 	fs.StringVar(&c.LogPath, "log-file", c.LogPath, "archivo de logs rotativo")
+	fs.StringVar(&c.BackupDir, "backup-dir", c.BackupDir, "directorio de respaldos SQLite")
 }
 
 func newSecret(bytesLen int) (string, error) {
@@ -141,7 +147,7 @@ func PrintServeConfig(c Config) string {
 	if c.InsecureDev {
 		mode = "desarrollo-inseguro"
 	}
-	return fmt.Sprintf("addr=%s db=%s log=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, c.LogPath, mode, c.SessionDays, c.PublicIP)
+	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, c.LogPath, c.BackupDir, mode, c.SessionDays, c.PublicIP)
 }
 
 func sessionDuration(c Config) time.Duration {

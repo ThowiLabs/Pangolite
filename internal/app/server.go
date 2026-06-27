@@ -102,6 +102,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/settings", s.requireAuth(s.updateSettings))
 	s.mux.HandleFunc("GET /api/system/network", s.requireAuth(s.getNetworkInfo))
 	s.mux.HandleFunc("GET /api/system/logs", s.requireAuth(s.getSystemLogs))
+	s.mux.HandleFunc("GET /api/audit", s.requireAuth(s.listAudit))
+	s.mux.HandleFunc("GET /api/backups", s.requireAuth(s.listBackups))
+	s.mux.HandleFunc("POST /api/backups", s.requireAuth(s.createBackup))
+	s.mux.HandleFunc("GET /api/backups/{name}/download", s.requireAuth(s.downloadBackup))
 	s.mux.HandleFunc("GET /api/domains", s.requireAuth(s.listManagedDomains))
 	s.mux.HandleFunc("POST /api/domains", s.requireAuth(s.createManagedDomain))
 	s.mux.HandleFunc("DELETE /api/domains/{id}", s.requireAuth(s.deleteManagedDomain))
@@ -216,6 +220,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, rs reque
 		}
 	}
 	s.log.Info("password actualizada", "user", rs.User.Username)
+	s.recordAudit(r, rs, "user.password.change", "user", fmt.Sprint(rs.User.ID), "", map[string]any{"forcePasswordChange": rs.User.ForcePasswordChange})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -250,6 +255,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request, rs reques
 		return
 	}
 	s.log.Info("proyecto creado", "id", project.ID, "name", project.Name, "user", rs.User.Username)
+	s.recordAudit(r, rs, "project.create", "project", project.ID, project.ID, map[string]any{"name": project.Name, "slug": project.Slug})
 	writeJSON(w, http.StatusCreated, project)
 }
 
@@ -284,6 +290,7 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request, rs reques
 		return
 	}
 	s.log.Info("proyecto actualizado", "id", project.ID, "enabled", project.Enabled, "user", rs.User.Username)
+	s.recordAudit(r, rs, "project.update", "project", project.ID, project.ID, map[string]any{"name": project.Name, "enabled": project.Enabled})
 	writeJSON(w, http.StatusOK, project)
 }
 
@@ -298,6 +305,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, rs reques
 		return
 	}
 	s.log.Info("proyecto eliminado", "id", id, "user", rs.User.Username)
+	s.recordAudit(r, rs, "project.delete", "project", id, id, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
@@ -368,6 +376,7 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 		traefikResult = s.applyTraefikStaticAndRestart()
 	}
 	s.log.Info("ajustes actualizados", "dashboard_domain", settings.DashboardDomain, "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.recordAudit(r, rs, "settings.update", "settings", "dashboard", "", map[string]any{"dashboardDomain": settings.DashboardDomain, "acmeEmailSet": settings.LetsEncryptEmail != "", "traefik": traefikResult.Message})
 	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain), "traefik": traefikResult})
 }
 
@@ -390,6 +399,7 @@ func (s *Server) createManagedDomain(w http.ResponseWriter, r *http.Request, rs 
 		return
 	}
 	s.log.Info("dominio administrado creado", "id", domain.ID, "domain", domain.Domain, "user", rs.User.Username)
+	s.recordAudit(r, rs, "domain.create", "domain", domain.ID, "", map[string]any{"domain": domain.Domain})
 	writeJSON(w, http.StatusCreated, domain)
 }
 
@@ -404,6 +414,7 @@ func (s *Server) deleteManagedDomain(w http.ResponseWriter, r *http.Request, rs 
 		return
 	}
 	s.log.Info("dominio administrado eliminado", "id", id, "user", rs.User.Username)
+	s.recordAudit(r, rs, "domain.delete", "domain", id, "", nil)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
@@ -438,6 +449,7 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "public_port", created.PublicPort, "tunnel_port", created.TunnelPort, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.recordAudit(r, rs, "resource.create", "resource", created.ID, created.ProjectID, map[string]any{"name": created.Name, "mode": created.Mode, "origin": created.OriginType, "publicPort": created.PublicPort, "agentId": created.AgentID, "traefik": traefikResult.Message})
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 	writeJSON(w, http.StatusCreated, created)
 }
@@ -502,6 +514,7 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request, rs reque
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("recurso eliminado", "id", id, "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.recordAudit(r, rs, "resource.delete", "resource", id, "", map[string]any{"traefik": traefikResult.Message})
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "traefik": traefikResult})
 }
 
@@ -565,6 +578,7 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		}
 		traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 		s.log.Info("control de recurso actualizado", "id", id, "enabled", updated.Enabled, "mode", updated.DisabledResponseMode, "user", rs.User.Username, "traefik", traefikResult.Message)
+		s.recordAudit(r, rs, "resource.control", "resource", updated.ID, updated.ProjectID, map[string]any{"enabled": updated.Enabled, "disabledResponseMode": updated.DisabledResponseMode, "traefik": traefikResult.Message})
 		w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 		writeJSON(w, http.StatusOK, map[string]any{"resource": updated, "traefik": traefikResult})
 		return
@@ -620,6 +634,7 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("recurso editado", "id", id, "mode", updated.Mode, "name", updated.Name, "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.recordAudit(r, rs, "resource.update", "resource", updated.ID, updated.ProjectID, map[string]any{"name": updated.Name, "mode": updated.Mode, "origin": updated.OriginType, "publicPort": updated.PublicPort, "agentId": updated.AgentID, "traefik": traefikResult.Message})
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 	writeJSON(w, http.StatusOK, map[string]any{"resource": updated, "traefik": traefikResult})
 }
@@ -661,6 +676,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request, rs requestS
 	}
 	s.attachAgentCommands(r, &agent)
 	s.log.Info("cliente NAT creado", "id", agent.ID, "name", agent.Name, "user", rs.User.Username)
+	s.recordAudit(r, rs, "agent.create", "agent", agent.ID, agent.ProjectID, map[string]any{"name": agent.Name})
 	writeJSON(w, http.StatusCreated, agent)
 }
 
@@ -721,6 +737,7 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request, rs requestS
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("cliente NAT eliminado", "id", id, "name", agent.Name, "resources", len(deletedResources), "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.recordAudit(r, rs, "agent.delete", "agent", id, agent.ProjectID, map[string]any{"name": agent.Name, "deletedResources": len(deletedResources), "traefik": traefikResult.Message})
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "deletedResources": len(deletedResources), "traefik": traefikResult})
 }
 
@@ -737,15 +754,17 @@ func (s *Server) rotateAgentToken(w http.ResponseWriter, r *http.Request, rs req
 	}
 	s.attachAgentCommands(r, &agent)
 	s.log.Info("token de cliente NAT rotado", "id", id, "user", rs.User.Username)
+	s.recordAudit(r, rs, "agent.token.rotate", "agent", id, agent.ProjectID, map[string]any{"name": agent.Name})
 	writeJSON(w, http.StatusOK, agent)
 }
 
-func (s *Server) renderTraefik(w http.ResponseWriter, _ *http.Request, _ requestSession) {
+func (s *Server) renderTraefik(w http.ResponseWriter, r *http.Request, rs requestSession) {
 	result := s.applyTraefikStaticAndRestart()
 	if !result.OK {
 		writeError(w, http.StatusBadRequest, result.Message)
 		return
 	}
+	s.recordAudit(r, rs, "traefik.render", "traefik", "static", "", map[string]any{"message": result.Message, "restarted": result.Restarted})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": result.Message, "traefik": result})
 }
 

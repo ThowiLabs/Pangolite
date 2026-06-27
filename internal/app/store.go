@@ -132,6 +132,19 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_http_unique ON resources(domain, path_prefix) WHERE enabled = 1 AND mode = 'http'`,
 		`DROP INDEX IF EXISTS idx_resources_port_unique`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_port_lookup ON resources(mode, public_port) WHERE COALESCE(public_port,0) > 0 AND mode IN ('tcp','udp')`,
+		`CREATE TABLE IF NOT EXISTS audit_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			action TEXT NOT NULL,
+			entity_type TEXT NOT NULL,
+			entity_id TEXT NOT NULL DEFAULT '',
+			project_id TEXT NOT NULL DEFAULT '',
+			username TEXT NOT NULL DEFAULT '',
+			remote_ip TEXT NOT NULL DEFAULT '',
+			metadata TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_events_project_id ON audit_events(project_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {

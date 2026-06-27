@@ -30,7 +30,7 @@ La base actual incluye:
 - Recarga automática de HTTP/HTTPS mediante file provider con `watch=true`.
 - Aplicación automática de cambios desde la UI; no se pide al usuario aplicar Traefik manualmente.
 
-TCP/UDP mediante cliente de sistema requiere la fase de streams remotos y por ahora está bloqueado para evitar una configuración engañosa.
+TCP/UDP mediante cliente de sistema ya usa puentes internos y streams/WebSocket persistentes para publicar servicios remotos detrás de NAT.
 
 ## Arquitectura
 
@@ -216,6 +216,22 @@ Los recursos HTTP/HTTPS se pueden suspender sin borrarlos. Pangolite conserva la
 
 Esto permite pausar un dominio de cliente sin perder su configuracion.
 
+
+## Auditoría y respaldos
+
+La sección **Seguridad** del panel centraliza dos tareas operativas:
+
+- **Auditoría:** registra cambios administrativos como crear/editar/eliminar proyectos, recursos, dominios, clientes NAT, rotar tokens, aplicar Traefik y crear respaldos. No guarda contraseñas ni tokens.
+- **Respaldos SQLite:** crea copias consistentes de la base con `VACUUM INTO` en `PANGOLITE_BACKUP_DIR` o, por defecto, `/opt/pangolite/data/backups`. El panel pide un prefijo opcional con el modal interno de confirmación; cancelar o presionar `Esc` no crea ningún respaldo.
+
+Para restaurar un respaldo, detén Pangolite, copia el archivo `.db` elegido sobre la base activa y vuelve a iniciar el servicio:
+
+```bash
+sudo systemctl stop pangolite
+sudo cp /opt/pangolite/data/backups/ARCHIVO.db /opt/pangolite/data/pangolite.db
+sudo systemctl start pangolite
+```
+
 ## Comandos útiles
 
 ```bash
@@ -250,6 +266,8 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 - Las operaciones administrativas requieren CSRF.
 - La contraseña temporal se elimina al cambiarla.
 - Los puertos públicos se validan antes de persistir recursos TCP/UDP.
+- Las acciones administrativas críticas quedan registradas en auditoría.
+- Los respaldos SQLite se crean con `VACUUM INTO` desde el panel de Seguridad.
 
 ## Diferencia entre cliente de sistema y recurso
 
