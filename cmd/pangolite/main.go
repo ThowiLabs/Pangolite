@@ -42,7 +42,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "smoke-backend":
 		return smokeBackend(args, stdout)
 	case "version":
-		fmt.Fprintln(stdout, "pangolite 0.3.0-system")
+		fmt.Fprintln(stdout, "pangolite "+app.Version)
 		return nil
 	case "help", "-h", "--help":
 		printHelp(stdout)

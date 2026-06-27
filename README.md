@@ -26,7 +26,7 @@ La base actual incluye:
 - Recursos TCP/UDP directos del host Pangolite.
 - Validación de puerto público contra recursos existentes y contra puertos ocupados en el sistema.
 - Suspension de recursos HTTP/HTTPS con respuesta 403, 404 o HTML personalizado basado en plantillas editables.
-- Instalación y configuración de Traefik del sistema desde `init.sh`.
+- Instalación desde releases con `install.sh`, con detección de sistema/init y configuración de Traefik del sistema.
 - Recarga automática de HTTP/HTTPS mediante file provider con `watch=true`.
 - Aplicación automática de cambios desde la UI; no se pide al usuario aplicar Traefik manualmente.
 
@@ -66,19 +66,32 @@ Servicio interno remoto
 
 Servidor Linux con:
 
-- `systemd`
-- `curl`
-- `tar`
-- Go >= 1.23, o internet para que `init.sh` descargue Go temporalmente.
-- Internet para que `init.sh` descargue Traefik si no está instalado.
+- Internet para descargar releases y Traefik si no está instalado.
+- `curl` o `wget`.
+- `tar` y `gzip`.
+- Un gestor de arranque compatible: `systemd`, `OpenRC`, `SysVinit` o `runit`.
 
-El instalador usa Go temporal si no encuentra una versión compatible y borra los archivos temporales al terminar.
+`install.sh` descarga binarios precompilados desde GitHub Releases; no necesita Go en el servidor final.
+
+`init.sh` queda como instalador de desarrollo/local porque compila desde el código fuente.
 
 ## Instalación rápida
 
+Última versión publicada:
+
 ```bash
-unzip pangolite-system.zip
-cd pangolite
+curl -fsSL https://raw.githubusercontent.com/thowilabs/pangolite/main/install.sh | sudo sh
+```
+
+Versión específica:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thowilabs/pangolite/main/install.sh | sudo sh -s -- --version 0.1
+```
+
+Desde un ZIP del código fuente, para desarrollo:
+
+```bash
 sudo bash init.sh
 ```
 
@@ -88,24 +101,34 @@ El panel arranca en la IP detectada por el instalador:
 http://<IP_DEL_SERVIDOR>:2424
 ```
 
-`init.sh` intenta detectar la IP publica real y la imprime al terminar. Si no puede, usa la IP local de salida como respaldo.
+`install.sh` intenta detectar la IP publica real y la imprime al terminar. Si no puede, usa la IP local de salida como respaldo.
 
 No hay redirección HTTPS inicial. La publicación por dominio/HTTPS se configura después desde Traefik y Pangolite.
 
 ## Ubicaciones
 
 ```text
-/opt/pangolite/pangolite                 Binario
+/opt/pangolite/pangolite                 Binario servidor
+/opt/pangolite/pangolite-client          Cliente local compatible con la arquitectura del servidor
+/opt/pangolite/public/                   Clientes publicados para descarga desde el panel
 /opt/pangolite/data/pangolite.db         SQLite
 /opt/pangolite/data/admin-password.txt   Contraseña temporal inicial
 /opt/pangolite/pangolite.env             Variables de entorno
-/etc/systemd/system/pangolite.service    Servicio systemd
 /etc/traefik/traefik.yml                 Config estática gestionada
 /etc/traefik/dynamic/pangolite-dashboard.yml Config dinámica del dashboard
 /etc/traefik/acme.json                   Certificados ACME
 ```
 
-Si `init.sh` encuentra `/etc/traefik/traefik.yml` existente y no fue generado por Pangolite, crea backup antes de escribir.
+El servicio se crea según el init detectado:
+
+```text
+systemd  -> /etc/systemd/system/pangolite.service
+OpenRC   -> /etc/init.d/pangolite + rc-update
+SysVinit -> /etc/init.d/pangolite + update-rc.d/chkconfig si existe
+runit    -> /etc/sv/pangolite + symlink a /var/service o /service
+```
+
+Si `install.sh` encuentra `/etc/traefik/traefik.yml` existente y no fue generado por Pangolite, crea backup antes de escribir.
 
 ## Primer acceso
 
@@ -125,6 +148,16 @@ También lo guarda en:
 Al iniciar sesión por primera vez, Pangolite obliga a cambiar la contraseña. La contraseña nueva debe tener mínimo 6 caracteres.
 
 Cuando se cambia la contraseña temporal, el archivo `admin-password.txt` se elimina automáticamente.
+
+## Releases
+
+El proyecto incluye un workflow manual en `.github/workflows/release.yml`.
+
+- Se ejecuta manualmente desde GitHub Actions.
+- Si se indica una versión, publica `vX.Y`.
+- Si se deja vacío, toma el último tag `vX.Y` e incrementa el número menor.
+- Genera paquetes `pangolite_linux_amd64.tar.gz`, `pangolite_linux_arm64.tar.gz`, `pangolite_linux_386.tar.gz` y `pangolite_linux_armv7.tar.gz`.
+- Publica `checksums.txt`.
 
 ## Configuración
 
@@ -323,7 +356,7 @@ El panel evita textos internos de desarrollo en la interfaz visible. El sidebar 
 
 ## Clientes NAT y túneles remotos
 
-Pangolite incluye un binario de cliente NAT independiente. El instalador principal compila y publica el cliente en:
+Pangolite incluye un binario de cliente NAT independiente. El instalador principal descarga y publica el cliente en:
 
 ```text
 /opt/pangolite/pangolite-client
@@ -359,7 +392,7 @@ Para recursos TCP/UDP remotos, Pangolite crea un puerto interno local de puente,
 
 Pangolite escribe eventos del panel en stdout y en un archivo persistente configurado por `PANGOLITE_LOG_FILE`.
 
-Por defecto, `init.sh` usa:
+Por defecto, `install.sh` usa binarios de release. Para desarrollo, `init.sh` usa:
 
 ```env
 PANGOLITE_LOG_FILE=/opt/pangolite/data/pangolite.log

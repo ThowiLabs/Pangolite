@@ -46,3 +46,18 @@ Internet -> Traefik UDP entrypoint -> Pangolite bridge 127.0.0.1:<tunnel_port> -
 ## Onboarding y proyecto inicial
 
 Las instalaciones nuevas no crean un proyecto por defecto. El panel muestra un onboarding cuando no hay proyectos registrados y guía al administrador para crear el primer proyecto antes de crear dominios, clientes de sistema o recursos. En instalaciones actualizadas, si existen recursos o agentes legados sin proyecto, se conserva un proyecto `default` solo para no perder asociaciones previas.
+
+## Instalación y releases
+
+El instalador principal es `install.sh`. A diferencia de `init.sh`, no compila en el servidor final: detecta el sistema, descarga el paquete adecuado desde GitHub Releases y crea servicios según el gestor de arranque disponible.
+
+Gestores soportados inicialmente:
+
+```text
+systemd  -> servicios .service
+OpenRC   -> scripts /etc/init.d + rc-update
+SysVinit -> scripts /etc/init.d + update-rc.d/chkconfig si existe
+runit    -> servicios /etc/sv + symlink a /var/service o /service
+```
+
+El workflow manual de releases genera paquetes Linux `amd64`, `arm64`, `386` y `armv7`, además de clientes descargables para Linux amd64 y Windows amd64.

@@ -284,7 +284,7 @@ func setAgentAuthHeader(h http.Header, cfg AgentClientConfig) {
 	h.Set("Authorization", "Bearer "+cfg.Token)
 	h.Set("X-Pangolite-Agent", cfg.AgentID)
 	h.Set("User-Agent", "pangolite-client/0.5")
-	h.Set("X-Pangolite-Client-Version", "0.5")
+	h.Set("X-Pangolite-Client-Version", Version)
 	h.Set("X-Pangolite-Client-OS", runtime.GOOS)
 	h.Set("X-Pangolite-Client-Arch", runtime.GOARCH)
 	if hn, err := os.Hostname(); err == nil {

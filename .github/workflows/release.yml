@@ -1,0 +1,142 @@
+name: Release manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version a publicar. Si se deja vacio, incrementa el ultimo tag vX.Y a vX.(Y+1). Ejemplo: 0.1"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Crear release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolver version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          input="${{ github.event.inputs.version }}"
+          input="${input#v}"
+          if [[ -n "$input" ]]; then
+            if [[ ! "$input" =~ ^[0-9]+\.[0-9]+$ ]]; then
+              echo "Version invalida: $input. Usa formato X.Y, ejemplo 0.1" >&2
+              exit 1
+            fi
+            version="$input"
+          else
+            latest="$(git tag --list 'v[0-9]*.[0-9]*' | sed 's/^v//' | sort -V | tail -n 1 || true)"
+            if [[ -z "$latest" ]]; then
+              version="0.1"
+            else
+              major="${latest%%.*}"
+              minor="${latest#*.}"
+              version="${major}.$((minor + 1))"
+            fi
+          fi
+          tag="v${version}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "El tag $tag ya existe" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publicando $tag"
+
+      - name: Pruebas
+        run: go test ./...
+
+      - name: Compilar paquetes
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist build/public
+          LDFLAGS="-s -w -X github.com/thowilabs/pangolite/internal/app.Version=${VERSION}"
+
+          build_bin() {
+            local goos="$1"
+            local goarch="$2"
+            local goarm="${3:-}"
+            local pkg="$4"
+            local out="$5"
+            echo "::group::build ${pkg} ${goos}/${goarch}${goarm:+/v$goarm}"
+            env GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" CGO_ENABLED=0 \
+              go build -buildvcs=false -trimpath -ldflags="$LDFLAGS" -o "$out" "$pkg"
+            echo "::endgroup::"
+          }
+
+          build_bin linux amd64 "" ./cmd/pangolite-client build/public/pangolite-client-linux-amd64
+          build_bin windows amd64 "" ./cmd/pangolite-client build/public/pangolite-client-windows-amd64.exe
+
+          package_linux() {
+            local arch="$1"
+            local goarch="$2"
+            local goarm="${3:-}"
+            local name="pangolite_linux_${arch}"
+            local pkgdir="build/${name}"
+            rm -rf "$pkgdir"
+            mkdir -p "$pkgdir/public"
+            build_bin linux "$goarch" "$goarm" ./cmd/pangolite "$pkgdir/pangolite"
+            build_bin linux "$goarch" "$goarm" ./cmd/pangolite-client "$pkgdir/pangolite-client"
+            cp build/public/pangolite-client-linux-amd64 "$pkgdir/public/pangolite-client-linux-amd64"
+            cp build/public/pangolite-client-windows-amd64.exe "$pkgdir/public/pangolite-client-windows-amd64.exe"
+            cp install.sh README.md LICENSE "$pkgdir/"
+            printf '%s\n' "$VERSION" > "$pkgdir/VERSION"
+            tar -C "$pkgdir" -czf "dist/${name}.tar.gz" .
+          }
+
+          package_linux amd64 amd64
+          package_linux arm64 arm64
+          package_linux 386 386
+          package_linux armv7 arm 7
+
+          cp build/public/pangolite-client-linux-amd64 dist/pangolite-client_linux_amd64
+          cp build/public/pangolite-client-windows-amd64.exe dist/pangolite-client_windows_amd64.exe
+          (cd dist && sha256sum * > checksums.txt)
+
+      - name: Notas del release
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject="$(git log -1 --pretty=%s)"
+          sha="$(git rev-parse --short HEAD)"
+          {
+            echo "Release ${{ steps.version.outputs.tag }}"
+            echo
+            echo "Ultimo commit incluido:"
+            echo "- ${sha} ${subject}"
+            echo
+            echo "Binarios incluidos:"
+            echo "- Linux amd64"
+            echo "- Linux arm64"
+            echo "- Linux 386"
+            echo "- Linux armv7"
+            echo "- Cliente Linux amd64"
+            echo "- Cliente Windows amd64"
+          } > release-notes.md
+
+      - name: Crear release en GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" dist/* \
+            --title "Pangolite ${{ steps.version.outputs.tag }}" \
+            --notes-file release-notes.md
