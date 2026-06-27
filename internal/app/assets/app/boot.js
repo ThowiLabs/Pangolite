@@ -1,0 +1,1 @@
+initShellControls();$('logoutBtn').addEventListener('click',async()=>{await api('/api/logout',{method:'POST',body:'{}'});location.href='/login'});setupForms();syncMode();syncOrigin();syncProtectionFields();syncEditProtectionFields();init().catch(e=>msg(e.message,true));

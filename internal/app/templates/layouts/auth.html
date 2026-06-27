@@ -1,0 +1,19 @@
+{{define "auth_layout"}}<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" href="/assets/app/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/assets/app/logo-mark.png">
+  <link rel="stylesheet" href="/assets/app/styles.css">
+  <link rel="stylesheet" href="/assets/app/auth.css">
+</head>
+<body class="auth-shell">
+  <main class="auth-wrap">
+    {{template "auth_content" .}}
+    {{template "footer" .}}
+  </main>
+  <script src="{{.ScriptPath}}"></script>
+</body>
+</html>{{end}}

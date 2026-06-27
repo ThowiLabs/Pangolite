@@ -1,0 +1,35 @@
+{{define "page_content"}}
+<section id="view-project" class="route-view active">
+  <div class="hero"><h1 id="projectHeroTitle">{{if .HasProject}}{{.CurrentProject.Name}}{{else}}Proyecto{{end}}</h1><p id="projectHeroText">{{if .HasProject}}{{if .CurrentProject.Notes}}{{.CurrentProject.Notes}}{{else}}Recursos y agentes separados por proyecto.{{end}}{{else}}Proyecto no encontrado.{{end}}</p></div>
+  <div class="grid grid-3 mb-3">
+    <div class="stat"><div class="stat-label">Recursos del proyecto</div><div class="stat-value" id="projectResourceCount">{{len .Resources}}</div></div>
+    <div class="stat"><div class="stat-label">Clientes de sistema</div><div class="stat-value" id="projectAgentCount">{{len .Agents}}</div></div>
+    <div class="stat"><div class="stat-label">Activos</div><div class="stat-value" id="projectActiveCount">{{projectStats .Stats .CurrentID "activeResources"}}</div></div>
+  </div>
+  <div class="card mb-3"><div class="card-header d-flex justify-content-between align-items-center"><div><div class="card-title">Acciones rapidas</div><div class="text-muted small">Gestión separada: primero clientes de sistema, después recursos publicados.</div></div><button class="btn btn-help" onclick="showHelp('Proyecto','Cliente de sistema/agente es la identidad instalada en un servidor NAT. Recurso es lo que publicas: web, TCP o UDP. Separarlos evita confundir token de conexion con dominio o puerto expuesto.')"><i class="bi bi-question"></i></button></div><div class="card-body d-flex flex-wrap gap-2"><a id="goCreateResource" class="btn btn-primary" href="/projects/{{.CurrentID}}/resources/create"><i class="bi bi-diagram-3"></i> Crear recurso</a><a id="goCreateAgent" class="btn btn-outline-secondary" href="/projects/{{.CurrentID}}/agents/create"><i class="bi bi-hdd-network"></i> Crear cliente de sistema</a><a id="goResources" class="btn btn-outline-secondary" href="/projects/{{.CurrentID}}/resources"><i class="bi bi-list-ul"></i> Ver recursos</a><a id="goAgents" class="btn btn-outline-secondary" href="/projects/{{.CurrentID}}/agents"><i class="bi bi-router"></i> Ver clientes de sistema</a></div></div>
+  <div class="project-settings-stack mb-3">
+    <div class="card project-config-card"><div class="card-header"><div class="card-title">Configuración del proyecto</div><div class="text-muted small">Renombra el proyecto y actualiza su descripción operativa.</div></div><div class="card-body"><form id="projectSettingsForm"><label class="form-label" for="projectEditName">Nombre</label><input id="projectEditName" class="form-control mb-3" value="{{.CurrentProject.Name}}" required><label class="form-label" for="projectEditNotes">Descripción</label><textarea id="projectEditNotes" class="form-control mb-3" rows="4" placeholder="Descripción, responsable y notas de operación del proyecto">{{.CurrentProject.Notes}}</textarea><button class="btn btn-primary" type="submit"><i class="bi bi-save"></i> Guardar proyecto</button></form></div></div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card"><div class="card-header"><div class="card-title">Recursos recientes</div></div><div class="card-body table-responsive"><table class="table"><thead><tr><th>Estado</th><th>Tipo</th><th>Nombre</th><th>Entrada</th></tr></thead><tbody id="projectResourceRows">
+      {{if .Resources}}
+        {{range .Resources}}
+        <tr><td><span class="state-pill {{if .Enabled}}on{{else}}off{{end}}"><span class="status-dot {{if .Enabled}}ok{{end}}"></span><span>{{resourceStatusText .}}</span></span></td><td>{{resourceModeLabel .Mode}}</td><td>{{.Name}}</td><td class="font-mono">{{resourceEntry .}}</td></tr>
+        {{end}}
+      {{else}}
+        <tr><td class="empty" colspan="4">Sin recursos todavía.</td></tr>
+      {{end}}
+    </tbody></table></div></div>
+    <div class="card"><div class="card-header"><div class="card-title">Agentes</div></div><div class="card-body table-responsive"><table class="table"><thead><tr><th>Estado</th><th>Nombre</th><th>Ultima vez</th></tr></thead><tbody id="projectAgentRows">
+      {{if .Agents}}
+        {{range .Agents}}
+        <tr><td><span class="state-pill {{agentStateClass .}}"><span class="status-dot {{if .Online}}ok{{end}}"></span><span>{{agentStateText .}}</span></span></td><td>{{.Name}}</td><td>{{fmtTime .LastSeen}}</td></tr>
+        {{end}}
+      {{else}}
+        <tr><td class="empty" colspan="3">Sin clientes de sistema todavía.</td></tr>
+      {{end}}
+    </tbody></table></div></div>
+  </div>
+  <div class="card danger-zone danger-zone-compact mt-3"><div class="card-header"><div class="card-title">Zona de peligro</div><div class="text-muted small">Acciones irreversibles del proyecto seleccionado.</div></div><div class="card-body danger-zone-body"><p class="danger-note" id="projectDangerHint">{{if or .Resources .Agents}}Para eliminar este proyecto primero debe quedar sin recursos ni clientes de sistema. Actual: {{len .Resources}} recurso(s), {{len .Agents}} cliente(s) de sistema.{{else}}El proyecto no tiene recursos ni clientes de sistema. Puedes eliminarlo si ya no se usa.{{end}}</p><button id="deleteProjectBtn" class="btn btn-outline-danger" type="button" onclick="deleteCurrentProject()" {{if or .Resources .Agents}}disabled title="Elimina primero recursos y clientes de sistema vinculados."{{end}}><i class="bi bi-trash3"></i> Eliminar proyecto</button></div></div>
+</section>
+{{end}}

@@ -2,10 +2,12 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -148,7 +150,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	writeHTML(w, loginHTML)
+	renderUIPage(w, "login.html", uiPageData{Title: "Pangolite - Iniciar sesion", Heading: "Pangolite", Subtitle: "Panel seguro de proxys y agentes", ScriptPath: "/assets/app/login.js"})
 }
 
 func (s *Server) passwordPage(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +158,7 @@ func (s *Server) passwordPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
-	writeHTML(w, passwordHTML)
+	renderUIPage(w, "password.html", uiPageData{Title: "Pangolite - Cambiar contraseña", Heading: "Cambiar contraseña", Subtitle: "Reemplaza la contraseña temporal antes de administrar el panel.", ScriptPath: "/assets/app/password.js"})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -1338,7 +1340,7 @@ func (s *Server) publicOrIndex(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/password", http.StatusFound)
 		return
 	}
-	s.index(w, r)
+	s.index(w, r, rs)
 }
 
 func (s *Server) serveDisabledResource(w http.ResponseWriter, r *http.Request, resource Resource) {
@@ -1374,20 +1376,34 @@ func (s *Server) serveDisabledResource(w http.ResponseWriter, r *http.Request, r
 	}
 }
 
+type publicResourcePageData struct {
+	Status       int
+	ResourceName string
+	Domain       string
+	Message      string
+	Action       string
+}
+
+func renderPublicResourceHTML(page string, data publicResourcePageData) string {
+	t, err := template.ParseFS(templatesFS, "templates/public/"+page)
+	if err != nil {
+		return ""
+	}
+	var b bytes.Buffer
+	if err := t.ExecuteTemplate(&b, "public_page", data); err != nil {
+		return ""
+	}
+	return b.String()
+}
+
 func defaultDisabledHTML(name string, status int) string {
 	if strings.TrimSpace(name) == "" {
 		name = "Servicio no disponible"
 	}
-	return fmt.Sprintf(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%d - Servicio no disponible</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,Segoe UI,Arial,sans-serif}.card{max-width:560px;margin:24px;padding:28px;border:1px solid rgba(255,255,255,.18);border-radius:16px;background:rgba(255,255,255,.08)}.k{color:#afafaf;font-size:14px}.h{font-size:24px;font-weight:780;margin:8px 0}.p{color:#cdcdcd}</style></head><body><main class="card"><div class="k">Codigo %d</div><h1 class="h">%s</h1><p class="p">Este recurso se encuentra temporalmente deshabilitado.</p></main></body></html>`, status, status, htmlEscape(name))
-}
-
-func htmlEscape(value string) string {
-	value = strings.ReplaceAll(value, "&", "&amp;")
-	value = strings.ReplaceAll(value, "<", "&lt;")
-	value = strings.ReplaceAll(value, ">", "&gt;")
-	value = strings.ReplaceAll(value, `"`, "&quot;")
-	value = strings.ReplaceAll(value, "'", "&#39;")
-	return value
+	if htmlText := renderPublicResourceHTML("disabled_default.html", publicResourcePageData{Status: status, ResourceName: name}); strings.TrimSpace(htmlText) != "" {
+		return htmlText
+	}
+	return fmt.Sprintf("%d - %s", status, name)
 }
 
 func (s *Server) ensureResourceAccess(w http.ResponseWriter, r *http.Request, resource Resource) bool {
@@ -1464,7 +1480,7 @@ func (s *Server) serveResourcePasswordLogin(w http.ResponseWriter, r *http.Reque
 	if message != "" {
 		msg = message
 	}
-	_, _ = w.Write([]byte(fmt.Sprintf(resourceLoginHTML, htmlEscape(resource.Name), htmlEscape(resource.Domain), htmlEscape(msg), htmlEscape(r.URL.Path))))
+	_, _ = w.Write([]byte(renderPublicResourceHTML("resource_password.html", publicResourcePageData{ResourceName: resource.Name, Domain: resource.Domain, Message: msg, Action: r.URL.Path})))
 }
 
 func (s *Server) serveResourceSessionLogin(w http.ResponseWriter, r *http.Request, resource Resource) {
@@ -1473,7 +1489,7 @@ func (s *Server) serveResourceSessionLogin(w http.ResponseWriter, r *http.Reques
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write([]byte(fmt.Sprintf(resourceSessionHTML, htmlEscape(resource.Name), htmlEscape(resource.Domain))))
+	_, _ = w.Write([]byte(renderPublicResourceHTML("resource_session.html", publicResourcePageData{ResourceName: resource.Name, Domain: resource.Domain})))
 }
 
 func (s *Server) proxyLocalResource(w http.ResponseWriter, r *http.Request, resource Resource) {
@@ -1512,10 +1528,6 @@ func forwardedProto(r *http.Request) string {
 	}
 	return "http"
 }
-
-const resourceLoginHTML = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Recurso protegido</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:-apple-system,system-ui,Segoe UI,Arial,sans-serif}.card{width:min(440px,calc(100vw - 32px));padding:30px;border:1px solid rgba(255,255,255,.16);border-radius:22px;background:rgba(255,255,255,.08);box-shadow:0 24px 70px rgba(0,0,0,.42)}p{color:#cbd5e1}.muted{font-size:13px;color:#94a3b8}.input{box-sizing:border-box;width:100%%;padding:13px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:#050505;color:#fff}.btn{margin-top:14px;width:100%%;padding:13px;border:0;border-radius:12px;background:linear-gradient(135deg,#8b5cf6,#22d3ee);color:#fff;font-weight:800}</style></head><body><main class="card"><div class="muted">%s · %s</div><h1>Recurso protegido</h1><p>%s</p><form method="post" action="%s"><input class="input" type="password" name="pangolite_resource_password" autocomplete="current-password" placeholder="Contraseña" autofocus required><button class="btn" type="submit">Entrar</button></form></main></body></html>`
-
-const resourceSessionHTML = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sesión requerida</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:-apple-system,system-ui,Segoe UI,Arial,sans-serif}.card{width:min(460px,calc(100vw - 32px));padding:30px;border:1px solid rgba(255,255,255,.16);border-radius:22px;background:rgba(255,255,255,.08);box-shadow:0 24px 70px rgba(0,0,0,.42)}p{color:#cbd5e1}.muted{font-size:13px;color:#94a3b8}.btn{display:inline-block;margin-top:14px;padding:13px 18px;border-radius:12px;background:linear-gradient(135deg,#8b5cf6,#22d3ee);color:#fff;text-decoration:none;font-weight:800}</style></head><body><main class="card"><div class="muted">%s · %s</div><h1>Sesión Pangolite requerida</h1><p>Este recurso solo está disponible para usuarios con sesión iniciada en Pangolite desde este dominio.</p><a class="btn" href="/login">Iniciar sesión</a></main></body></html>`
 
 func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource Resource) {
 	defer r.Body.Close()
@@ -1645,8 +1657,9 @@ func (s *Server) secureCookie(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
-	writeHTML(w, appHTML)
+func (s *Server) index(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	page := panelPageForPath(r.URL.Path)
+	renderUIPage(w, page.Template, s.panelData(r, rs))
 }
 
 type statusRecorder struct {

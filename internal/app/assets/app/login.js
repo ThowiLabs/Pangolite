@@ -1,0 +1,3 @@
+const msg=document.getElementById('msg');
+function show(t,bad=true){msg.className='alert '+(bad?'alert-danger':'alert-success');msg.textContent=t;msg.classList.remove('d-none')}
+document.getElementById('loginForm').addEventListener('submit',async e=>{e.preventDefault();msg.classList.add('d-none');try{const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username.value,password:password.value})});const data=await res.json();if(!res.ok)throw new Error(data.error||'No se pudo iniciar sesion');location.href=(data.user&&data.user.forcePasswordChange)?'/password':'/'}catch(err){show(err.message)}})

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -197,39 +198,20 @@ func templateNameFromHTML(id, content string) string {
 }
 
 func defaultSuspensionTemplates() map[string]string {
-	return map[string]string{
-		"payment": `<!doctype html>
-<html lang="es">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pago pendiente</title></head>
-<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0b10;color:#fff;font-family:system-ui,Arial,sans-serif">
-  <main style="max-width:680px;margin:24px;padding:36px;border:1px solid rgba(255,255,255,.16);border-radius:24px;background:#14141d">
-    <p style="color:#9ca3af;margin:0 0 8px">$nombredominio · Código $codigo</p>
-    <h1 style="margin:0 0 12px">Servicio suspendido temporalmente</h1>
-    <p style="color:#d1d5db">El recurso $nombrerecurso del proyecto $proyecto está pausado por pago pendiente.</p>
-  </main>
-</body>
-</html>`,
-		"maintenance": `<!doctype html>
-<html lang="es">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mantenimiento</title></head>
-<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#07111f;color:#fff;font-family:system-ui,Arial,sans-serif">
-  <main style="max-width:680px;margin:24px;padding:36px;border:1px solid rgba(255,255,255,.16);border-radius:24px;background:#111827">
-    <p style="color:#93c5fd;margin:0 0 8px">$nombredominio</p>
-    <h1 style="margin:0 0 12px">Mantenimiento programado</h1>
-    <p style="color:#d1d5db">$motivo. Fecha: $fecha.</p>
-  </main>
-</body>
-</html>`,
-		"suspended": `<!doctype html>
-<html lang="es">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Servicio suspendido</title></head>
-<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:system-ui,Arial,sans-serif">
-  <main style="max-width:680px;margin:24px;padding:36px;border:1px solid rgba(255,255,255,.16);border-radius:24px;background:#111">
-    <p style="color:#a1a1aa;margin:0 0 8px">$nombredominio · $proyecto</p>
-    <h1 style="margin:0 0 12px">Servicio no disponible</h1>
-    <p style="color:#d4d4d8">Este recurso fue suspendido por el administrador de la plataforma.</p>
-  </main>
-</body>
-</html>`,
+	out := map[string]string{}
+	entries, err := fs.Glob(templatesFS, "templates/suspension_defaults/*.html")
+	if err != nil {
+		return out
 	}
+	for _, entry := range entries {
+		b, err := templatesFS.ReadFile(entry)
+		if err != nil {
+			continue
+		}
+		id := strings.TrimSuffix(filepath.Base(entry), ".html")
+		if templateIDRe.MatchString(id) {
+			out[id] = string(b)
+		}
+	}
+	return out
 }

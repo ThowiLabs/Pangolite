@@ -1,0 +1,26 @@
+{{define "page_content"}}
+<section id="view-logs" class="route-view active">
+  <div class="hero"><h1>Logs del sistema</h1><p>Ultimos eventos del panel, validaciones de puertos, errores API, Traefik y clientes de sistema. El archivo se mantiene en maximo 1000 entradas para evitar crecimiento indefinido.</p></div>
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <div>
+        <div class="card-title">Diagnostico operativo</div>
+        <div id="logsPath" class="log-path">Archivo: {{if .LogPath}}{{.LogPath}}{{else}}no configurado{{end}} · maximo {{.MaxLogEntries}} entradas</div>
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-secondary" onclick="loadLogs()"><i class="bi bi-arrow-clockwise"></i> Actualizar</button>
+        <button class="btn btn-outline-secondary" onclick="copyLogs(this)"><i class="bi bi-clipboard"></i> Copiar</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div id="logsBox" class="log-view font-mono">
+        {{if .LogLines}}
+          {{range .LogLines}}<span class="{{logLineClass .}}">{{.}}</span>{{end}}
+        {{else}}
+          Sin eventos registrados todavia.
+        {{end}}
+      </div>
+    </div>
+  </div>
+</section>
+{{end}}

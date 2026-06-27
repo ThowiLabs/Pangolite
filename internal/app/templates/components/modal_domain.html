@@ -1,0 +1,3 @@
+{{define "domain_modal"}}
+<div class="modal-lite" id="domainModal"><div class="modal-card"><div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><h2 class="h5 text-white">Agregar dominio</h2><p class="text-muted mb-0">Registra domain.tld o un subdominio base controlado por el panel.</p></div><button class="btn btn-outline-secondary" onclick="closeDomainModal()"><i class="bi bi-x-lg"></i> Cerrar</button></div><form id="domainForm"><label class="form-label" for="managedDomainInput">Dominio</label><input class="form-control mb-3" id="managedDomainInput" placeholder="midominio.com" required><button class="btn btn-primary" type="submit"><i class="bi bi-plus-circle"></i> Agregar dominio</button></form></div></div>
+{{end}}

@@ -517,3 +517,17 @@ Los releases incluyen clientes para:
 - Linux 386
 - Linux armv7
 - Windows amd64
+
+## Frontend del panel
+
+El panel ya no vive como un string gigante dentro de `internal/app/ui.go`. La interfaz se organiza en templates Go embebidos y assets estáticos:
+
+```txt
+internal/app/templates/layouts/
+internal/app/templates/components/
+internal/app/templates/pages/
+internal/app/assets/app/
+```
+
+La navegación principal usa rutas normales del servidor (`/projects`, `/projects/{id}/resources`, `/settings`, etc.). No requiere Node, Vite ni bundler; el binario sigue siendo autocontenido mediante `embed.FS`.
+

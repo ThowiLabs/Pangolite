@@ -1,0 +1,85 @@
+{{define "panel_layout"}}<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" href="/assets/app/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/assets/app/logo-mark.png">
+  <link rel="stylesheet" href="/assets/app/styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/animate.css@4.1.1/animate.min.css">
+  <link rel="stylesheet" href="/assets/app/panel.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div class="app">
+  <button class="global-sidebar-toggle" type="button" id="sidebarToggle" aria-label="Ocultar o mostrar menu" aria-controls="panelSidebar" aria-expanded="true" title="Menu">
+    <i class="bi bi-list" aria-hidden="true"></i>
+  </button>
+  <aside class="sidebar" id="panelSidebar" aria-label="Navegacion principal">
+    <div class="brand"><img class="brand-logo" src="/assets/app/logo-mark.png" alt="Pangolite"><div><div class="brand-title">Pangolite</div><div class="brand-sub">Edge Platform</div></div></div>
+    <nav class="nav-section project-primary">
+      <div class="nav-title">Proyecto activo</div>
+      <div class="project-switcher" id="projectSwitcher">
+        <button class="btn project-switcher-button" type="button" id="projectSwitcherButton" onclick="toggleProjectSwitcher()"><span><i class="bi bi-folder2-open"></i> <span id="currentProjectLabel">{{if .HasProject}}{{.CurrentProject.Name}}{{else}}Selecciona proyecto{{end}}</span></span><i class="bi bi-chevron-down"></i></button>
+        <div class="project-switcher-menu" id="projectSwitcherMenu">
+          <input id="projectSearch" class="form-control form-control-sm" placeholder="Buscar proyecto..." autocomplete="off">
+          <div id="projectNav" class="project-results" role="listbox" aria-label="Resultados de proyectos">
+            {{if .Projects}}
+              {{range .Projects}}
+              <button class="project-result {{if eq $.CurrentID .ID}}active{{end}}" type="button" data-project-nav="{{.ID}}" onclick="location.href='/projects/{{.ID}}'">
+                <span><span class="fw-semibold">{{.Name}}</span><div class="project-meta">{{.Slug}} · {{projectStats $.Stats .ID "resources"}} recursos · {{projectStats $.Stats .ID "agents"}} agentes</div></span><i class="bi bi-arrow-right-short" aria-hidden="true"></i>
+              </button>
+              {{end}}
+            {{else}}
+              <div class="empty">Sin proyectos todavía</div>
+            {{end}}
+          </div>
+        </div>
+      </div>
+      <div class="main-layout-note mt-2 px-2">Selecciona primero un proyecto. Todo lo demás depende del proyecto activo.</div>
+    </nav>
+    <nav class="nav-section">
+      <div class="nav-title">Panel</div>
+      <a class="nav-link {{if eq .PageKey "projects"}}active{{end}}" href="/projects" data-nav="projects"><i class="bi bi-speedometer2"></i><span>Dashboard</span></a>
+      <a class="nav-link {{if eq .PageKey "logs"}}active{{end}}" href="/logs" data-nav="logs"><i class="bi bi-journal-text"></i><span>Logs</span></a>
+      <a class="nav-link {{if eq .PageKey "maintenance"}}active{{end}}" href="/maintenance" data-nav="maintenance"><i class="bi bi-shield-check"></i><span>Seguridad</span></a>
+      <a class="nav-link {{if eq .PageKey "settings"}}active{{end}}" href="/settings" data-nav="settings"><i class="bi bi-sliders"></i><span>Ajustes</span></a>
+    </nav>
+    <div class="side-footer"><div class="product-mini"><span class="product-status-dot"></span><div><div class="fw-semibold text-white">Sistema operativo</div><div>Dominios, túneles y recursos bajo control.</div></div></div></div>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <div class="topbar-heading">
+        <div class="crumb" id="crumb">{{.Crumb}}</div>
+        <div class="page-title" id="topTitle">{{.PageHeading}}</div>
+      </div>
+      <div class="top-user"><span id="userLabel" class="text-muted">{{.Username}}</span><button class="btn btn-sm btn-outline-secondary" id="logoutBtn"><i class="bi bi-box-arrow-right"></i> <span class="logout-label">Cerrar sesion</span></button></div>
+    </div>
+    <div id="msg" class="alert d-none" role="alert"></div>
+    <div class="main-content" id="mainContent" tabindex="-1">
+      {{template "page_content" .}}
+    </div>
+    {{template "panel_footer" .}}
+  </main>
+</div>
+
+  {{template "panel_modals" .}}
+  {{template "client_templates" .}}
+  <script id="appBootstrap" type="application/json">{{.BootstrapJSON}}</script>
+  <script src="/assets/app/core.js"></script>
+  <script src="/assets/app/templates.js"></script>
+  <script src="/assets/app/modals.js"></script>
+  <script src="/assets/app/settings.js"></script>
+  <script src="/assets/app/logs.js"></script>
+  <script src="/assets/app/maintenance.js"></script>
+  <script src="/assets/app/projects.js"></script>
+  <script src="/assets/app/resources.js"></script>
+  <script src="/assets/app/agents.js"></script>
+  <script src="/assets/app/forms.js"></script>
+  <script src="/assets/app/boot.js"></script>
+</body>
+</html>{{end}}
+{{define "page"}}{{template "panel_layout" .}}{{end}}

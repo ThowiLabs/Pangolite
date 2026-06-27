@@ -86,3 +86,17 @@ Los releases publican clientes descargables para Linux amd64, arm64, 386, armv7 
 ### Aplicación de cambios por gestor de servicios
 
 Pangolite detecta el gestor de servicios disponible en runtime. En sistemas con systemd usa `systemctl`; en Alpine/OpenRC usa `rc-service`; en SysVinit usa `service` o `/etc/init.d`; y en runit usa `sv`. Los cambios HTTP/HTTPS siguen entrando por configuración dinámica de Traefik sin reinicio. Los cambios que agregan o eliminan entrypoints TCP/UDP requieren reinicio controlado de Traefik porque esos puertos forman parte de la configuración estática.
+
+## Frontend del panel
+
+El panel ya no vive como un string gigante dentro de `internal/app/ui.go`. La interfaz se organiza en templates Go embebidos y assets estáticos:
+
+```txt
+internal/app/templates/layouts/
+internal/app/templates/components/
+internal/app/templates/pages/
+internal/app/assets/app/
+```
+
+La navegación principal usa rutas normales del servidor (`/projects`, `/projects/{id}/resources`, `/settings`, etc.). No requiere Node, Vite ni bundler; el binario sigue siendo autocontenido mediante `embed.FS`.
+

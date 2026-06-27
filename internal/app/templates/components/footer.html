@@ -1,0 +1,8 @@
+{{define "footer_link"}}Creado con amor por <a href="https://thowilabs.com/opensource/" target="_blank" rel="noopener noreferrer">ThowiLabs</a>.{{end}}
+{{define "auth_footer"}}
+<div class="auth-footer">{{template "footer_link" .}}</div>
+{{end}}
+{{define "panel_footer"}}
+<footer class="app-footer">{{template "footer_link" .}}</footer>
+{{end}}
+{{define "footer"}}{{template "auth_footer" .}}{{end}}

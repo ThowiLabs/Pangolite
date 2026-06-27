@@ -1,0 +1,17 @@
+{{define "public_page"}}<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sesión requerida</title>
+  <link rel="stylesheet" href="/assets/app/public-resource.css">
+</head>
+<body>
+  <main class="public-card public-card-md">
+    <div class="public-muted">{{.ResourceName}} · {{.Domain}}</div>
+    <h1>Sesión Pangolite requerida</h1>
+    <p>Este recurso solo está disponible para usuarios con sesión iniciada en Pangolite desde este dominio.</p>
+    <a class="public-btn public-link-btn" href="/login">Iniciar sesión</a>
+  </main>
+</body>
+</html>{{end}}

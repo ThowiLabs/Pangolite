@@ -1,0 +1,47 @@
+{{define "client_templates"}}
+<template id="tpl-copy-button"><button class="btn btn-sm btn-outline-secondary copy-btn" type="button"><i class="bi bi-clipboard" aria-hidden="true"></i> <span data-slot="label">Copiar</span></button></template>
+<template id="tpl-command-card"><div class="command-card"><div class="command-head"><span data-slot="title"></span><span data-slot="button"></span></div><pre><code data-slot="command"></code></pre></div></template>
+<template id="tpl-secret-row"><div class="secret-row"><div><div class="text-muted small" data-slot="label"></div><code data-slot="value"></code></div><span data-slot="button"></span></div></template>
+<template id="tpl-log-line"><span class="log-line"></span></template>
+<template id="tpl-empty"><div class="empty"></div></template>
+<template id="tpl-empty-row"><tr><td class="empty" data-slot="message"></td></tr></template>
+<template id="tpl-state-pill"><span class="state-pill"><span class="status-dot" aria-hidden="true"></span><span data-slot="text"></span></span></template>
+<template id="tpl-resource-tag"><span class="resource-tag" data-slot="text"></span></template>
+<template id="tpl-action-button"><button class="btn btn-sm" type="button"><i class="bi" aria-hidden="true"></i> <span data-slot="label"></span></button></template>
+<template id="tpl-icon-link"><a class="btn btn-sm" href="#"><i class="bi" aria-hidden="true"></i> <span data-slot="label"></span></a></template>
+<template id="tpl-download-link"><a class="btn btn-sm btn-outline-secondary" download href="#"><i class="bi bi-download" aria-hidden="true"></i> <span data-slot="label">Descargar</span></a></template>
+
+<template id="tpl-project-nav-item"><button class="project-result" type="button"><span><span class="fw-semibold" data-slot="name"></span><div class="project-meta" data-slot="meta"></div></span><i class="bi bi-arrow-right-short" aria-hidden="true"></i></button></template>
+<template id="tpl-project-row"><tr><td data-slot="state"></td><td class="fw-semibold text-white" data-slot="name"></td><td class="font-mono" data-slot="slug"></td><td data-slot="resources"></td><td data-slot="agents"></td><td data-slot="active"></td><td class="text-end"><span data-slot="actions"></span></td></tr></template>
+<template id="tpl-domain-row"><tr><td class="font-mono text-white" data-slot="domain"></td><td data-slot="state"></td><td data-slot="created"></td><td class="text-end"><span data-slot="actions"></span></td></tr></template>
+<template id="tpl-project-resource-row"><tr><td data-slot="state"></td><td data-slot="type"></td><td data-slot="name"></td><td class="font-mono" data-slot="entry"></td></tr></template>
+<template id="tpl-project-agent-row"><tr><td data-slot="state"></td><td data-slot="name"></td><td data-slot="lastSeen"></td></tr></template>
+
+<template id="tpl-resource-row"><tr class="resource-row"><td data-label="Recurso"><div class="resource-name" data-slot="name"></div><div class="resource-tags" data-slot="tags"></div></td><td data-label="Entrada" class="font-mono resource-entry" data-slot="entry"></td><td data-label="Backend" class="font-mono" data-slot="backend"></td><td data-label="Origen" data-slot="origin"></td><td data-label="Cliente de sistema" data-slot="agent"></td><td data-label="Acciones" class="text-end"><span class="resource-actions" data-slot="actions"></span></td></tr></template>
+<template id="tpl-agent-row"><tr><td data-slot="state"></td><td class="fw-semibold" data-slot="name"></td><td class="font-mono" data-slot="id"></td><td><span data-slot="system"></span><div class="project-meta" data-slot="meta"></div></td><td data-slot="resources"></td><td data-slot="lastSeen"></td><td class="text-end"><span class="agent-actions" data-slot="actions"></span></td></tr></template>
+
+<template id="tpl-audit-table"><table class="table"><thead><tr><th>Fecha</th><th>Acción</th><th>Entidad</th><th>Usuario</th><th>Detalle</th></tr></thead><tbody data-slot="body"></tbody></table></template>
+<template id="tpl-audit-row"><tr><td class="font-mono" data-slot="date"></td><td data-slot="action"></td><td><span class="font-mono" data-slot="entityType"></span><div class="text-muted small font-mono" data-slot="entityId"></div></td><td data-slot="username"></td><td class="small" data-slot="detail"></td></tr></template>
+<template id="tpl-backup-table"><table class="table"><thead><tr><th>Archivo</th><th>Tamaño</th><th>Creado</th><th class="text-end">Acciones</th></tr></thead><tbody data-slot="body"></tbody></table></template>
+<template id="tpl-backup-row"><tr><td class="font-mono" data-slot="name"></td><td data-slot="size"></td><td class="font-mono" data-slot="created"></td><td class="text-end"><span data-slot="actions"></span></td></tr></template>
+
+<template id="tpl-agent-credentials"><div class="command-stack agent-credentials"><div class="secret-grid" data-slot="secrets"></div><div data-slot="osSelect"></div><div data-slot="linux"></div><div data-slot="windows"></div></div></template>
+<template id="tpl-agent-os-select"><div class="pl-callout pl-secondary"><label class="form-label">Sistema operativo para comandos</label><select class="form-select agent-os-command-select"><option value="linux">Linux / systemd / OpenRC</option><option value="windows">Windows / PowerShell</option></select><div class="form-text mt-2" data-agent-os-note></div></div></template>
+<template id="tpl-agent-command-group"><div class="agent-os-commands" data-agent-os=""><div data-slot="content"></div></div></template>
+
+<template id="tpl-agent-detail-info"><div class="grid grid-2 mb-3"><div class="ops-row"><div><div class="ops-label">IP pública</div><div class="ops-value" data-slot="publicIp"></div></div></div><div class="ops-row"><div><div class="ops-label">IP privada</div><div class="ops-value" data-slot="privateIp"></div></div></div><div class="ops-row"><div><div class="ops-label">Versión</div><div class="ops-value" data-slot="version"></div></div></div><div class="ops-row"><div><div class="ops-label">Última conexión</div><div class="ops-value" data-slot="lastSeen"></div></div></div></div></template>
+<template id="tpl-agent-detail-resources"><div class="card"><div class="card-header"><div class="card-title">Recursos asociados</div></div><div class="card-body table-responsive"><table class="table"><thead><tr><th>Estado</th><th>Tipo</th><th>Nombre</th><th>Entrada</th><th>Backend</th></tr></thead><tbody data-slot="body"></tbody></table></div></div></template>
+<template id="tpl-agent-detail-resource-row"><tr><td data-slot="state"></td><td data-slot="type"></td><td data-slot="name"></td><td class="font-mono" data-slot="entry"></td><td class="font-mono" data-slot="backend"></td></tr></template>
+
+<script type="text/plain" id="tpl-suspension-draft"><!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nueva suspensión</title></head>
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#fff;font-family:system-ui">
+  <main style="max-width:680px;padding:36px;border:1px solid rgba(255,255,255,.16);border-radius:24px;background:#111">
+    <p>$nombredominio · Código $codigo</p>
+    <h1>$nombrerecurso no disponible</h1>
+    <p>$motivo</p>
+  </main>
+</body>
+</html></script>
+{{end}}
