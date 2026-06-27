@@ -490,3 +490,49 @@ body{
     padding-left:calc(var(--pg-toggle-rail) + 1px)!important;
   }
 }
+
+/* Responsive: cuando el sidebar movil esta abierto debe quedar por encima del header/footer.
+   El header permanece fijo, pero visualmente queda detras del menu para no taparlo. */
+@media(max-width:960px){
+  body.sidebar-open .sidebar{
+    z-index:90!important;
+    box-shadow:28px 0 80px rgba(0,0,0,.58)!important;
+  }
+  body.sidebar-open .topbar,
+  body.sidebar-open .app-footer{
+    z-index:30!important;
+  }
+  body.sidebar-open .main{
+    pointer-events:none;
+  }
+  body.sidebar-open .sidebar,
+  body.sidebar-open .global-sidebar-toggle,
+  body.sidebar-open .modal-lite{
+    pointer-events:auto;
+  }
+  .global-sidebar-toggle,
+  body.sidebar-open .global-sidebar-toggle{
+    z-index:95!important;
+  }
+}
+
+/* Capa global para cerrar el menu movil al tocar fuera del sidebar. */
+.sidebar-scrim{
+  display:none;
+}
+@media(max-width:960px){
+  .sidebar-scrim{
+    position:fixed;
+    inset:0;
+    z-index:80;
+    display:block;
+    opacity:0;
+    pointer-events:none;
+    background:rgba(0,0,0,.42);
+    transition:opacity var(--pg-motion);
+  }
+  body.sidebar-open .sidebar-scrim{
+    opacity:1;
+    pointer-events:auto;
+  }
+}
