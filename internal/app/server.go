@@ -1103,6 +1103,7 @@ func (s *Server) checkResourceHealth(ctx context.Context, res Resource) (out Res
 				return out
 			}
 			out.Status = "ok"
+			out.StatusCode = resp.StatusCode
 			out.Message = fmt.Sprintf("backend remoto responde HTTP %d", resp.StatusCode)
 			return out
 		}
@@ -1121,6 +1122,7 @@ func (s *Server) checkResourceHealth(ctx context.Context, res Resource) (out Res
 		}
 		_ = resp.Body.Close()
 		out.Status = "ok"
+		out.StatusCode = resp.StatusCode
 		out.Message = fmt.Sprintf("backend responde HTTP %d", resp.StatusCode)
 		return out
 	case ModeTCP:

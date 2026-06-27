@@ -155,6 +155,7 @@ type ResourceHealth struct {
 	Mode       string    `json:"mode"`
 	Status     string    `json:"status"`
 	Message    string    `json:"message"`
+	StatusCode int       `json:"statusCode,omitempty"`
 	LatencyMS  int64     `json:"latencyMs"`
 	CheckedAt  time.Time `json:"checkedAt"`
 }
