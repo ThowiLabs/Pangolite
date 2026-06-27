@@ -92,7 +92,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS agents (
 			id TEXT PRIMARY KEY,
-			project_id TEXT NOT NULL DEFAULT 'default' REFERENCES projects(id) ON DELETE CASCADE,
+			project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			token_hash TEXT NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
@@ -109,7 +109,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS resources (
 			id TEXT PRIMARY KEY,
-			project_id TEXT NOT NULL DEFAULT 'default' REFERENCES projects(id) ON DELETE CASCADE,
+			project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			mode TEXT NOT NULL,
 			domain TEXT,
@@ -174,7 +174,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE resources SET origin_type = CASE WHEN COALESCE(agent_id,'') <> '' THEN 'agent' ELSE 'local' END WHERE origin_type IS NULL OR origin_type = ''`)
-	if err := s.ensureDefaultProject(ctx); err != nil {
+	if err := s.ensureLegacyProject(ctx); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_resources_project_id ON resources(project_id)`); err != nil {
@@ -223,11 +223,19 @@ func (s *Store) ensureColumn(ctx context.Context, table, column, definition stri
 	return nil
 }
 
-func (s *Store) ensureDefaultProject(ctx context.Context) error {
+func (s *Store) ensureLegacyProject(ctx context.Context) error {
+	var orphanAgents, orphanResources, defaultAgents, defaultResources int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE project_id IS NULL OR project_id = ''`).Scan(&orphanAgents)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM resources WHERE project_id IS NULL OR project_id = ''`).Scan(&orphanResources)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE project_id = 'default'`).Scan(&defaultAgents)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM resources WHERE project_id = 'default'`).Scan(&defaultResources)
+	if orphanAgents+orphanResources+defaultAgents+defaultResources == 0 {
+		return nil
+	}
 	now := formatTime(time.Now().UTC())
-	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO projects(id,name,slug,notes,enabled,created_at,updated_at) VALUES('default','General','general','Proyecto base para recursos existentes.',1,?,?)`, now, now)
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO projects(id,name,slug,notes,enabled,created_at,updated_at) VALUES('default','General','general','Proyecto legado para recursos existentes antes del onboarding.',1,?,?)`, now, now)
 	if err != nil {
-		return fmt.Errorf("crear proyecto base: %w", err)
+		return fmt.Errorf("crear proyecto legado: %w", err)
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE agents SET project_id = 'default' WHERE project_id IS NULL OR project_id = ''`)
 	_, _ = s.db.ExecContext(ctx, `UPDATE resources SET project_id = 'default' WHERE project_id IS NULL OR project_id = ''`)
@@ -608,16 +616,13 @@ func (s *Store) ProjectDependencyCounts(projectID string) (resources int, agents
 		return 0, 0, fmt.Errorf("contar recursos del proyecto: %w", err)
 	}
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE project_id = ?`, projectID).Scan(&agents); err != nil {
-		return 0, 0, fmt.Errorf("contar clientes del proyecto: %w", err)
+		return 0, 0, fmt.Errorf("contar clientes de sistema del proyecto: %w", err)
 	}
 	return resources, agents, nil
 }
 
 func (s *Store) DeleteProjectIfEmpty(projectID string) error {
 	projectID = strings.TrimSpace(projectID)
-	if projectID == "default" {
-		return errors.New("el proyecto General no se puede eliminar")
-	}
 	if !idRe.MatchString(projectID) {
 		return errors.New("id de proyecto invalido")
 	}
@@ -626,7 +631,7 @@ func (s *Store) DeleteProjectIfEmpty(projectID string) error {
 		return err
 	}
 	if resources > 0 || agents > 0 {
-		return fmt.Errorf("no se puede eliminar: primero elimina %d recurso(s) y %d cliente(s) del proyecto", resources, agents)
+		return fmt.Errorf("no se puede eliminar: primero elimina %d recurso(s) y %d cliente(s) de sistema del proyecto", resources, agents)
 	}
 	res, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, projectID)
 	if err != nil {

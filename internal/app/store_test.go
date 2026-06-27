@@ -12,7 +12,11 @@ func TestStoreAddDeletePersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	created, err := store.AddResource(Resource{Name: "SSH", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, Enabled: true})
+	project, err := store.AddProject(Project{Name: "Proyecto Smoke"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.AddResource(Resource{ProjectID: project.ID, Name: "SSH", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +78,11 @@ func TestStoreUpdateResourceControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	created, err := store.AddResource(Resource{Name: "App", Mode: ModeHTTP, Domain: "app.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, TLS: true, Enabled: true})
+	project, err := store.AddProject(Project{Name: "Proyecto Web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.AddResource(Resource{ProjectID: project.ID, Name: "App", Mode: ModeHTTP, Domain: "app.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, TLS: true, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +106,7 @@ func TestProjectsSeparateResourcesAndAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	project, err := store.AddProject(Project{Name: "Cliente Norte", Notes: "smoke"})
+	project, err := store.AddProject(Project{Name: "Proyecto Norte", Notes: "smoke"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +114,7 @@ func TestProjectsSeparateResourcesAndAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddResource(Resource{ProjectID: project.ID, Name: "App", Mode: ModeHTTP, Domain: "cliente.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, AgentID: agent.ID, TLS: true, Enabled: true}); err != nil {
+	if _, err := store.AddResource(Resource{ProjectID: project.ID, Name: "App", Mode: ModeHTTP, Domain: "proyecto.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, AgentID: agent.ID, TLS: true, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.ListResourcesByProject(project.ID)) != 1 {
@@ -124,10 +132,10 @@ func TestProjectNameMustBeUnique(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if _, err := store.AddProject(Project{Name: "Cliente ACME"}); err != nil {
+	if _, err := store.AddProject(Project{Name: "Proyecto ACME"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddProject(Project{Name: "cliente acme"}); err == nil {
+	if _, err := store.AddProject(Project{Name: "proyecto acme"}); err == nil {
 		t.Fatal("se esperaba rechazar nombre duplicado")
 	}
 }
@@ -154,5 +162,17 @@ func TestManagedDomainsCRUD(t *testing.T) {
 	}
 	if len(store.ListManagedDomains()) != 0 {
 		t.Fatal("se esperaba dominio eliminado")
+	}
+}
+
+func TestFreshStoreDoesNotCreateDefaultProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if got := len(store.ListProjects()); got != 0 {
+		t.Fatalf("se esperaba base sin proyectos por defecto, got %d", got)
 	}
 }

@@ -1,6 +1,6 @@
 # Arquitectura de Pangolite
 
-Pangolite es un plataforma de administración en Go inspirado en Pangolin. El objetivo es exponer recursos de proyectos/clientes usando Traefik como edge proxy y SQLite como almacenamiento local.
+Pangolite es un plataforma de administración en Go inspirado en Pangolin. El objetivo es exponer recursos de proyectos usando Traefik como edge proxy y SQLite como almacenamiento local.
 
 ## Componentes
 
@@ -41,3 +41,8 @@ Internet -> Traefik UDP entrypoint -> Pangolite bridge 127.0.0.1:<tunnel_port> -
 - Las acciones administrativas críticas se registran en `audit_events`.
 - Los respaldos SQLite se generan con `VACUUM INTO` para obtener una copia consistente sin detener el panel. La creación usa el modal reutilizable del panel para pedir un prefijo opcional y no ejecuta nada si se cancela.
 - La restauración se mantiene como operación manual segura: detener servicio, reemplazar base y reiniciar.
+
+
+## Onboarding y proyecto inicial
+
+Las instalaciones nuevas no crean un proyecto por defecto. El panel muestra un onboarding cuando no hay proyectos registrados y guía al administrador para crear el primer proyecto antes de crear dominios, clientes de sistema o recursos. En instalaciones actualizadas, si existen recursos o agentes legados sin proyecto, se conserva un proyecto `default` solo para no perder asociaciones previas.

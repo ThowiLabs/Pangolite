@@ -1,6 +1,6 @@
 # Pangolite
 
-Pangolite es una plataforma de administración de proxys y túneles escrita en Go para servidores Linux. Permite administrar proyectos/clientes, dominios, recursos HTTP/HTTPS/TCP/UDP y servidores conectados, usando Traefik instalado directamente en el sistema.
+Pangolite es una plataforma de administración de proxys y túneles escrita en Go para servidores Linux. Permite administrar proyectos, dominios, recursos HTTP/HTTPS/TCP/UDP y servidores conectados, usando Traefik instalado directamente en el sistema.
 
 Repositorio previsto:
 
@@ -18,7 +18,7 @@ La base actual incluye:
 - Cambio obligatorio de contraseña en primer acceso.
 - Sesiones persistentes con cookie segura.
 - CSRF en operaciones administrativas.
-- CRUD de proyectos/clientes.
+- CRUD de proyectos.
 - CRUD de dominios administrados.
 - Configuracion del dominio publico del dashboard con validacion DNS contra la IP del servidor.
 - Clientes de sistema/agentes para servidores NAT/remotos.
@@ -31,6 +31,10 @@ La base actual incluye:
 - Aplicación automática de cambios desde la UI; no se pide al usuario aplicar Traefik manualmente.
 
 TCP/UDP mediante cliente de sistema ya usa puentes internos y streams/WebSocket persistentes para publicar servicios remotos detrás de NAT.
+
+## Onboarding inicial
+
+En instalaciones nuevas Pangolite ya no crea un proyecto `default` automáticamente. Después del primer inicio de sesión, el dashboard muestra un onboarding para crear el primer proyecto y recordar el flujo recomendado: proyecto, dominio, cliente de sistema si aplica y recurso publicado.
 
 ## Arquitectura
 
@@ -214,7 +218,7 @@ Los recursos HTTP/HTTPS se pueden suspender sin borrarlos. Pangolite conserva la
 - `404`: no encontrado.
 - HTML personalizado: pagina editable, usando presets como pago pendiente, mantenimiento o servicio suspendido.
 
-Esto permite pausar un dominio de cliente sin perder su configuracion.
+Esto permite pausar un dominio del proyecto sin perder su configuracion.
 
 
 ## Auditoría y respaldos
@@ -279,7 +283,7 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 
 ## Licencia
 
-Pendiente de definir.
+Pangolite usa una licencia permisiva tipo MIT. Puedes usar, modificar y distribuir el proyecto siguiendo los terminos del archivo `LICENSE`.
 
 ## Certificados del dashboard
 
@@ -415,8 +419,8 @@ Los formularios principales del panel se manejan por JavaScript y llamadas JSON 
 
 ## Operaciones destructivas seguras
 
-Pangolite incluye una Zona de peligro por proyecto. Desde ahí se puede renombrar el proyecto, cambiar su descripción y eliminarlo solo cuando no tenga recursos ni clientes NAT vinculados.
+Pangolite incluye una Zona de peligro por proyecto. Desde ahí se puede renombrar el proyecto, cambiar su descripción y eliminarlo solo cuando no tenga recursos ni clientes de sistema vinculados.
 
-La eliminación de clientes NAT es una acción fuerte: elimina el cliente y todos los recursos vinculados a ese cliente. Para evitar errores, el panel solicita la contraseña del administrador actual antes de ejecutar la eliminación.
+La eliminación de clientes de sistema es una acción fuerte: elimina el cliente de sistema y todos los recursos vinculados a ese cliente de sistema. Para evitar errores, el panel solicita la contraseña del administrador actual antes de ejecutar la eliminación.
 
 Los cambios que eliminan recursos aplican Traefik automáticamente. Si hay puertos TCP/UDP involucrados, Pangolite agrupa el reinicio controlado para reducir cortes y evitar acciones repetidas.

@@ -35,12 +35,12 @@ func TestResourceValidation(t *testing.T) {
 	if err := bad.Validate(); err == nil {
 		t.Fatal("se esperaba error de validacion")
 	}
-	remoteTCP := Resource{Name: "x", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, OriginType: OriginAgent, AgentID: "agent01"}
+	remoteTCP := Resource{ProjectID: "project01", Name: "x", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, OriginType: OriginAgent, AgentID: "agent01"}
 	remoteTCP.Normalize(time.Now())
 	if err := remoteTCP.Validate(); err != nil {
 		t.Fatalf("TCP remoto con cliente NAT debe ser valido: %v", err)
 	}
-	good := Resource{Name: "x", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22}
+	good := Resource{ProjectID: "project01", Name: "x", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22}
 	good.Normalize(time.Now())
 	if err := good.Validate(); err != nil {
 		t.Fatalf("no se esperaba error: %v", err)

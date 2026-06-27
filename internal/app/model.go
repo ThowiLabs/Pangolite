@@ -210,7 +210,7 @@ func slugify(value string) string {
 		out = strings.Trim(out[:64], "-")
 	}
 	if len(out) < 3 {
-		return "cliente"
+		return "proyecto"
 	}
 	return out
 }
@@ -262,9 +262,6 @@ func (a AppSettings) Validate() error {
 
 func (r *Resource) Normalize(now time.Time) {
 	r.ProjectID = strings.TrimSpace(r.ProjectID)
-	if r.ProjectID == "" {
-		r.ProjectID = "default"
-	}
 	r.Name = strings.TrimSpace(r.Name)
 	r.Mode = strings.ToLower(strings.TrimSpace(r.Mode))
 	r.Domain = strings.ToLower(strings.TrimSpace(r.Domain))
@@ -396,9 +393,6 @@ func (r Resource) BridgeAddress() string {
 
 func (a *Agent) Normalize(now time.Time) {
 	a.ProjectID = strings.TrimSpace(a.ProjectID)
-	if a.ProjectID == "" {
-		a.ProjectID = "default"
-	}
 	a.Name = strings.TrimSpace(a.Name)
 	a.ID = strings.TrimSpace(a.ID)
 	a.Token = strings.TrimSpace(a.Token)
