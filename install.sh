@@ -275,7 +275,7 @@ fetch_release_archive() {
       if grep "  $asset\$" "$checksums" > "$match"; then
         (cd "$TMP_DIR" && sha256sum -c "$match") || fail "checksum invalido para $asset"
       else
-        warn "checksums.txt no contiene $asset; se continuara sin verificacion sha256"
+        fail "checksums.txt no contiene $asset; instalacion cancelada por seguridad"
       fi
     fi
   else
@@ -441,10 +441,15 @@ PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=$DATA_DIR/admin-password.txt
 PANGOLITE_LOG_FILE=$DATA_DIR/pangolite.log
 PANGOLITE_BACKUP_DIR=$DATA_DIR/backups
+PANGOLITE_BACKUP_INTERVAL_HOURS=24
+PANGOLITE_BACKUP_RETENTION_DAYS=14
 PANGOLITE_SUSPENSION_TEMPLATE_DIR=$DATA_DIR/templates/suspension
 PANGOLITE_SESSION_DAYS=30
 PANGOLITE_AUTO_TRAEFIK=1
 PANGOLITE_CLIENT_LINUX_AMD64=$PUBLIC_DIR/pangolite-client-linux-amd64
+PANGOLITE_CLIENT_LINUX_ARM64=$PUBLIC_DIR/pangolite-client-linux-arm64
+PANGOLITE_CLIENT_LINUX_386=$PUBLIC_DIR/pangolite-client-linux-386
+PANGOLITE_CLIENT_LINUX_ARMV7=$PUBLIC_DIR/pangolite-client-linux-armv7
 PANGOLITE_CLIENT_WINDOWS_AMD64=$PUBLIC_DIR/pangolite-client-windows-amd64.exe
 # Opcional: configura dominio/correo para que Traefik publique el panel por HTTP/HTTPS.
 # PANGOLITE_DASHBOARD_DOMAIN=panel.midominio.com
@@ -456,8 +461,13 @@ ENV
   set_env_value PANGOLITE_TRAEFIK_DIR "$TRAEFIK_DIR"
   set_env_value PANGOLITE_LOG_FILE "$DATA_DIR/pangolite.log"
   set_env_value PANGOLITE_BACKUP_DIR "$DATA_DIR/backups"
+  if ! grep -q '^PANGOLITE_BACKUP_INTERVAL_HOURS=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_BACKUP_INTERVAL_HOURS "24"; fi
+  if ! grep -q '^PANGOLITE_BACKUP_RETENTION_DAYS=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_BACKUP_RETENTION_DAYS "14"; fi
   set_env_value PANGOLITE_SUSPENSION_TEMPLATE_DIR "$DATA_DIR/templates/suspension"
   set_env_value PANGOLITE_CLIENT_LINUX_AMD64 "$PUBLIC_DIR/pangolite-client-linux-amd64"
+  set_env_value PANGOLITE_CLIENT_LINUX_ARM64 "$PUBLIC_DIR/pangolite-client-linux-arm64"
+  set_env_value PANGOLITE_CLIENT_LINUX_386 "$PUBLIC_DIR/pangolite-client-linux-386"
+  set_env_value PANGOLITE_CLIENT_LINUX_ARMV7 "$PUBLIC_DIR/pangolite-client-linux-armv7"
   set_env_value PANGOLITE_CLIENT_WINDOWS_AMD64 "$PUBLIC_DIR/pangolite-client-windows-amd64.exe"
   [ -n "$SERVER_IP" ] && set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"
 }

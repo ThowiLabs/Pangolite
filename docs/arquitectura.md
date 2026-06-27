@@ -69,3 +69,15 @@ Pangolite soporta suspensión de recursos HTTP por respuesta simple, plantilla H
 Para evitar inyección accidental, el panel valida HTML de suspensión antes de guardarlo o aplicarlo a un recurso. Las plantillas admiten variables de reemplazo como `$nombredominio`, `$nombrerecurso`, `$proyecto`, `$codigo`, `$motivo` y `$fecha`.
 
 La protección de recursos HTTP se implementa haciendo que Traefik envíe esos recursos a Pangolite en vez de enviarlos directo al backend. Pangolite valida contraseña específica, sesión activa del panel o prompt básico según configuración, y luego reenvía el tráfico al backend local o al cliente de sistema remoto.
+
+## Operación segura agregada
+
+Pangolite mantiene migraciones SQLite versionadas en `schema_migrations`. Antes de aplicar migraciones pendientes crea un respaldo pre-migración en `data/backups/migrations/` usando `VACUUM INTO`.
+
+El comando `pangolite doctor` revisa la instalación activa: versión, SQLite, migraciones, rutas escribibles, Traefik, archivos clave, puertos 80/443 y estado básico de servicios.
+
+La escritura de configuración de Traefik usa backups temporales y validación con `traefik check --configFile`. Si la validación falla, Pangolite restaura la configuración anterior.
+
+Los respaldos automáticos se controlan con `PANGOLITE_BACKUP_INTERVAL_HOURS` y `PANGOLITE_BACKUP_RETENTION_DAYS`. Por defecto se crea un respaldo automático cada 24 horas y se retienen 14 días.
+
+Los releases publican clientes descargables para Linux amd64, arm64, 386, armv7 y Windows amd64. El comando Linux de cliente de sistema detecta la arquitectura con `uname -m` y descarga el binario correcto.

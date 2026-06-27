@@ -51,6 +51,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	if err := EnsureSuspensionTemplates(c.SuspensionTemplateDir); err != nil && logger != nil {
 		logger.Warn("no se pudieron preparar plantillas de suspension", "dir", c.SuspensionTemplateDir, "error", err.Error())
 	}
+	c = effective
 	hub := NewTunnelHub(64)
 	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger}
 	s.routes()
@@ -62,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	s.startAutomaticBackups(ctx)
 	if err := s.refreshBridgeListeners(); err != nil && s.log != nil {
 		s.log.Warn("no se pudieron preparar puentes de clientes NAT", "error", err.Error())
 	}
@@ -134,8 +136,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agent/jobs/{id}/response", s.agentJobResponse)
 	s.mux.HandleFunc("POST /api/agent/stream-poll", s.agentStreamPoll)
 	s.mux.HandleFunc("GET /api/agent/streams/{id}", s.agentStreamSocket)
-	s.mux.HandleFunc("GET /download/pangolite-client-linux-amd64", s.downloadClientLinuxAMD64)
-	s.mux.HandleFunc("GET /download/pangolite-client-windows-amd64.exe", s.downloadClientWindowsAMD64)
+	s.mux.HandleFunc("GET /download/{name}", s.downloadClientAsset)
 	s.mux.HandleFunc("/", s.publicOrIndex)
 }
 
@@ -393,6 +394,8 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 		return
 	}
 
+	s.config.BackupIntervalHours = settings.BackupIntervalHours
+	s.config.BackupRetentionDays = settings.BackupRetentionDays
 	afterConfig := s.config
 	afterConfig.DashboardDomain = settings.DashboardDomain
 	afterConfig.LetsEncryptEmail = settings.LetsEncryptEmail
@@ -870,9 +873,9 @@ func (s *Server) attachAgentCommands(r *http.Request, agent *Agent) {
 	}
 	base := s.publicBaseURL(r)
 	baseClean := strings.TrimRight(base, "/")
-	linuxURL := baseClean + "/download/pangolite-client-linux-amd64"
+	linuxBaseURL := baseClean + "/download/pangolite-client-linux"
 	winURL := baseClean + "/download/pangolite-client-windows-amd64.exe"
-	agent.InstallCommand = fmt.Sprintf("curl -fsSL %s -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s --agent-id %s --token %s", shellQuote(linuxURL), shellQuote(baseClean), shellQuote(agent.ID), shellQuote(agent.Token))
+	agent.InstallCommand = fmt.Sprintf("arch=$(uname -m); case \"$arch\" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; i386|i486|i586|i686) arch=386 ;; armv7l|armv7) arch=armv7 ;; *) echo Arquitectura no soportada: $arch >&2; exit 1 ;; esac; curl -fsSL %s-$arch -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s --agent-id %s --token %s", shellQuote(linuxBaseURL), shellQuote(baseClean), shellQuote(agent.ID), shellQuote(agent.Token))
 	agent.RemoveCommand = "sudo /opt/pangolite-client/pangolite-client --remove"
 	agent.WindowsInstallCommand = fmt.Sprintf("$u=%q; $o=Join-Path $env:TEMP 'pangolite-client.exe'; Invoke-WebRequest -UseBasicParsing $u -OutFile $o; Start-Process -Verb RunAs $o -ArgumentList '--install --server-url %s --agent-id %s --token %s'", winURL, baseClean, agent.ID, agent.Token)
 	agent.WindowsRemoveCommand = `Start-Process -Verb RunAs 'C:\ProgramData\Pangolite Client\pangolite-client.exe' -ArgumentList '--remove'`
@@ -1060,8 +1063,10 @@ func (s *Server) resourceHealth(w http.ResponseWriter, r *http.Request, _ reques
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks})
 }
 
-func (s *Server) checkResourceHealth(ctx context.Context, res Resource) ResourceHealth {
-	out := ResourceHealth{ResourceID: res.ID, Name: res.Name, Mode: res.Mode, Status: "unknown", CheckedAt: time.Now().UTC()}
+func (s *Server) checkResourceHealth(ctx context.Context, res Resource) (out ResourceHealth) {
+	started := time.Now()
+	out = ResourceHealth{ResourceID: res.ID, Name: res.Name, Mode: res.Mode, Status: "unknown", CheckedAt: started.UTC()}
+	defer func() { out.LatencyMS = time.Since(started).Milliseconds() }()
 	if !res.Enabled {
 		out.Status = "suspended"
 		out.Message = "recurso suspendido"
@@ -1173,34 +1178,35 @@ func requestPublicIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func (s *Server) downloadClientLinuxAMD64(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimSpace(os.Getenv("PANGOLITE_CLIENT_LINUX_AMD64"))
-	if path == "" {
-		path = "/opt/pangolite/public/pangolite-client-linux-amd64"
+func (s *Server) downloadClientAsset(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	allowed := map[string]string{
+		"pangolite-client-linux-amd64":       envClientPath("PANGOLITE_CLIENT_LINUX_AMD64", "/opt/pangolite/public/pangolite-client-linux-amd64"),
+		"pangolite-client-linux-arm64":       envClientPath("PANGOLITE_CLIENT_LINUX_ARM64", "/opt/pangolite/public/pangolite-client-linux-arm64"),
+		"pangolite-client-linux-386":         envClientPath("PANGOLITE_CLIENT_LINUX_386", "/opt/pangolite/public/pangolite-client-linux-386"),
+		"pangolite-client-linux-armv7":       envClientPath("PANGOLITE_CLIENT_LINUX_ARMV7", "/opt/pangolite/public/pangolite-client-linux-armv7"),
+		"pangolite-client-windows-amd64.exe": envClientPath("PANGOLITE_CLIENT_WINDOWS_AMD64", "/opt/pangolite/public/pangolite-client-windows-amd64.exe"),
+	}
+	path, ok := allowed[name]
+	if !ok {
+		writeError(w, http.StatusNotFound, "cliente no disponible")
+		return
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
-		writeError(w, http.StatusNotFound, "cliente linux amd64 no disponible en este servidor")
+		writeError(w, http.StatusNotFound, "cliente no disponible en este servidor: "+name)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="pangolite-client-linux-amd64"`)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, name))
 	http.ServeFile(w, r, path)
 }
 
-func (s *Server) downloadClientWindowsAMD64(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimSpace(os.Getenv("PANGOLITE_CLIENT_WINDOWS_AMD64"))
-	if path == "" {
-		path = "/opt/pangolite/public/pangolite-client-windows-amd64.exe"
+func envClientPath(key, fallback string) string {
+	if path := strings.TrimSpace(os.Getenv(key)); path != "" {
+		return path
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		writeError(w, http.StatusNotFound, "cliente Windows amd64 no disponible en este servidor")
-		return
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="pangolite-client-windows-amd64.exe"`)
-	http.ServeFile(w, r, path)
+	return fallback
 }
 
 func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {
@@ -1345,6 +1351,10 @@ func (s *Server) serveDisabledResource(w http.ResponseWriter, r *http.Request, r
 	switch resource.DisabledResponseMode {
 	case DisabledResponse404:
 		http.NotFound(w, r)
+	case DisabledResponseHidden:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		w.WriteHeader(http.StatusNotFound)
 	case DisabledResponseHTML:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(status)

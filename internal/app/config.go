@@ -30,6 +30,8 @@ type Config struct {
 	LogPath               string
 	BackupDir             string
 	SuspensionTemplateDir string
+	BackupIntervalHours   int
+	BackupRetentionDays   int
 }
 
 func LoadConfigFromEnv() Config {
@@ -50,6 +52,8 @@ func LoadConfigFromEnv() Config {
 		LogPath:               env("PANGOLITE_LOG_FILE", ""),
 		BackupDir:             env("PANGOLITE_BACKUP_DIR", ""),
 		SuspensionTemplateDir: env("PANGOLITE_SUSPENSION_TEMPLATE_DIR", ""),
+		BackupIntervalHours:   envInt("PANGOLITE_BACKUP_INTERVAL_HOURS", 24),
+		BackupRetentionDays:   envInt("PANGOLITE_BACKUP_RETENTION_DAYS", 14),
 	}
 }
 
@@ -110,6 +114,8 @@ func ApplyCommonFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.LogPath, "log-file", c.LogPath, "archivo de logs rotativo")
 	fs.StringVar(&c.BackupDir, "backup-dir", c.BackupDir, "directorio de respaldos SQLite")
 	fs.StringVar(&c.SuspensionTemplateDir, "suspension-template-dir", c.SuspensionTemplateDir, "directorio de plantillas HTML de suspension")
+	fs.IntVar(&c.BackupIntervalHours, "backup-interval-hours", c.BackupIntervalHours, "intervalo de respaldos automaticos en horas; 0 desactiva")
+	fs.IntVar(&c.BackupRetentionDays, "backup-retention-days", c.BackupRetentionDays, "dias de retencion para respaldos automaticos; 0 conserva todo")
 }
 
 func newSecret(bytesLen int) (string, error) {
@@ -153,7 +159,7 @@ func PrintServeConfig(c Config) string {
 	if c.InsecureDev {
 		mode = "desarrollo-inseguro"
 	}
-	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s templates=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, c.LogPath, c.BackupDir, c.SuspensionTemplateDir, mode, c.SessionDays, c.PublicIP)
+	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s templates=%s backup_interval_hours=%d backup_retention_days=%d mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, c.LogPath, c.BackupDir, c.SuspensionTemplateDir, c.BackupIntervalHours, c.BackupRetentionDays, mode, c.SessionDays, c.PublicIP)
 }
 
 func sessionDuration(c Config) time.Duration {

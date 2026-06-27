@@ -76,7 +76,7 @@ ensure_go() {
     log "Go detectado: $($GO_BIN version)"
     return
   fi
-  log "Go >= 1.23 no esta instalado; descargando Go $GO_VERSION temporalmente"
+  log "Go >= 1.24 no esta instalado; descargando Go $GO_VERSION temporalmente"
   need_cmd curl
   need_cmd tar
   local goarch url tarball
@@ -184,6 +184,8 @@ PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=$DATA_DIR/admin-password.txt
 PANGOLITE_LOG_FILE=$DATA_DIR/pangolite.log
 PANGOLITE_BACKUP_DIR=$DATA_DIR/backups
+PANGOLITE_BACKUP_INTERVAL_HOURS=24
+PANGOLITE_BACKUP_RETENTION_DAYS=14
 PANGOLITE_SUSPENSION_TEMPLATE_DIR=$DATA_DIR/templates/suspension
 PANGOLITE_SESSION_DAYS=30
 PANGOLITE_AUTO_TRAEFIK=1
@@ -199,6 +201,8 @@ ENV
   set_env_value PANGOLITE_CLIENT_WINDOWS_AMD64 "$CLIENT_PUBLIC_WINDOWS_BIN"
   set_env_value PANGOLITE_LOG_FILE "$DATA_DIR/pangolite.log"
   set_env_value PANGOLITE_BACKUP_DIR "$DATA_DIR/backups"
+  set_env_value PANGOLITE_BACKUP_INTERVAL_HOURS "${PANGOLITE_BACKUP_INTERVAL_HOURS:-24}"
+  set_env_value PANGOLITE_BACKUP_RETENTION_DAYS "${PANGOLITE_BACKUP_RETENTION_DAYS:-14}"
   set_env_value PANGOLITE_SUSPENSION_TEMPLATE_DIR "$DATA_DIR/templates/suspension"
   if [ -n "$SERVER_IP" ]; then
     set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"

@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +50,116 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+type schemaMigration struct {
+	Version int
+	Name    string
+	Apply   func(context.Context) error
+}
+
 func (s *Store) migrate(ctx context.Context) error {
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		return err
+	}
+	migrations := []schemaMigration{
+		{Version: 1, Name: "esquema base", Apply: s.migrateBaseSchema},
+		{Version: 2, Name: "proyectos y compatibilidad legado", Apply: s.migrateProjectCompatibility},
+		{Version: 3, Name: "suspension proteccion y tuneles", Apply: s.migrateSuspensionProtection},
+	}
+	latest := migrations[len(migrations)-1].Version
+	currentVersion, err := s.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if currentVersion < latest {
+		if err := s.backupBeforeMigrations(ctx, currentVersion, latest); err != nil {
+			return err
+		}
+	}
+	for _, migration := range migrations {
+		applied, err := s.migrationApplied(ctx, migration.Version)
+		if err != nil {
+			return err
+		}
+		if applied {
+			continue
+		}
+		if err := migration.Apply(ctx); err != nil {
+			return fmt.Errorf("migracion SQLite v%d (%s): %w", migration.Version, migration.Name, err)
+		}
+		if err := s.recordMigration(ctx, migration.Version, migration.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) backupBeforeMigrations(ctx context.Context, fromVersion, toVersion int) error {
+	if s.path == "" {
+		return nil
+	}
+	info, err := os.Stat(s.path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return nil
+	}
+	dir := filepath.Join(filepath.Dir(s.path), "backups", "migrations")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("crear backup pre-migracion: %w", err)
+	}
+	name := fmt.Sprintf("pangolite-pre-migration-v%d-to-v%d-%s.db", fromVersion, toVersion, time.Now().UTC().Format("20060102-150405"))
+	path := filepath.Join(dir, name)
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO `+sqliteStringLiteral(path)); err != nil {
+		return fmt.Errorf("crear backup pre-migracion: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureMigrationTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		applied_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		return fmt.Errorf("crear tabla de migraciones: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrationApplied(ctx context.Context, version int) (bool, error) {
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM schema_migrations WHERE version = ?`, version).Scan(&found)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("consultar migracion v%d: %w", version, err)
+	}
+	return true, nil
+}
+
+func (s *Store) recordMigration(ctx context.Context, version int, name string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)`, version, name, formatTime(time.Now().UTC()))
+	if err != nil {
+		return fmt.Errorf("registrar migracion v%d: %w", version, err)
+	}
+	return nil
+}
+
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+		return 0, err
+	}
+	var version sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		return 0, err
+	}
+	if !version.Valid {
+		return 0, nil
+	}
+	return int(version.Int64), nil
+}
+
+func (s *Store) migrateBaseSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,6 +266,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrar SQLite: %w", err)
 		}
 	}
+	return nil
+}
+
+func (s *Store) migrateProjectCompatibility(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "agents", "project_id", "TEXT NOT NULL DEFAULT 'default'"); err != nil {
 		return err
 	}
@@ -187,27 +302,23 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_agents_project_id ON agents(project_id)`); err != nil {
 		return fmt.Errorf("crear indice agents.project_id: %w", err)
 	}
-	if err := s.ensureColumn(ctx, "resources", "disabled_response_mode", "TEXT NOT NULL DEFAULT '403'"); err != nil {
-		return err
-	}
-	if err := s.ensureColumn(ctx, "resources", "disabled_status_code", "INTEGER NOT NULL DEFAULT 403"); err != nil {
-		return err
-	}
-	if err := s.ensureColumn(ctx, "resources", "disabled_html", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
+	return nil
+}
+
+func (s *Store) migrateSuspensionProtection(ctx context.Context) error {
 	for _, col := range []struct{ name, def string }{
+		{"disabled_response_mode", "TEXT NOT NULL DEFAULT '403'"},
+		{"disabled_status_code", "INTEGER NOT NULL DEFAULT 403"},
+		{"disabled_html", "TEXT NOT NULL DEFAULT ''"},
 		{"disabled_template_id", "TEXT NOT NULL DEFAULT ''"},
 		{"protection_mode", "TEXT NOT NULL DEFAULT 'none'"},
 		{"protection_login_mode", "TEXT NOT NULL DEFAULT 'html'"},
 		{"protection_hash", "TEXT NOT NULL DEFAULT ''"},
+		{"tunnel_port", "INTEGER"},
 	} {
 		if err := s.ensureColumn(ctx, "resources", col.name, col.def); err != nil {
 			return err
 		}
-	}
-	if err := s.ensureColumn(ctx, "resources", "tunnel_port", "INTEGER"); err != nil {
-		return err
 	}
 	return nil
 }
@@ -282,14 +393,26 @@ func (s *Store) EnsureManagedDomain(domain string) error {
 
 func (s *Store) LoadAppSettings(c Config) AppSettings {
 	settings := AppSettings{
-		DashboardDomain:  strings.TrimSpace(c.DashboardDomain),
-		LetsEncryptEmail: strings.TrimSpace(c.LetsEncryptEmail),
+		DashboardDomain:     strings.TrimSpace(c.DashboardDomain),
+		LetsEncryptEmail:    strings.TrimSpace(c.LetsEncryptEmail),
+		BackupIntervalHours: c.BackupIntervalHours,
+		BackupRetentionDays: c.BackupRetentionDays,
 	}
 	if v, ok := s.getSetting("dashboard_domain"); ok {
 		settings.DashboardDomain = v
 	}
 	if v, ok := s.getSetting("lets_encrypt_email"); ok {
 		settings.LetsEncryptEmail = v
+	}
+	if v, ok := s.getSetting("backup_interval_hours"); ok {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			settings.BackupIntervalHours = parsed
+		}
+	}
+	if v, ok := s.getSetting("backup_retention_days"); ok {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			settings.BackupRetentionDays = parsed
+		}
 	}
 	settings.Normalize()
 	return settings
@@ -299,6 +422,8 @@ func (s *Store) EffectiveConfig(c Config) Config {
 	settings := s.LoadAppSettings(c)
 	c.DashboardDomain = settings.DashboardDomain
 	c.LetsEncryptEmail = settings.LetsEncryptEmail
+	c.BackupIntervalHours = settings.BackupIntervalHours
+	c.BackupRetentionDays = settings.BackupRetentionDays
 	return c
 }
 
@@ -314,8 +439,10 @@ func (s *Store) SaveAppSettings(settings AppSettings) (AppSettings, error) {
 	}
 	defer tx.Rollback()
 	pairs := map[string]string{
-		"dashboard_domain":   settings.DashboardDomain,
-		"lets_encrypt_email": settings.LetsEncryptEmail,
+		"dashboard_domain":      settings.DashboardDomain,
+		"lets_encrypt_email":    settings.LetsEncryptEmail,
+		"backup_interval_hours": strconv.Itoa(settings.BackupIntervalHours),
+		"backup_retention_days": strconv.Itoa(settings.BackupRetentionDays),
 	}
 	for key, value := range pairs {
 		if _, err := tx.Exec(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, now); err != nil {

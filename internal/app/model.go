@@ -16,9 +16,10 @@ const (
 	OriginLocal = "local"
 	OriginAgent = "agent"
 
-	DisabledResponse403  = "403"
-	DisabledResponse404  = "404"
-	DisabledResponseHTML = "html"
+	DisabledResponse403    = "403"
+	DisabledResponse404    = "404"
+	DisabledResponseHidden = "hidden"
+	DisabledResponseHTML   = "html"
 
 	ProtectionNone     = "none"
 	ProtectionPassword = "password"
@@ -47,8 +48,10 @@ type ManagedDomain struct {
 }
 
 type AppSettings struct {
-	DashboardDomain  string `json:"dashboardDomain"`
-	LetsEncryptEmail string `json:"letsEncryptEmail"`
+	DashboardDomain     string `json:"dashboardDomain"`
+	LetsEncryptEmail    string `json:"letsEncryptEmail"`
+	BackupIntervalHours int    `json:"backupIntervalHours"`
+	BackupRetentionDays int    `json:"backupRetentionDays"`
 }
 
 type Resource struct {
@@ -152,6 +155,7 @@ type ResourceHealth struct {
 	Mode       string    `json:"mode"`
 	Status     string    `json:"status"`
 	Message    string    `json:"message"`
+	LatencyMS  int64     `json:"latencyMs"`
 	CheckedAt  time.Time `json:"checkedAt"`
 }
 
@@ -252,12 +256,15 @@ func (d ManagedDomain) Validate() error {
 func (a *AppSettings) Normalize() {
 	a.DashboardDomain = strings.ToLower(strings.TrimSpace(a.DashboardDomain))
 	a.LetsEncryptEmail = strings.ToLower(strings.TrimSpace(a.LetsEncryptEmail))
+	if a.BackupIntervalHours < 0 {
+		a.BackupIntervalHours = 0
+	}
+	if a.BackupRetentionDays < 0 {
+		a.BackupRetentionDays = 0
+	}
 }
 
 func (a AppSettings) Validate() error {
-	if a.DashboardDomain == "" && a.LetsEncryptEmail == "" {
-		return nil
-	}
 	if a.DashboardDomain != "" {
 		if !domainRe.MatchString(a.DashboardDomain) {
 			return errors.New("dominio del panel invalido")
@@ -271,6 +278,15 @@ func (a AppSettings) Validate() error {
 	}
 	if a.LetsEncryptEmail != "" && !emailRe.MatchString(a.LetsEncryptEmail) {
 		return errors.New("correo ACME invalido")
+	}
+	if a.BackupIntervalHours > 0 && a.BackupIntervalHours < 1 {
+		return errors.New("intervalo de respaldos invalido")
+	}
+	if a.BackupIntervalHours > 720 {
+		return errors.New("intervalo de respaldos demasiado alto")
+	}
+	if a.BackupRetentionDays > 3650 {
+		return errors.New("retencion de respaldos demasiado alta")
 	}
 	return nil
 }
@@ -363,8 +379,8 @@ func (r *Resource) Validate() error {
 			return errors.New("tunnelPort interno invalido")
 		}
 	}
-	if r.DisabledResponseMode != DisabledResponse403 && r.DisabledResponseMode != DisabledResponse404 && r.DisabledResponseMode != DisabledResponseHTML {
-		return errors.New("disabledResponseMode debe ser 403, 404 o html")
+	if r.DisabledResponseMode != DisabledResponse403 && r.DisabledResponseMode != DisabledResponse404 && r.DisabledResponseMode != DisabledResponseHidden && r.DisabledResponseMode != DisabledResponseHTML {
+		return errors.New("disabledResponseMode debe ser 403, 404, hidden o html")
 	}
 	if r.DisabledTemplateID != "" && !templateIDRe.MatchString(r.DisabledTemplateID) {
 		return errors.New("disabledTemplateId invalido")
@@ -374,6 +390,11 @@ func (r *Resource) Validate() error {
 	}
 	if r.DisabledResponseMode == DisabledResponse404 {
 		r.DisabledStatusCode = 404
+	}
+	if r.DisabledResponseMode == DisabledResponseHidden {
+		r.DisabledStatusCode = 404
+		r.DisabledHTML = ""
+		r.DisabledTemplateID = ""
 	}
 	if r.DisabledResponseMode == DisabledResponseHTML {
 		if r.DisabledStatusCode != 403 && r.DisabledStatusCode != 404 && r.DisabledStatusCode != 200 {

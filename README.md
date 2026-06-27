@@ -474,3 +474,32 @@ También se puede proteger un recurso web antes de enviarlo al backend:
 - **Sesión Pangolite:** solo permite pasar a usuarios con sesión iniciada en Pangolite desde ese dominio.
 
 Cuando un recurso web tiene protección activa, Traefik lo enruta primero por Pangolite para validar el acceso y después Pangolite lo proxyfica hacia el backend local o remoto.
+
+## Diagnóstico y operación
+
+Ejecuta un diagnóstico rápido de la instalación:
+
+```bash
+sudo /opt/pangolite/pangolite doctor
+```
+
+El diagnóstico revisa SQLite, migraciones, rutas escribibles, Traefik, puertos 80/443 y servicios.
+
+Los respaldos automáticos se configuran con:
+
+```env
+PANGOLITE_BACKUP_INTERVAL_HOURS=24
+PANGOLITE_BACKUP_RETENTION_DAYS=14
+```
+
+Usa `0` en `PANGOLITE_BACKUP_INTERVAL_HOURS` para desactivar respaldos automáticos. Los respaldos automáticos antiguos se limpian según la retención configurada.
+
+El instalador verifica `checksums.txt` del release antes de instalar el paquete descargado. Si el checksum no coincide, la instalación se cancela.
+
+Los releases incluyen clientes para:
+
+- Linux amd64
+- Linux arm64
+- Linux 386
+- Linux armv7
+- Windows amd64

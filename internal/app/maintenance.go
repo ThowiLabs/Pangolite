@@ -292,3 +292,63 @@ func ensureInsideDir(dir, path string) error {
 	}
 	return nil
 }
+
+func DeleteOldBackups(backupDir string, retentionDays int) (int, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+	backups, err := ListBackups(backupDir)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	removed := 0
+	for _, backup := range backups {
+		if !strings.Contains(backup.Name, "-auto-") || backup.CreatedAt.After(cutoff) {
+			continue
+		}
+		path, err := BackupPath(backupDir, backup.Name)
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(path); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func (s *Server) startAutomaticBackups(ctx context.Context) {
+	intervalHours := s.config.BackupIntervalHours
+	if intervalHours <= 0 {
+		if s.log != nil {
+			s.log.Info("respaldos automaticos desactivados")
+		}
+		return
+	}
+	interval := time.Duration(intervalHours) * time.Hour
+	go func() {
+		if s.log != nil {
+			s.log.Info("respaldos automaticos activos", "interval_hours", intervalHours, "retention_days", s.config.BackupRetentionDays, "dir", s.config.BackupDir)
+		}
+		timer := time.NewTimer(2 * time.Minute)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				backup, err := s.store.CreateBackup(ctx, s.config.BackupDir, "auto")
+				if err != nil {
+					if s.log != nil {
+						s.log.Warn("respaldo automatico fallo", "error", err.Error())
+					}
+				} else if s.log != nil {
+					removed, _ := DeleteOldBackups(s.config.BackupDir, s.config.BackupRetentionDays)
+					s.log.Info("respaldo automatico creado", "name", backup.Name, "size", backup.SizeBytes, "removed_old", removed)
+				}
+				timer.Reset(interval)
+			}
+		}
+	}()
+}

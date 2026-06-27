@@ -37,6 +37,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return agent(args, stdout)
 	case "render-traefik":
 		return renderTraefik(args, stdout)
+	case "doctor":
+		return doctor(args, stdout)
 	case "healthcheck":
 		return healthcheck(args)
 	case "smoke-backend":
@@ -139,6 +141,18 @@ func renderTraefik(args []string, stdout io.Writer) error {
 	return nil
 }
 
+func doctor(args []string, stdout io.Writer) error {
+	cfg := app.LoadConfigFromEnv()
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+	app.ApplyCommonFlags(fs, &cfg)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg.ResolveBootstrapPaths()
+	return app.RunDoctor(context.Background(), cfg, stdout)
+}
+
 func healthcheck(args []string) error {
 	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
 	url := fs.String("url", "http://127.0.0.1:2424/healthz", "url de salud")
@@ -202,6 +216,7 @@ func printHelp(w io.Writer) {
   pangolite serve [flags]
   pangolite agent [--server-url https://proxy.example.com --agent-id ID --token TOKEN]
   pangolite render-traefik [flags]
+  pangolite doctor [flags]
   pangolite healthcheck [--url http://127.0.0.1:2424/healthz]
   pangolite smoke-backend [--addr 127.0.0.1:18081]
 

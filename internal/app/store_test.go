@@ -97,6 +97,13 @@ func TestStoreUpdateResourceControl(t *testing.T) {
 	if !ok || found.ID != created.ID || found.Enabled {
 		t.Fatalf("se esperaba recurso suspendido enrutable por Pangolite: %#v", found)
 	}
+	hidden, err := store.UpdateResourceControl(created.ID, false, DisabledResponseHidden, 404, "<h1>No debe guardarse</h1>", "payment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hidden.DisabledResponseMode != DisabledResponseHidden || hidden.DisabledStatusCode != 404 || hidden.DisabledHTML != "" || hidden.DisabledTemplateID != "" {
+		t.Fatalf("suspension oculta inesperada: %#v", hidden)
+	}
 }
 
 func TestProjectsSeparateResourcesAndAgents(t *testing.T) {

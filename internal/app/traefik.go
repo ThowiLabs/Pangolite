@@ -1,14 +1,17 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"text/template"
+	"time"
 )
 
 type TraefikConfig struct {
@@ -207,6 +210,21 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 	if err := os.MkdirAll(filepath.Join(c.TraefikDir, "dynamic"), 0o755); err != nil {
 		return err
 	}
+	staticPath := filepath.Join(c.TraefikDir, "traefik.yml")
+	dynamicPath := filepath.Join(c.TraefikDir, "dynamic", "pangolite-dashboard.yml")
+	backups, err := backupTraefikFiles(staticPath, dynamicPath)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if committed {
+			cleanupTraefikBackups(backups)
+		} else {
+			restoreTraefikBackups(backups)
+		}
+	}()
+
 	data := StaticTraefikData{
 		DashboardDomain:  c.DashboardDomain,
 		LetsEncryptEmail: c.LetsEncryptEmail,
@@ -222,10 +240,10 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 		data.ControlURL = fmt.Sprintf("http://127.0.0.1:%d/api/v1/traefik-config", port)
 		data.PanelURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	}
-	if err := renderFile(filepath.Join(c.TraefikDir, "traefik.yml"), traefikYAMLTemplate, data, 0o644); err != nil {
+	if err := renderFile(staticPath, traefikYAMLTemplate, data, 0o644); err != nil {
 		return err
 	}
-	if err := RenderDynamicTraefik(c); err != nil {
+	if err := renderDynamicTraefikFile(c); err != nil {
 		return err
 	}
 	acme := filepath.Join(c.TraefikDir, "acme.json")
@@ -237,6 +255,10 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 	if err := os.Chmod(acme, 0o600); err != nil {
 		return err
 	}
+	if err := ValidateTraefikConfig(c); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
@@ -244,6 +266,30 @@ func RenderDynamicTraefik(c Config) error {
 	if err := c.ValidateForRender(); err != nil {
 		return err
 	}
+	dynamicPath := filepath.Join(c.TraefikDir, "dynamic", "pangolite-dashboard.yml")
+	backups, err := backupTraefikFiles(dynamicPath)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if committed {
+			cleanupTraefikBackups(backups)
+		} else {
+			restoreTraefikBackups(backups)
+		}
+	}()
+	if err := renderDynamicTraefikFile(c); err != nil {
+		return err
+	}
+	if err := ValidateTraefikConfig(c); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func renderDynamicTraefikFile(c Config) error {
 	dynamicDir := filepath.Join(c.TraefikDir, "dynamic")
 	if err := os.MkdirAll(dynamicDir, 0o755); err != nil {
 		return err
@@ -271,6 +317,79 @@ func TraefikPortSignature(resources []Resource) string {
 		parts = append(parts, fmt.Sprintf("udp:%d", port))
 	}
 	return strings.Join(parts, ",")
+}
+
+type traefikFileBackup struct {
+	Path    string
+	Backup  string
+	Existed bool
+}
+
+func backupTraefikFiles(paths ...string) ([]traefikFileBackup, error) {
+	stamp := time.Now().UTC().Format("20060102150405")
+	out := make([]traefikFileBackup, 0, len(paths))
+	for _, path := range paths {
+		item := traefikFileBackup{Path: path, Backup: path + ".bak-" + stamp}
+		if _, err := os.Stat(path); err == nil {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("respaldar %s: %w", path, err)
+			}
+			if err := os.WriteFile(item.Backup, data, 0o600); err != nil {
+				return nil, fmt.Errorf("escribir respaldo %s: %w", item.Backup, err)
+			}
+			item.Existed = true
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func restoreTraefikBackups(backups []traefikFileBackup) {
+	for _, item := range backups {
+		if item.Existed {
+			if data, err := os.ReadFile(item.Backup); err == nil {
+				_ = os.WriteFile(item.Path, data, 0o644)
+			}
+			_ = os.Remove(item.Backup)
+		} else {
+			_ = os.Remove(item.Path)
+		}
+	}
+}
+
+func cleanupTraefikBackups(backups []traefikFileBackup) {
+	for _, item := range backups {
+		if item.Backup != "" {
+			_ = os.Remove(item.Backup)
+		}
+	}
+}
+
+func ValidateTraefikConfig(c Config) error {
+	if os.Getenv("PANGOLITE_SKIP_TRAEFIK_CHECK") == "1" {
+		return nil
+	}
+	path := filepath.Join(c.TraefikDir, "traefik.yml")
+	if _, err := os.Stat(path); err != nil {
+		return nil
+	}
+	traefikBin, err := exec.LookPath("traefik")
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, traefikBin, "check", "--configFile", path)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("validacion Traefik fallo; se restauro la configuracion anterior: %s", msg)
+	}
+	return nil
 }
 
 func renderFile(path, tpl string, data any, perm os.FileMode) error {

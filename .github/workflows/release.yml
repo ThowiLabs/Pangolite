@@ -91,6 +91,9 @@ jobs:
           }
 
           build_bin linux amd64 "" ./cmd/pangolite-client build/public/pangolite-client-linux-amd64
+          build_bin linux arm64 "" ./cmd/pangolite-client build/public/pangolite-client-linux-arm64
+          build_bin linux 386 "" ./cmd/pangolite-client build/public/pangolite-client-linux-386
+          build_bin linux arm 7 ./cmd/pangolite-client build/public/pangolite-client-linux-armv7
           build_bin windows amd64 "" ./cmd/pangolite-client build/public/pangolite-client-windows-amd64.exe
 
           package_linux() {
@@ -104,6 +107,9 @@ jobs:
             build_bin linux "$goarch" "$goarm" ./cmd/pangolite "$pkgdir/pangolite"
             build_bin linux "$goarch" "$goarm" ./cmd/pangolite-client "$pkgdir/pangolite-client"
             cp build/public/pangolite-client-linux-amd64 "$pkgdir/public/pangolite-client-linux-amd64"
+            cp build/public/pangolite-client-linux-arm64 "$pkgdir/public/pangolite-client-linux-arm64"
+            cp build/public/pangolite-client-linux-386 "$pkgdir/public/pangolite-client-linux-386"
+            cp build/public/pangolite-client-linux-armv7 "$pkgdir/public/pangolite-client-linux-armv7"
             cp build/public/pangolite-client-windows-amd64.exe "$pkgdir/public/pangolite-client-windows-amd64.exe"
             cp install.sh README.md LICENSE "$pkgdir/"
             printf '%s\n' "$VERSION" > "$pkgdir/VERSION"
@@ -116,6 +122,9 @@ jobs:
           package_linux armv7 arm 7
 
           cp build/public/pangolite-client-linux-amd64 dist/pangolite-client_linux_amd64
+          cp build/public/pangolite-client-linux-arm64 dist/pangolite-client_linux_arm64
+          cp build/public/pangolite-client-linux-386 dist/pangolite-client_linux_386
+          cp build/public/pangolite-client-linux-armv7 dist/pangolite-client_linux_armv7
           cp build/public/pangolite-client-windows-amd64.exe dist/pangolite-client_windows_amd64.exe
           (cd dist && sha256sum * > checksums.txt)
 
@@ -137,6 +146,9 @@ jobs:
             echo "- Linux 386"
             echo "- Linux armv7"
             echo "- Cliente Linux amd64"
+            echo "- Cliente Linux arm64"
+            echo "- Cliente Linux 386"
+            echo "- Cliente Linux armv7"
             echo "- Cliente Windows amd64"
           } > release-notes.md
 
