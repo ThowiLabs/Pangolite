@@ -27,6 +27,7 @@ type Config struct {
 	SessionDays          int
 	CookieSecureOverride string
 	AutoTraefik          bool
+	LogPath              string
 }
 
 func LoadConfigFromEnv() Config {
@@ -44,16 +45,20 @@ func LoadConfigFromEnv() Config {
 		SessionDays:          envInt("PANGOLITE_SESSION_DAYS", 30),
 		CookieSecureOverride: strings.TrimSpace(os.Getenv("PANGOLITE_COOKIE_SECURE")),
 		AutoTraefik:          env("PANGOLITE_AUTO_TRAEFIK", "1") != "0",
+		LogPath:              env("PANGOLITE_LOG_FILE", ""),
 	}
 }
 
 func (c *Config) ResolveBootstrapPaths() {
+	base := filepath.Dir(c.DataPath)
+	if base == "." || base == "" {
+		base = "."
+	}
 	if strings.TrimSpace(c.InitialPasswordFile) == "" {
-		base := filepath.Dir(c.DataPath)
-		if base == "." || base == "" {
-			base = "."
-		}
 		c.InitialPasswordFile = filepath.Join(base, "admin-password.txt")
+	}
+	if strings.TrimSpace(c.LogPath) == "" {
+		c.LogPath = filepath.Join(base, "pangolite.log")
 	}
 }
 
@@ -92,6 +97,7 @@ func ApplyCommonFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.PublicIP, "public-ip", c.PublicIP, "IP publica del servidor para validar DNS")
 	fs.StringVar(&c.InitialAdminUser, "initial-admin-user", c.InitialAdminUser, "usuario admin inicial")
 	fs.StringVar(&c.InitialPasswordFile, "initial-password-file", c.InitialPasswordFile, "archivo donde se guarda la password temporal inicial")
+	fs.StringVar(&c.LogPath, "log-file", c.LogPath, "archivo de logs rotativo")
 }
 
 func newSecret(bytesLen int) (string, error) {
@@ -135,7 +141,7 @@ func PrintServeConfig(c Config) string {
 	if c.InsecureDev {
 		mode = "desarrollo-inseguro"
 	}
-	return fmt.Sprintf("addr=%s db=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, mode, c.SessionDays, c.PublicIP)
+	return fmt.Sprintf("addr=%s db=%s log=%s mode=%s session_days=%d public_ip=%s", c.Addr, c.DataPath, c.LogPath, mode, c.SessionDays, c.PublicIP)
 }
 
 func sessionDuration(c Config) time.Duration {

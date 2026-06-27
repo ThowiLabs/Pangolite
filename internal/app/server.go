@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,10 +9,13 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -26,6 +30,9 @@ type Server struct {
 	bridges *BridgeManager
 	mux     *http.ServeMux
 	log     *slog.Logger
+
+	traefikRestartMu    sync.Mutex
+	traefikRestartTimer *time.Timer
 }
 
 type requestSession struct {
@@ -46,7 +53,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 }
 
 func (s *Server) Handler() http.Handler {
-	return securityHeaders(s.logRequests(s.mux))
+	return securityHeaders(s.recoverRequests(s.logRequests(s.mux)))
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -93,14 +100,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/settings", s.requireAuth(s.getSettings))
 	s.mux.HandleFunc("PATCH /api/settings", s.requireAuth(s.updateSettings))
 	s.mux.HandleFunc("GET /api/system/network", s.requireAuth(s.getNetworkInfo))
+	s.mux.HandleFunc("GET /api/system/logs", s.requireAuth(s.getSystemLogs))
 	s.mux.HandleFunc("GET /api/domains", s.requireAuth(s.listManagedDomains))
 	s.mux.HandleFunc("POST /api/domains", s.requireAuth(s.createManagedDomain))
 	s.mux.HandleFunc("DELETE /api/domains/{id}", s.requireAuth(s.deleteManagedDomain))
 	s.mux.HandleFunc("GET /api/resources", s.requireAuth(s.listResources))
+	s.mux.HandleFunc("GET /api/resources/health", s.requireAuth(s.resourceHealth))
 	s.mux.HandleFunc("POST /api/resources", s.requireAuth(s.createResource))
 	s.mux.HandleFunc("PATCH /api/resources/{id}", s.requireAuth(s.updateResourceControl))
 	s.mux.HandleFunc("DELETE /api/resources/{id}", s.requireAuth(s.deleteResource))
 	s.mux.HandleFunc("GET /api/agents", s.requireAuth(s.listAgents))
+	s.mux.HandleFunc("GET /api/agents/{id}", s.requireAuth(s.getAgentDetail))
 	s.mux.HandleFunc("POST /api/agents", s.requireAuth(s.createAgent))
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.requireAuth(s.disableAgent))
 	s.mux.HandleFunc("POST /api/agents/{id}/token", s.requireAuth(s.rotateAgentToken))
@@ -110,6 +120,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agent/stream-poll", s.agentStreamPoll)
 	s.mux.HandleFunc("GET /api/agent/streams/{id}", s.agentStreamSocket)
 	s.mux.HandleFunc("GET /download/pangolite-client-linux-amd64", s.downloadClientLinuxAMD64)
+	s.mux.HandleFunc("GET /download/pangolite-client-windows-amd64.exe", s.downloadClientWindowsAMD64)
 	s.mux.HandleFunc("/", s.publicOrIndex)
 }
 
@@ -277,6 +288,22 @@ func (s *Server) getNetworkInfo(w http.ResponseWriter, _ *http.Request, _ reques
 	writeJSON(w, http.StatusOK, DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain))
 }
 
+func (s *Server) getSystemLogs(w http.ResponseWriter, r *http.Request, _ requestSession) {
+	limit := 300
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(raw, "%d", &parsed); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	lines, err := ReadLastLogLines(s.config.LogPath, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": s.config.LogPath, "maxEntries": defaultMaxLogLines, "lines": lines})
+}
+
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs requestSession) {
 	defer r.Body.Close()
 	before := s.store.LoadAppSettings(s.config)
@@ -374,17 +401,19 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 	}
 	resource.Enabled = true
 	if err := s.validatePublicPortForCreate(resource); err != nil {
+		s.log.Warn("validacion de puerto publico fallo", "mode", resource.Mode, "public_port", resource.PublicPort, "origin", resource.OriginType, "agent", resource.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	beforeResources := s.store.ListResources()
 	created, err := s.store.AddResource(resource)
 	if err != nil {
+		s.log.Warn("crear recurso fallo", "mode", resource.Mode, "public_port", resource.PublicPort, "origin", resource.OriginType, "agent", resource.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
-	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "public_port", created.PublicPort, "tunnel_port", created.TunnelPort, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 	writeJSON(w, http.StatusCreated, created)
 }
@@ -414,12 +443,12 @@ func (s *Server) validatePublicPort(mode string, port int, excludeID string, che
 	if port == ListenPortFromAddr(s.config.Addr) {
 		return fmt.Errorf("el puerto publico %d esta reservado por el panel Pangolite", port)
 	}
-	exists, err := s.store.ResourcePublicPortExistsExcept(mode, port, excludeID)
+	conflict, err := s.store.ResourcePublicPortConflictExcept(mode, port, excludeID)
 	if err != nil {
 		return err
 	}
-	if exists {
-		return fmt.Errorf("ya existe un recurso %s usando el puerto publico %d", strings.ToUpper(mode), port)
+	if conflict.ID != "" {
+		return fmt.Errorf("ya existe un recurso %s usando el puerto publico %d: %s (%s)", strings.ToUpper(mode), port, conflict.Name, conflict.ID)
 	}
 	if !checkSystem {
 		return nil
@@ -438,7 +467,13 @@ func (s *Server) deleteResource(w http.ResponseWriter, r *http.Request, rs reque
 	}
 	beforeResources := s.store.ListResources()
 	if err := s.store.DeleteResource(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		if strings.Contains(strings.ToLower(err.Error()), "no encontrado") {
+			// La eliminacion es idempotente para evitar dobles clicks o reintentos del navegador.
+			s.log.Info("recurso ya estaba eliminado", "id", id, "user", rs.User.Username)
+			writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "alreadyDeleted": true, "traefik": TraefikApplyResult{OK: true, Message: "El recurso ya estaba eliminado"}})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
@@ -549,11 +584,13 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	next.DisabledHTML = req.DisabledHTML
 	next.Normalize(time.Now().UTC())
 	if err := s.validatePublicPortForUpdate(current, next); err != nil {
+		s.log.Warn("validacion de puerto publico en edicion fallo", "resource", id, "mode", next.Mode, "public_port", next.PublicPort, "origin", next.OriginType, "agent", next.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	updated, err := s.store.UpdateResource(id, next)
 	if err != nil {
+		s.log.Warn("editar recurso fallo", "resource", id, "mode", next.Mode, "public_port", next.PublicPort, "origin", next.OriginType, "agent", next.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -570,6 +607,17 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request, _ requestSes
 		agents = s.store.ListAgentsByProject(projectID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+}
+
+func (s *Server) getAgentDetail(w http.ResponseWriter, r *http.Request, _ requestSession) {
+	id := r.PathValue("id")
+	agent, err := s.store.AgentByID(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	resources := s.store.ListResourcesByAgent(id)
+	writeJSON(w, http.StatusOK, map[string]any{"agent": agent, "resources": resources})
 }
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request, rs requestSession) {
@@ -597,9 +645,13 @@ func (s *Server) attachAgentCommands(r *http.Request, agent *Agent) {
 		return
 	}
 	base := s.publicBaseURL(r)
-	downloadURL := strings.TrimRight(base, "/") + "/download/pangolite-client-linux-amd64"
-	agent.InstallCommand = fmt.Sprintf("curl -fsSL %s -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s --agent-id %s --token %s", shellQuote(downloadURL), shellQuote(base), shellQuote(agent.ID), shellQuote(agent.Token))
+	baseClean := strings.TrimRight(base, "/")
+	linuxURL := baseClean + "/download/pangolite-client-linux-amd64"
+	winURL := baseClean + "/download/pangolite-client-windows-amd64.exe"
+	agent.InstallCommand = fmt.Sprintf("curl -fsSL %s -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s --agent-id %s --token %s", shellQuote(linuxURL), shellQuote(baseClean), shellQuote(agent.ID), shellQuote(agent.Token))
 	agent.RemoveCommand = "sudo /opt/pangolite-client/pangolite-client --remove"
+	agent.WindowsInstallCommand = fmt.Sprintf("$u=%q; $o=Join-Path $env:TEMP 'pangolite-client.exe'; Invoke-WebRequest -UseBasicParsing $u -OutFile $o; Start-Process -Verb RunAs $o -ArgumentList '--install --server-url %s --agent-id %s --token %s'", winURL, baseClean, agent.ID, agent.Token)
+	agent.WindowsRemoveCommand = `Start-Process -Verb RunAs 'C:\ProgramData\Pangolite Client\pangolite-client.exe' -ArgumentList '--remove'`
 }
 
 func (s *Server) publicBaseURL(r *http.Request) string {
@@ -703,19 +755,46 @@ func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return TraefikApplyResult{OK: true, Message: "configuracion escrita; systemctl no disponible para reiniciar Traefik", StaticChanged: true}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "systemctl", "restart", "traefik")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
+	s.scheduleTraefikRestart("cambio de entrypoints TCP/UDP")
+	return TraefikApplyResult{OK: true, Message: "Traefik aplicara el cambio automaticamente en segundo plano", Restarted: false, StaticChanged: true, DynamicChanged: true}
+}
+
+func (s *Server) scheduleTraefikRestart(reason string) {
+	s.traefikRestartMu.Lock()
+	defer s.traefikRestartMu.Unlock()
+
+	if s.traefikRestartTimer != nil {
+		s.traefikRestartTimer.Stop()
+		if s.log != nil {
+			s.log.Info("reinicio de Traefik reprogramado", "reason", reason, "delay", "15s")
 		}
-		s.log.Warn("no se pudo reiniciar Traefik", "error", msg)
-		return TraefikApplyResult{OK: false, Message: "configuracion escrita, pero Traefik no reinicio: " + msg, StaticChanged: true}
+	} else if s.log != nil {
+		s.log.Info("reinicio de Traefik programado", "reason", reason, "delay", "15s")
 	}
-	return TraefikApplyResult{OK: true, Message: "Traefik actualizado automaticamente", Restarted: true, StaticChanged: true, DynamicChanged: true}
+
+	s.traefikRestartTimer = time.AfterFunc(15*time.Second, func() {
+		s.traefikRestartMu.Lock()
+		s.traefikRestartTimer = nil
+		s.traefikRestartMu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "systemctl", "restart", "traefik")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			msg := strings.TrimSpace(string(out))
+			if msg == "" {
+				msg = err.Error()
+			}
+			if s.log != nil {
+				s.log.Warn("reinicio de Traefik fallo", "reason", reason, "error", msg)
+			}
+			return
+		}
+		if s.log != nil {
+			s.log.Info("Traefik reiniciado automaticamente", "reason", reason)
+		}
+	})
 }
 
 func (s *Server) refreshBridgeListeners() error {
@@ -723,6 +802,132 @@ func (s *Server) refreshBridgeListeners() error {
 		return nil
 	}
 	return s.bridges.Sync(s.store.ListResources())
+}
+
+func (s *Server) resourceHealth(w http.ResponseWriter, r *http.Request, _ requestSession) {
+	projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+	resources := s.store.ListResources()
+	if projectID != "" {
+		resources = s.store.ListResourcesByProject(projectID)
+	}
+	checks := make([]ResourceHealth, 0, len(resources))
+	for _, res := range resources {
+		checks = append(checks, s.checkResourceHealth(r.Context(), res))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"checks": checks})
+}
+
+func (s *Server) checkResourceHealth(ctx context.Context, res Resource) ResourceHealth {
+	out := ResourceHealth{ResourceID: res.ID, Name: res.Name, Mode: res.Mode, Status: "unknown", CheckedAt: time.Now().UTC()}
+	if !res.Enabled {
+		out.Status = "suspended"
+		out.Message = "recurso suspendido"
+		return out
+	}
+	if res.UsesAgent() {
+		ag, err := s.store.AgentByID(res.AgentID)
+		if err != nil || !ag.Online {
+			out.Status = "offline"
+			out.Message = "cliente NAT sin conexion reciente"
+			return out
+		}
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	switch res.Mode {
+	case ModeHTTP:
+		scheme := res.BackendScheme
+		if scheme == "" {
+			scheme = "http"
+		}
+		if res.UsesAgent() {
+			jobID, err := randomID()
+			if err != nil {
+				out.Status = "error"
+				out.Message = err.Error()
+				return out
+			}
+			resp, err := s.hub.Submit(checkCtx, res.AgentID, AgentJob{ID: jobID, Kind: ModeHTTP, ResourceID: res.ID, Method: http.MethodHead, Path: "/", TargetScheme: scheme, TargetHost: res.BackendHost, TargetPort: res.BackendPort})
+			if err != nil {
+				out.Status = "warning"
+				out.Message = err.Error()
+				return out
+			}
+			if resp.Error != "" {
+				out.Status = "warning"
+				out.Message = resp.Error
+				return out
+			}
+			out.Status = "ok"
+			out.Message = fmt.Sprintf("backend remoto responde HTTP %d", resp.StatusCode)
+			return out
+		}
+		url := fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(res.BackendHost, fmt.Sprint(res.BackendPort)))
+		req, err := http.NewRequestWithContext(checkCtx, http.MethodHead, url, nil)
+		if err != nil {
+			out.Status = "error"
+			out.Message = err.Error()
+			return out
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			out.Status = "warning"
+			out.Message = err.Error()
+			return out
+		}
+		_ = resp.Body.Close()
+		out.Status = "ok"
+		out.Message = fmt.Sprintf("backend responde HTTP %d", resp.StatusCode)
+		return out
+	case ModeTCP:
+		addr := res.ServiceAddress()
+		if res.UsesAgent() {
+			addr = res.BridgeAddress()
+		}
+		d := net.Dialer{Timeout: 2 * time.Second}
+		conn, err := d.DialContext(checkCtx, "tcp", addr)
+		if err != nil {
+			out.Status = "warning"
+			out.Message = err.Error()
+			return out
+		}
+		_ = conn.Close()
+		out.Status = "ok"
+		out.Message = "conexion TCP aceptada"
+		return out
+	default:
+		out.Status = "unknown"
+		out.Message = "health check no disponible para este protocolo"
+		return out
+	}
+}
+
+func (s *Server) touchAgentFromRequest(agentID string, r *http.Request) {
+	s.store.TouchAgent(agentID, AgentHeartbeat{
+		OS:        r.Header.Get("X-Pangolite-Client-OS"),
+		Arch:      r.Header.Get("X-Pangolite-Client-Arch"),
+		Hostname:  r.Header.Get("X-Pangolite-Client-Hostname"),
+		PrivateIP: r.Header.Get("X-Pangolite-Client-Private-IP"),
+		PublicIP:  requestPublicIP(r),
+		Version:   r.Header.Get("X-Pangolite-Client-Version"),
+		LastError: r.Header.Get("X-Pangolite-Client-Last-Error"),
+	})
+}
+
+func requestPublicIP(r *http.Request) string {
+	for _, h := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			if i := strings.IndexByte(v, ','); i >= 0 {
+				v = strings.TrimSpace(v[:i])
+			}
+			return v
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (s *Server) downloadClientLinuxAMD64(w http.ResponseWriter, r *http.Request) {
@@ -740,12 +945,28 @@ func (s *Server) downloadClientLinuxAMD64(w http.ResponseWriter, r *http.Request
 	http.ServeFile(w, r, path)
 }
 
+func (s *Server) downloadClientWindowsAMD64(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(os.Getenv("PANGOLITE_CLIENT_WINDOWS_AMD64"))
+	if path == "" {
+		path = "/opt/pangolite/public/pangolite-client-windows-amd64.exe"
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		writeError(w, http.StatusNotFound, "cliente Windows amd64 no disponible en este servidor")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="pangolite-client-windows-amd64.exe"`)
+	http.ServeFile(w, r, path)
+}
+
 func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {
 	agentID, token := agentCredentials(r)
 	if _, ok := s.store.AuthenticateAgent(agentID, token); !ok {
 		writeError(w, http.StatusUnauthorized, "credenciales de agente invalidas")
 		return
 	}
+	s.touchAgentFromRequest(agentID, r)
 	ctx, cancel := context.WithTimeout(r.Context(), AgentPollTimeout)
 	defer cancel()
 	job, ok, err := s.hub.Poll(ctx, agentID)
@@ -794,6 +1015,7 @@ func (s *Server) agentStreamPoll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "credenciales de cliente invalidas")
 		return
 	}
+	s.touchAgentFromRequest(agentID, r)
 	ctx, cancel := context.WithTimeout(r.Context(), AgentPollTimeout)
 	defer cancel()
 	job, ok, err := s.hub.PollStream(ctx, agentID)
@@ -814,6 +1036,7 @@ func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "credenciales de cliente invalidas")
 		return
 	}
+	s.touchAgentFromRequest(agentID, r)
 	streamID := r.PathValue("id")
 	if streamID == "" {
 		writeError(w, http.StatusBadRequest, "stream id requerido")
@@ -1035,12 +1258,63 @@ func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
 	writeHTML(w, appHTML)
 }
 
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(p)
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer no soporta hijack")
+	}
+	return hijacker.Hijack()
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+func (s *Server) recoverRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.log.Error("panic en request", "method", r.Method, "path", r.URL.Path, "host", r.Host, "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+				writeError(w, http.StatusInternalServerError, "error interno; revisa logs del sistema")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
 		if r.URL.Path != "/healthz" && r.URL.Path != "/api/v1/traefik-config" && r.URL.Path != "/api/agent/poll" && !strings.HasPrefix(r.URL.Path, "/assets/") {
-			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "host", r.Host, "duration", time.Since(start).String())
+			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "host", r.Host, "status", rec.status, "duration", time.Since(start).String())
 		}
 	})
 }

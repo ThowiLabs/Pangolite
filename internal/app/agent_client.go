@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -221,9 +223,7 @@ func handleAgentStream(ctx context.Context, base string, cfg AgentClientConfig, 
 		return
 	}
 	header := http.Header{}
-	header.Set("Authorization", "Bearer "+cfg.Token)
-	header.Set("X-Pangolite-Agent", cfg.AgentID)
-	header.Set("User-Agent", "pangolite-client/0.4")
+	setAgentAuthHeader(header, cfg)
 	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		logger.Warn("websocket de stream fallo", "stream", job.ID, "error", err.Error())
@@ -277,9 +277,54 @@ func agentWebSocketURL(base, path string) (string, error) {
 }
 
 func setAgentAuth(req *http.Request, cfg AgentClientConfig) {
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	req.Header.Set("X-Pangolite-Agent", cfg.AgentID)
-	req.Header.Set("User-Agent", "pangolite-client/0.4")
+	setAgentAuthHeader(req.Header, cfg)
+}
+
+func setAgentAuthHeader(h http.Header, cfg AgentClientConfig) {
+	h.Set("Authorization", "Bearer "+cfg.Token)
+	h.Set("X-Pangolite-Agent", cfg.AgentID)
+	h.Set("User-Agent", "pangolite-client/0.5")
+	h.Set("X-Pangolite-Client-Version", "0.5")
+	h.Set("X-Pangolite-Client-OS", runtime.GOOS)
+	h.Set("X-Pangolite-Client-Arch", runtime.GOARCH)
+	if hn, err := os.Hostname(); err == nil {
+		h.Set("X-Pangolite-Client-Hostname", hn)
+	}
+	if ip := firstPrivateIP(); ip != "" {
+		h.Set("X-Pangolite-Client-Private-IP", ip)
+	}
+}
+
+func firstPrivateIP() string {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifs {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			if v4 := ip.To4(); v4 != nil {
+				return v4.String()
+			}
+		}
+	}
+	return ""
 }
 
 func sleepContext(ctx context.Context, d time.Duration) {

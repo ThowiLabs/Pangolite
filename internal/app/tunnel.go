@@ -48,6 +48,7 @@ type StreamSession struct {
 	ID         string
 	AgentID    string
 	ClientConn net.Conn
+	Attached   chan struct{}
 	Done       chan struct{}
 	CreatedAt  time.Time
 }

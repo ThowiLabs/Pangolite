@@ -52,6 +52,7 @@ type Resource struct {
 	Domain               string    `json:"domain,omitempty"`
 	PathPrefix           string    `json:"pathPrefix,omitempty"`
 	PublicPort           int       `json:"publicPort,omitempty"`
+	TunnelPort           int       `json:"tunnelPort,omitempty"`
 	BackendScheme        string    `json:"backendScheme,omitempty"`
 	BackendHost          string    `json:"backendHost"`
 	BackendPort          int       `json:"backendPort"`
@@ -67,29 +68,51 @@ type Resource struct {
 }
 
 type Agent struct {
-	ProjectID      string    `json:"projectId"`
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Token          string    `json:"token,omitempty"`
-	TokenHash      string    `json:"-"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-	LastSeen       time.Time `json:"lastSeen,omitempty"`
-	InstallCommand string    `json:"installCommand,omitempty"`
-	RemoveCommand  string    `json:"removeCommand,omitempty"`
+	ProjectID             string    `json:"projectId"`
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	Token                 string    `json:"token,omitempty"`
+	TokenHash             string    `json:"-"`
+	Enabled               bool      `json:"enabled"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
+	LastSeen              time.Time `json:"lastSeen,omitempty"`
+	OS                    string    `json:"os,omitempty"`
+	Arch                  string    `json:"arch,omitempty"`
+	Hostname              string    `json:"hostname,omitempty"`
+	PublicIP              string    `json:"publicIp,omitempty"`
+	PrivateIP             string    `json:"privateIp,omitempty"`
+	Version               string    `json:"version,omitempty"`
+	LastError             string    `json:"lastError,omitempty"`
+	Online                bool      `json:"online"`
+	ResourceCount         int       `json:"resourceCount"`
+	InstallCommand        string    `json:"installCommand,omitempty"`
+	RemoveCommand         string    `json:"removeCommand,omitempty"`
+	WindowsInstallCommand string    `json:"windowsInstallCommand,omitempty"`
+	WindowsRemoveCommand  string    `json:"windowsRemoveCommand,omitempty"`
 }
 
 type AgentPublic struct {
-	ProjectID      string    `json:"projectId"`
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-	LastSeen       time.Time `json:"lastSeen,omitempty"`
-	InstallCommand string    `json:"installCommand,omitempty"`
-	RemoveCommand  string    `json:"removeCommand,omitempty"`
+	ProjectID             string    `json:"projectId"`
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	Enabled               bool      `json:"enabled"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
+	LastSeen              time.Time `json:"lastSeen,omitempty"`
+	OS                    string    `json:"os,omitempty"`
+	Arch                  string    `json:"arch,omitempty"`
+	Hostname              string    `json:"hostname,omitempty"`
+	PublicIP              string    `json:"publicIp,omitempty"`
+	PrivateIP             string    `json:"privateIp,omitempty"`
+	Version               string    `json:"version,omitempty"`
+	LastError             string    `json:"lastError,omitempty"`
+	Online                bool      `json:"online"`
+	ResourceCount         int       `json:"resourceCount"`
+	InstallCommand        string    `json:"installCommand,omitempty"`
+	RemoveCommand         string    `json:"removeCommand,omitempty"`
+	WindowsInstallCommand string    `json:"windowsInstallCommand,omitempty"`
+	WindowsRemoveCommand  string    `json:"windowsRemoveCommand,omitempty"`
 }
 
 type User struct {
@@ -99,6 +122,25 @@ type User struct {
 	ForcePasswordChange bool      `json:"forcePasswordChange"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
+}
+
+type AgentHeartbeat struct {
+	OS        string
+	Arch      string
+	Hostname  string
+	PublicIP  string
+	PrivateIP string
+	Version   string
+	LastError string
+}
+
+type ResourceHealth struct {
+	ResourceID string    `json:"resourceId"`
+	Name       string    `json:"name"`
+	Mode       string    `json:"mode"`
+	Status     string    `json:"status"`
+	Message    string    `json:"message"`
+	CheckedAt  time.Time `json:"checkedAt"`
 }
 
 type Session struct {
@@ -387,7 +429,7 @@ func (a Agent) Validate() error {
 }
 
 func (a Agent) Public() AgentPublic {
-	return AgentPublic{ProjectID: a.ProjectID, ID: a.ID, Name: a.Name, Enabled: a.Enabled, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, LastSeen: a.LastSeen}
+	return AgentPublic{ProjectID: a.ProjectID, ID: a.ID, Name: a.Name, Enabled: a.Enabled, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, LastSeen: a.LastSeen, OS: a.OS, Arch: a.Arch, Hostname: a.Hostname, PublicIP: a.PublicIP, PrivateIP: a.PrivateIP, Version: a.Version, LastError: a.LastError, Online: a.Online, ResourceCount: a.ResourceCount}
 }
 
 func NormalizeUsername(username string) string {

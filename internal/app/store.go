@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -97,7 +98,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			last_seen TEXT
+			last_seen TEXT,
+			os TEXT NOT NULL DEFAULT '',
+			arch TEXT NOT NULL DEFAULT '',
+			hostname TEXT NOT NULL DEFAULT '',
+			public_ip TEXT NOT NULL DEFAULT '',
+			private_ip TEXT NOT NULL DEFAULT '',
+			version TEXT NOT NULL DEFAULT '',
+			last_error TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS resources (
 			id TEXT PRIMARY KEY,
@@ -122,7 +130,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_http_unique ON resources(domain, path_prefix) WHERE enabled = 1 AND mode = 'http'`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_port_unique ON resources(mode, public_port) WHERE enabled = 1 AND mode IN ('tcp','udp')`,
+		`DROP INDEX IF EXISTS idx_resources_port_unique`,
+		`CREATE INDEX IF NOT EXISTS idx_resources_port_lookup ON resources(mode, public_port) WHERE COALESCE(public_port,0) > 0 AND mode IN ('tcp','udp')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -131,6 +140,19 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := s.ensureColumn(ctx, "agents", "project_id", "TEXT NOT NULL DEFAULT 'default'"); err != nil {
 		return err
+	}
+	for _, col := range []struct{ name, def string }{
+		{"os", "TEXT NOT NULL DEFAULT ''"},
+		{"arch", "TEXT NOT NULL DEFAULT ''"},
+		{"hostname", "TEXT NOT NULL DEFAULT ''"},
+		{"public_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"private_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"version", "TEXT NOT NULL DEFAULT ''"},
+		{"last_error", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureColumn(ctx, "agents", col.name, col.def); err != nil {
+			return err
+		}
 	}
 	if err := s.ensureColumn(ctx, "resources", "project_id", "TEXT NOT NULL DEFAULT 'default'"); err != nil {
 		return err
@@ -670,22 +692,35 @@ func (s *Store) ResourcePublicPortExists(mode string, port int) (bool, error) {
 }
 
 func (s *Store) ResourcePublicPortExistsExcept(mode string, port int, excludeID string) (bool, error) {
-	mode = strings.TrimSpace(mode)
+	conflict, err := s.ResourcePublicPortConflictExcept(mode, port, excludeID)
+	return conflict.ID != "", err
+}
+
+func (s *Store) ResourcePublicPortConflictExcept(mode string, port int, excludeID string) (Resource, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
 	excludeID = strings.TrimSpace(excludeID)
 	if mode != ModeTCP && mode != ModeUDP {
-		return false, nil
+		return Resource{}, nil
 	}
-	var existing int
-	query := `SELECT COUNT(*) FROM resources WHERE mode = ? AND public_port = ?`
+	if port <= 0 {
+		return Resource{}, nil
+	}
+	query := resourceSelectSQL + ` WHERE mode = ? AND COALESCE(public_port,0) = ?`
 	args := []any{mode, port}
 	if excludeID != "" {
 		query += ` AND id <> ?`
 		args = append(args, excludeID)
 	}
-	if err := s.db.QueryRow(query, args...).Scan(&existing); err != nil {
-		return false, fmt.Errorf("validar puerto publico: %w", err)
+	query += ` ORDER BY updated_at DESC LIMIT 1`
+	row := s.db.QueryRow(query, args...)
+	res, err := scanResourceRows(row)
+	if err == nil {
+		return res, nil
 	}
-	return existing > 0, nil
+	if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "no rows") {
+		return Resource{}, nil
+	}
+	return Resource{}, fmt.Errorf("validar puerto publico: %w", err)
 }
 
 func (s *Store) AddResource(r Resource) (Resource, error) {
@@ -717,6 +752,15 @@ func (s *Store) AddResource(r Resource) (Resource, error) {
 		}
 		if existing > 0 {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path")
+		}
+	}
+	if r.Mode == ModeTCP || r.Mode == ModeUDP {
+		conflict, err := s.ResourcePublicPortConflictExcept(r.Mode, r.PublicPort, r.ID)
+		if err != nil {
+			return Resource{}, err
+		}
+		if conflict.ID != "" {
+			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d: %s (%s)", strings.ToUpper(r.Mode), r.PublicPort, conflict.Name, conflict.ID)
 		}
 	}
 	_, err := s.db.Exec(`INSERT INTO resources(id,project_id,name,mode,domain,path_prefix,public_port,tunnel_port,backend_scheme,backend_host,backend_port,origin_type,agent_id,tls,enabled,disabled_response_mode,disabled_status_code,disabled_html,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.ProjectID, r.Name, r.Mode, nullableString(r.Domain), nullableString(r.PathPrefix), nullableInt(r.PublicPort), nullableInt(r.TunnelPort), nullableString(r.BackendScheme), r.BackendHost, r.BackendPort, r.OriginType, nullableString(r.AgentID), boolInt(r.TLS), boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
@@ -776,12 +820,12 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 		}
 	}
 	if next.Mode == ModeTCP || next.Mode == ModeUDP {
-		exists, err := s.ResourcePublicPortExistsExcept(next.Mode, next.PublicPort, next.ID)
+		conflict, err := s.ResourcePublicPortConflictExcept(next.Mode, next.PublicPort, next.ID)
 		if err != nil {
 			return Resource{}, err
 		}
-		if exists {
-			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d", strings.ToUpper(next.Mode), next.PublicPort)
+		if conflict.ID != "" {
+			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d: %s (%s)", strings.ToUpper(next.Mode), next.PublicPort, conflict.Name, conflict.ID)
 		}
 	}
 	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, tunnel_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableInt(next.TunnelPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, formatTime(next.UpdatedAt), next.ID)
@@ -877,31 +921,74 @@ func (s *Store) ListAgents() []AgentPublic {
 }
 
 func (s *Store) ListAgentsByProject(projectID string) []AgentPublic {
-	query := `SELECT project_id,id,name,enabled,created_at,updated_at,COALESCE(last_seen,'') FROM agents`
+	query := `SELECT a.project_id,a.id,a.name,a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a`
 	args := []any{}
 	if strings.TrimSpace(projectID) != "" {
-		query += ` WHERE project_id = ?`
+		query += ` WHERE a.project_id = ?`
 		args = append(args, strings.TrimSpace(projectID))
 	}
-	query += ` ORDER BY created_at ASC`
+	query += ` ORDER BY a.created_at ASC`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return []AgentPublic{}
 	}
 	defer rows.Close()
 	out := []AgentPublic{}
+	now := time.Now().UTC()
 	for rows.Next() {
 		var a AgentPublic
 		var enabled int
 		var createdAt, updatedAt, lastSeen string
-		if err := rows.Scan(&a.ProjectID, &a.ID, &a.Name, &enabled, &createdAt, &updatedAt, &lastSeen); err != nil {
+		if err := rows.Scan(&a.ProjectID, &a.ID, &a.Name, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
 			continue
 		}
 		a.Enabled = enabled == 1
 		a.CreatedAt = parseTime(createdAt)
 		a.UpdatedAt = parseTime(updatedAt)
 		a.LastSeen = parseTime(lastSeen)
+		a.Online = a.Enabled && !a.LastSeen.IsZero() && now.Sub(a.LastSeen) <= 45*time.Second
 		out = append(out, a)
+	}
+	return out
+}
+
+func (s *Store) AgentByID(id string) (AgentPublic, error) {
+	id = strings.TrimSpace(id)
+	if !idRe.MatchString(id) {
+		return AgentPublic{}, errors.New("id de agente invalido")
+	}
+	query := `SELECT a.project_id,a.id,a.name,a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a WHERE a.id = ?`
+	row := s.db.QueryRow(query, id)
+	var a AgentPublic
+	var enabled int
+	var createdAt, updatedAt, lastSeen string
+	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
+		return AgentPublic{}, errors.New("agente no encontrado")
+	}
+	a.Enabled = enabled == 1
+	a.CreatedAt = parseTime(createdAt)
+	a.UpdatedAt = parseTime(updatedAt)
+	a.LastSeen = parseTime(lastSeen)
+	a.Online = a.Enabled && !a.LastSeen.IsZero() && time.Since(a.LastSeen) <= 45*time.Second
+	return a, nil
+}
+
+func (s *Store) ListResourcesByAgent(agentID string) []Resource {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return []Resource{}
+	}
+	rows, err := s.db.Query(resourceSelectSQL+` WHERE agent_id = ? ORDER BY created_at ASC`, agentID)
+	if err != nil {
+		return []Resource{}
+	}
+	defer rows.Close()
+	out := []Resource{}
+	for rows.Next() {
+		r, err := scanResourceRows(rows)
+		if err == nil {
+			out = append(out, r)
+		}
 	}
 	return out
 }
@@ -985,11 +1072,11 @@ func (s *Store) RotateAgentToken(id string) (Agent, error) {
 	if n == 0 {
 		return Agent{}, errors.New("agente no encontrado")
 	}
-	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,enabled,created_at,updated_at,COALESCE(last_seen,'') FROM agents WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,enabled,created_at,updated_at,COALESCE(last_seen,''),COALESCE(os,''),COALESCE(arch,''),COALESCE(hostname,''),COALESCE(public_ip,''),COALESCE(private_ip,''),COALESCE(version,''),COALESCE(last_error,'') FROM agents WHERE id = ?`, id)
 	var a Agent
 	var enabled int
 	var createdAt, updatedAt, lastSeen string
-	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &enabled, &createdAt, &updatedAt, &lastSeen); err != nil {
+	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError); err != nil {
 		return Agent{}, errors.New("agente no encontrado")
 	}
 	a.Token = token
@@ -1006,11 +1093,11 @@ func (s *Store) AuthenticateAgent(id, token string) (Agent, bool) {
 	if id == "" || token == "" {
 		return Agent{}, false
 	}
-	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,enabled,created_at,updated_at,COALESCE(last_seen,'') FROM agents WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,enabled,created_at,updated_at,COALESCE(last_seen,''),COALESCE(os,''),COALESCE(arch,''),COALESCE(hostname,''),COALESCE(public_ip,''),COALESCE(private_ip,''),COALESCE(version,''),COALESCE(last_error,'') FROM agents WHERE id = ?`, id)
 	var a Agent
 	var enabled int
 	var createdAt, updatedAt, lastSeen string
-	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &enabled, &createdAt, &updatedAt, &lastSeen); err != nil {
+	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError); err != nil {
 		return Agent{}, false
 	}
 	if enabled != 1 || subtle.ConstantTimeCompare([]byte(a.TokenHash), []byte(hashToken(token))) != 1 {
@@ -1027,6 +1114,50 @@ func (s *Store) AuthenticateAgent(id, token string) (Agent, bool) {
 		a.UpdatedAt = now
 	}
 	return a, true
+}
+
+func (s *Store) TouchAgent(id string, hb AgentHeartbeat) {
+	id = strings.TrimSpace(id)
+	if !idRe.MatchString(id) {
+		return
+	}
+	now := time.Now().UTC()
+	hb.OS = cleanMeta(hb.OS, 32)
+	hb.Arch = cleanMeta(hb.Arch, 32)
+	hb.Hostname = cleanMeta(hb.Hostname, 128)
+	hb.PublicIP = cleanIP(hb.PublicIP)
+	hb.PrivateIP = cleanIP(hb.PrivateIP)
+	hb.Version = cleanMeta(hb.Version, 64)
+	hb.LastError = cleanMeta(hb.LastError, 240)
+	_, _ = s.db.Exec(`UPDATE agents SET last_seen = ?, updated_at = ?, os = CASE WHEN ? <> '' THEN ? ELSE os END, arch = CASE WHEN ? <> '' THEN ? ELSE arch END, hostname = CASE WHEN ? <> '' THEN ? ELSE hostname END, public_ip = CASE WHEN ? <> '' THEN ? ELSE public_ip END, private_ip = CASE WHEN ? <> '' THEN ? ELSE private_ip END, version = CASE WHEN ? <> '' THEN ? ELSE version END, last_error = CASE WHEN ? <> '' THEN ? ELSE last_error END WHERE id = ?`, formatTime(now), formatTime(now), hb.OS, hb.OS, hb.Arch, hb.Arch, hb.Hostname, hb.Hostname, hb.PublicIP, hb.PublicIP, hb.PrivateIP, hb.PrivateIP, hb.Version, hb.Version, hb.LastError, hb.LastError, id)
+}
+
+func cleanMeta(v string, max int) string {
+	v = strings.TrimSpace(v)
+	v = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, v)
+	if len(v) > max {
+		v = v[:max]
+	}
+	return v
+}
+
+func cleanIP(v string) string {
+	v = strings.TrimSpace(v)
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	if host, _, err := net.SplitHostPort(v); err == nil {
+		v = host
+	}
+	if ip := net.ParseIP(v); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 func (s *Store) FindHTTPPanelResource(host, path string) (Resource, bool) {

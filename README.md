@@ -332,3 +332,65 @@ Capacidades iniciales del cliente NAT:
 - Instalación y eliminación automática del servicio del cliente.
 
 Para recursos TCP/UDP remotos, Pangolite crea un puerto interno local de puente, Traefik publica el puerto público y el cliente NAT abre una conexión saliente hacia el panel. No se requiere abrir puertos en el servidor remoto.
+
+## Logs operativos
+
+Pangolite escribe eventos del panel en stdout y en un archivo persistente configurado por `PANGOLITE_LOG_FILE`.
+
+Por defecto, `init.sh` usa:
+
+```env
+PANGOLITE_LOG_FILE=/opt/pangolite/data/pangolite.log
+```
+
+El archivo se mantiene en maximo 1000 entradas para evitar crecimiento indefinido. Desde el panel se pueden revisar en:
+
+```text
+/logs
+```
+
+Tambien se pueden consultar por API autenticada:
+
+```text
+GET /api/system/logs?limit=300
+```
+
+Los errores de validacion de puertos TCP/UDP registran modo, puerto publico, origen, cliente NAT y usuario que ejecuto la accion.
+
+### Nota operativa sobre TCP/UDP
+
+Los recursos TCP/UDP requieren entrypoints estáticos en Traefik. Pangolite escribe la configuración y programa el reinicio controlado de Traefik en segundo plano para que la API responda antes de aplicar el cambio. Los cambios HTTP/HTTPS continúan aplicándose por configuración dinámica sin reinicio.
+
+Los túneles TCP de clientes NAT usan WebSocket autenticado entre el cliente y Pangolite para transportar el stream bidireccional.
+
+## Experiencia del panel
+
+- Los comandos de instalación y eliminación del cliente NAT se muestran en bloques de código con botón para copiar al portapapeles.
+- Las acciones sensibles del panel usan un modal de confirmación propio: eliminar recursos, eliminar dominios, deshabilitar clientes, rotar tokens y suspensión/activación rápida.
+- Al crear o editar recursos, el panel muestra un modal de progreso mientras valida puertos, guarda cambios y aplica Traefik automáticamente.
+
+### Eliminación de recursos y Traefik
+
+La eliminación de recursos es idempotente para evitar errores por doble clic, reintentos del navegador o confirmaciones repetidas. Cuando se elimina un recurso desde el panel, la tabla se actualiza localmente de inmediato y luego se sincroniza con la API.
+
+Para recursos TCP/UDP, Pangolite agrupa los reinicios de Traefik durante unos segundos. Esto evita reinicios repetidos al eliminar varios recursos seguidos y reduce cortes temporales si el panel se usa detrás del mismo Traefik.
+
+
+## Clientes NAT
+
+Pangolite compila y publica clientes NAT para Linux amd64 y Windows amd64. Al crear o rotar un cliente desde el panel se generan comandos listos para copiar.
+
+- Linux: instala en `/opt/pangolite-client` y registra el servicio en systemd u OpenRC.
+- Windows: instala en `C:\ProgramData\Pangolite Client` y registra el servicio `PangoliteClient`.
+- Ambos modos soportan eliminación completa con `--remove`.
+
+El panel muestra estado online/offline, última conexión, sistema operativo, arquitectura, hostname/IP y recursos asociados al cliente.
+
+## Health checks
+
+La vista de recursos incluye una acción para probar disponibilidad básica de recursos HTTP/TCP y confirmar si el cliente NAT requerido está conectado.
+
+
+## Nota de UI
+
+Los formularios principales del panel se manejan por JavaScript y llamadas JSON a la API para evitar submits HTML accidentales.

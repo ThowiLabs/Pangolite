@@ -65,8 +65,12 @@ func serve(args []string, stdout io.Writer) error {
 	if err := cfg.ValidateForServe(); err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	logger.Info("configuracion cargada", "config", app.PrintServeConfig(cfg), "initial_password_file", cfg.InitialPasswordFile)
+	logWriter, logWriterErr := app.NewMultiLogWriter(os.Stdout, cfg.LogPath)
+	logger := slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if logWriterErr != nil {
+		logger.Warn("no se pudo abrir archivo de logs; se usara solo stdout", "path", cfg.LogPath, "error", logWriterErr.Error())
+	}
+	logger.Info("configuracion cargada", "config", app.PrintServeConfig(cfg), "initial_password_file", cfg.InitialPasswordFile, "log_file", cfg.LogPath)
 	store, err := app.NewStore(cfg.DataPath)
 	if err != nil {
 		return err
