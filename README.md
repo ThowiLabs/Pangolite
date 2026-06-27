@@ -394,3 +394,11 @@ La vista de recursos incluye una acción para probar disponibilidad básica de r
 ## Nota de UI
 
 Los formularios principales del panel se manejan por JavaScript y llamadas JSON a la API para evitar submits HTML accidentales.
+
+## Operaciones destructivas seguras
+
+Pangolite incluye una Zona de peligro por proyecto. Desde ahí se puede renombrar el proyecto, cambiar su descripción y eliminarlo solo cuando no tenga recursos ni clientes NAT vinculados.
+
+La eliminación de clientes NAT es una acción fuerte: elimina el cliente y todos los recursos vinculados a ese cliente. Para evitar errores, el panel solicita la contraseña del administrador actual antes de ejecutar la eliminación.
+
+Los cambios que eliminan recursos aplican Traefik automáticamente. Si hay puertos TCP/UDP involucrados, Pangolite agrupa el reinicio controlado para reducir cortes y evitar acciones repetidas.

@@ -356,6 +356,18 @@ func (s *Store) AuthenticateUser(username, password string) (User, bool) {
 	return user, true
 }
 
+func (s *Store) VerifyUserPassword(userID int64, password string) bool {
+	if password == "" {
+		return false
+	}
+	user, err := s.UserByID(userID)
+	if err != nil {
+		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$7EqJtq98hPqEX7fNZaFWoOHI33oXb6uOCSBTCDi1i7N4tStcWmYOO"), []byte(password))
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) == nil
+}
+
 func (s *Store) UserByUsername(username string) (User, error) {
 	username = NormalizeUsername(username)
 	return scanUser(s.db.QueryRow(`SELECT id, username, password_hash, force_password_change, created_at, updated_at FROM users WHERE username = ?`, username))
@@ -572,6 +584,46 @@ func (s *Store) ProjectStats() map[string]map[string]int {
 		_ = rows.Close()
 	}
 	return stats
+}
+
+func (s *Store) ProjectDependencyCounts(projectID string) (resources int, agents int, err error) {
+	projectID = strings.TrimSpace(projectID)
+	if !idRe.MatchString(projectID) {
+		return 0, 0, errors.New("id de proyecto invalido")
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE project_id = ?`, projectID).Scan(&resources); err != nil {
+		return 0, 0, fmt.Errorf("contar recursos del proyecto: %w", err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE project_id = ?`, projectID).Scan(&agents); err != nil {
+		return 0, 0, fmt.Errorf("contar clientes del proyecto: %w", err)
+	}
+	return resources, agents, nil
+}
+
+func (s *Store) DeleteProjectIfEmpty(projectID string) error {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "default" {
+		return errors.New("el proyecto General no se puede eliminar")
+	}
+	if !idRe.MatchString(projectID) {
+		return errors.New("id de proyecto invalido")
+	}
+	resources, agents, err := s.ProjectDependencyCounts(projectID)
+	if err != nil {
+		return err
+	}
+	if resources > 0 || agents > 0 {
+		return fmt.Errorf("no se puede eliminar: primero elimina %d recurso(s) y %d cliente(s) del proyecto", resources, agents)
+	}
+	res, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, projectID)
+	if err != nil {
+		return fmt.Errorf("eliminar proyecto: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("proyecto no encontrado")
+	}
+	return nil
 }
 
 func (s *Store) ListManagedDomains() []ManagedDomain {
@@ -1052,6 +1104,40 @@ func (s *Store) DisableAgent(id string) error {
 		return errors.New("agente no encontrado")
 	}
 	return nil
+}
+
+func (s *Store) DeleteAgentAndResources(id string) (AgentPublic, []Resource, error) {
+	id = strings.TrimSpace(id)
+	if !idRe.MatchString(id) {
+		return AgentPublic{}, nil, errors.New("id de agente invalido")
+	}
+	agent, err := s.AgentByID(id)
+	if err != nil {
+		return AgentPublic{}, nil, err
+	}
+	resources := s.ListResourcesByAgent(id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("iniciar eliminacion de cliente: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM resources WHERE agent_id = ?`, id); err != nil {
+		_ = tx.Rollback()
+		return AgentPublic{}, nil, fmt.Errorf("eliminar recursos vinculados al cliente: %w", err)
+	}
+	res, err := tx.Exec(`DELETE FROM agents WHERE id = ?`, id)
+	if err != nil {
+		_ = tx.Rollback()
+		return AgentPublic{}, nil, fmt.Errorf("eliminar cliente: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		_ = tx.Rollback()
+		return AgentPublic{}, nil, errors.New("agente no encontrado")
+	}
+	if err := tx.Commit(); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("confirmar eliminacion de cliente: %w", err)
+	}
+	return agent, resources, nil
 }
 
 func (s *Store) RotateAgentToken(id string) (Agent, error) {

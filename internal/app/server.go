@@ -97,6 +97,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects", s.requireAuth(s.listProjects))
 	s.mux.HandleFunc("POST /api/projects", s.requireAuth(s.createProject))
 	s.mux.HandleFunc("PATCH /api/projects/{id}", s.requireAuth(s.updateProject))
+	s.mux.HandleFunc("DELETE /api/projects/{id}", s.requireAuth(s.deleteProject))
 	s.mux.HandleFunc("GET /api/settings", s.requireAuth(s.getSettings))
 	s.mux.HandleFunc("PATCH /api/settings", s.requireAuth(s.updateSettings))
 	s.mux.HandleFunc("GET /api/system/network", s.requireAuth(s.getNetworkInfo))
@@ -112,7 +113,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agents", s.requireAuth(s.listAgents))
 	s.mux.HandleFunc("GET /api/agents/{id}", s.requireAuth(s.getAgentDetail))
 	s.mux.HandleFunc("POST /api/agents", s.requireAuth(s.createAgent))
-	s.mux.HandleFunc("DELETE /api/agents/{id}", s.requireAuth(s.disableAgent))
+	s.mux.HandleFunc("DELETE /api/agents/{id}", s.requireAuth(s.deleteAgent))
 	s.mux.HandleFunc("POST /api/agents/{id}/token", s.requireAuth(s.rotateAgentToken))
 	s.mux.HandleFunc("POST /api/render-traefik", s.requireAuth(s.renderTraefik))
 	s.mux.HandleFunc("POST /api/agent/poll", s.agentPoll)
@@ -262,19 +263,42 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request, rs reques
 	var req struct {
 		Name    string `json:"name"`
 		Notes   string `json:"notes"`
-		Enabled bool   `json:"enabled"`
+		Enabled *bool  `json:"enabled"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
-	project, err := s.store.UpdateProject(id, req.Name, req.Notes, req.Enabled)
+	current, err := s.store.ProjectByID(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	enabled := current.Enabled
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	project, err := s.store.UpdateProject(id, req.Name, req.Notes, enabled)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.log.Info("proyecto actualizado", "id", project.ID, "enabled", project.Enabled, "user", rs.User.Username)
 	writeJSON(w, http.StatusOK, project)
+}
+
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id requerido")
+		return
+	}
+	if err := s.store.DeleteProjectIfEmpty(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.log.Info("proyecto eliminado", "id", id, "user", rs.User.Username)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, _ *http.Request, _ requestSession) {
@@ -670,18 +694,34 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func (s *Server) disableAgent(w http.ResponseWriter, r *http.Request, rs requestSession) {
+func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request, rs requestSession) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "id requerido")
 		return
 	}
-	if err := s.store.DisableAgent(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	defer r.Body.Close()
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
-	s.log.Info("agente deshabilitado", "id", id, "user", rs.User.Username)
-	writeJSON(w, http.StatusOK, map[string]any{"disabled": id})
+	if !s.store.VerifyUserPassword(rs.User.ID, req.Password) {
+		s.log.Warn("eliminacion de cliente rechazada por contraseña incorrecta", "id", id, "user", rs.User.Username)
+		writeError(w, http.StatusUnauthorized, "contraseña incorrecta")
+		return
+	}
+	beforeResources := s.store.ListResources()
+	agent, deletedResources, err := s.store.DeleteAgentAndResources(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
+	s.log.Info("cliente NAT eliminado", "id", id, "name", agent.Name, "resources", len(deletedResources), "user", rs.User.Username, "traefik", traefikResult.Message)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "deletedResources": len(deletedResources), "traefik": traefikResult})
 }
 
 func (s *Server) rotateAgentToken(w http.ResponseWriter, r *http.Request, rs requestSession) {
