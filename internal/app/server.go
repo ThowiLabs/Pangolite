@@ -14,7 +14,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -961,6 +960,7 @@ type TraefikApplyResult struct {
 	Restarted      bool   `json:"restarted"`
 	StaticChanged  bool   `json:"staticChanged"`
 	DynamicChanged bool   `json:"dynamicChanged"`
+	ServiceManager string `json:"serviceManager,omitempty"`
 }
 
 func (s *Server) applyTraefikDynamicOnly() TraefikApplyResult {
@@ -998,11 +998,12 @@ func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
 		s.log.Warn("no se pudo renderizar Traefik", "error", err.Error())
 		return TraefikApplyResult{OK: false, Message: "no se pudo renderizar Traefik: " + err.Error()}
 	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return TraefikApplyResult{OK: true, Message: "configuracion escrita; systemctl no disponible para reiniciar Traefik", StaticChanged: true}
+	manager := DetectServiceManager()
+	if !manager.Available() {
+		return TraefikApplyResult{OK: true, Message: "configuracion estatica escrita; no se detecto gestor de servicios para reiniciar Traefik automaticamente", StaticChanged: true, ServiceManager: manager.String()}
 	}
 	s.scheduleTraefikRestart("cambio de entrypoints TCP/UDP")
-	return TraefikApplyResult{OK: true, Message: "Traefik aplicara el cambio automaticamente en segundo plano", Restarted: false, StaticChanged: true, DynamicChanged: true}
+	return TraefikApplyResult{OK: true, Message: fmt.Sprintf("Traefik se reiniciara en segundo plano con %s para aplicar entrypoints TCP/UDP", manager.String()), Restarted: false, StaticChanged: true, DynamicChanged: true, ServiceManager: manager.String()}
 }
 
 func (s *Server) scheduleTraefikRestart(reason string) {
@@ -1025,20 +1026,15 @@ func (s *Server) scheduleTraefikRestart(reason string) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "systemctl", "restart", "traefik")
-		out, err := cmd.CombinedOutput()
+		manager, err := RestartService(ctx, "traefik")
 		if err != nil {
-			msg := strings.TrimSpace(string(out))
-			if msg == "" {
-				msg = err.Error()
-			}
 			if s.log != nil {
-				s.log.Warn("reinicio de Traefik fallo", "reason", reason, "error", msg)
+				s.log.Warn("reinicio de Traefik fallo", "reason", reason, "service_manager", manager, "error", err.Error())
 			}
 			return
 		}
 		if s.log != nil {
-			s.log.Info("Traefik reiniciado automaticamente", "reason", reason)
+			s.log.Info("Traefik reiniciado automaticamente", "reason", reason, "service_manager", manager)
 		}
 	})
 }

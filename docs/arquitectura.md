@@ -76,8 +76,13 @@ Pangolite mantiene migraciones SQLite versionadas en `schema_migrations`. Antes 
 
 El comando `pangolite doctor` revisa la instalación activa: versión, SQLite, migraciones, rutas escribibles, Traefik, archivos clave, puertos 80/443 y estado básico de servicios.
 
-La escritura de configuración de Traefik usa backups temporales y validación con `traefik check --configFile`. Si la validación falla, Pangolite restaura la configuración anterior.
+La escritura de configuración de Traefik usa backups temporales y validación. Si el binario soporta `traefik check`, se usa ese comando; si no lo soporta, Pangolite hace un arranque temporal con puertos efímeros para validar la configuración sin ocupar 80/443 ni puertos públicos. Si la validación falla, Pangolite restaura la configuración anterior.
 
 Los respaldos automáticos se controlan con `PANGOLITE_BACKUP_INTERVAL_HOURS` y `PANGOLITE_BACKUP_RETENTION_DAYS`. Por defecto se crea un respaldo automático cada 24 horas y se retienen 14 días.
 
 Los releases publican clientes descargables para Linux amd64, arm64, 386, armv7 y Windows amd64. El comando Linux de cliente de sistema detecta la arquitectura con `uname -m` y descarga el binario correcto.
+
+
+### Aplicación de cambios por gestor de servicios
+
+Pangolite detecta el gestor de servicios disponible en runtime. En sistemas con systemd usa `systemctl`; en Alpine/OpenRC usa `rc-service`; en SysVinit usa `service` o `/etc/init.d`; y en runit usa `sv`. Los cambios HTTP/HTTPS siguen entrando por configuración dinámica de Traefik sin reinicio. Los cambios que agregan o eliminan entrypoints TCP/UDP requieren reinicio controlado de Traefik porque esos puertos forman parte de la configuración estática.

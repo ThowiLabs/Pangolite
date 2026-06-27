@@ -2,7 +2,6 @@
 set -euo pipefail
 
 APP_NAME="pangolite"
-MODULE="github.com/thowilabs/pangolite"
 INSTALL_DIR="/opt/pangolite"
 DATA_DIR="$INSTALL_DIR/data"
 BIN_PATH="$INSTALL_DIR/pangolite"
@@ -11,7 +10,6 @@ PUBLIC_DIR="$INSTALL_DIR/public"
 CLIENT_PUBLIC_BIN="$PUBLIC_DIR/pangolite-client-linux-amd64"
 CLIENT_PUBLIC_WINDOWS_BIN="$PUBLIC_DIR/pangolite-client-windows-amd64.exe"
 ENV_FILE="$INSTALL_DIR/pangolite.env"
-SERVICE_FILE="/etc/systemd/system/pangolite.service"
 TRAEFIK_DIR="/etc/traefik"
 TRAEFIK_VERSION="3.7.5"
 GO_VERSION="1.26.4"
@@ -20,9 +18,12 @@ HEALTH_URL="http://127.0.0.1:2424/healthz"
 SERVER_IP=""
 TMP_DIR=""
 GO_BIN=""
+INIT_SYSTEM=""
 
 log() { printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+warn() { printf '\nADVERTENCIA: %s\n' "$*" >&2; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
 cleanup() {
   if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
     rm -rf "$TMP_DIR"
@@ -40,6 +41,84 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "falta dependencia requerida: $1"
 }
 
+detect_init_system() {
+  if have systemctl && [ -d /run/systemd/system ]; then
+    INIT_SYSTEM="systemd"
+  elif have rc-service && have rc-update; then
+    INIT_SYSTEM="openrc"
+  elif have sv; then
+    INIT_SYSTEM="runit"
+  elif [ -d /etc/init.d ] && have service; then
+    INIT_SYSTEM="sysvinit"
+  else
+    fail "no se detecto gestor de servicios compatible: systemd, OpenRC, SysVinit o runit"
+  fi
+  log "Gestor de arranque detectado: $INIT_SYSTEM"
+}
+
+service_exists() {
+  local name="$1"
+  case "$INIT_SYSTEM" in
+    systemd) systemctl list-unit-files 2>/dev/null | grep -q "^${name}\.service" || [ -f "/etc/systemd/system/$name.service" ] ;;
+    openrc|sysvinit) [ -x "/etc/init.d/$name" ] ;;
+    runit) [ -d "/etc/sv/$name" ] || [ -d "/etc/service/$name" ] || [ -d "/var/service/$name" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+service_stop() {
+  local name="$1"
+  case "$INIT_SYSTEM" in
+    systemd) systemctl stop "$name" >/dev/null 2>&1 || true ;;
+    openrc) rc-service "$name" stop >/dev/null 2>&1 || true ;;
+    sysvinit) service "$name" stop >/dev/null 2>&1 || "/etc/init.d/$name" stop >/dev/null 2>&1 || true ;;
+    runit) sv stop "$name" >/dev/null 2>&1 || true ;;
+  esac
+}
+
+service_enable_start() {
+  local name="$1"
+  case "$INIT_SYSTEM" in
+    systemd)
+      systemctl daemon-reload
+      systemctl enable --now "$name"
+      ;;
+    openrc)
+      rc-update add "$name" default >/dev/null 2>&1 || true
+      rc-service "$name" restart || rc-service "$name" start
+      ;;
+    sysvinit)
+      if have update-rc.d; then update-rc.d "$name" defaults >/dev/null 2>&1 || true; fi
+      service "$name" restart || service "$name" start || "/etc/init.d/$name" restart || "/etc/init.d/$name" start
+      ;;
+    runit)
+      mkdir -p /etc/service
+      ln -sfn "/etc/sv/$name" "/etc/service/$name"
+      sv restart "$name" || sv start "$name"
+      ;;
+  esac
+}
+
+service_restart() {
+  local name="$1"
+  case "$INIT_SYSTEM" in
+    systemd) systemctl restart "$name" ;;
+    openrc) rc-service "$name" restart ;;
+    sysvinit) service "$name" restart || "/etc/init.d/$name" restart ;;
+    runit) sv restart "$name" ;;
+  esac
+}
+
+service_status_hint() {
+  local name="$1"
+  case "$INIT_SYSTEM" in
+    systemd) systemctl status "$name" --no-pager || true; journalctl -u "$name" -n 100 --no-pager || true ;;
+    openrc) rc-service "$name" status || true; tail -n 120 "$DATA_DIR/$name.err" "$DATA_DIR/$name.log" 2>/dev/null || true ;;
+    sysvinit) service "$name" status || true; tail -n 120 "$DATA_DIR/$name.log" 2>/dev/null || true ;;
+    runit) sv status "$name" || true ;;
+  esac
+}
+
 arch_go() {
   case "$(uname -m)" in
     x86_64|amd64) echo "amd64" ;;
@@ -53,10 +132,10 @@ arch_traefik() {
     x86_64|amd64) echo "amd64" ;;
     aarch64|arm64) echo "arm64" ;;
     armv7l|armv7) echo "armv7" ;;
+    i386|i686) echo "386" ;;
     *) fail "arquitectura no soportada para Traefik: $(uname -m)" ;;
   esac
 }
-
 
 version_ok() {
   local v raw major minor
@@ -66,7 +145,7 @@ version_ok() {
   minor="${v#*.}"; minor="${minor%%.*}"
   [ -n "$major" ] && [ -n "$minor" ] || return 1
   if [ "$major" -gt 1 ]; then return 0; fi
-  if [ "$major" -eq 1 ] && [ "$minor" -ge 23 ]; then return 0; fi
+  if [ "$major" -eq 1 ] && [ "$minor" -ge 24 ]; then return 0; fi
   return 1
 }
 
@@ -91,9 +170,119 @@ ensure_go() {
   log "Go temporal listo: $($GO_BIN version)"
 }
 
+write_systemd_service() {
+  local name="$1" desc="$2" exec_line="$3" env_line="$4" workdir="$5"
+  cat > "/etc/systemd/system/$name.service" <<SERVICE
+[Unit]
+Description=$desc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+$env_line
+ExecStart=$exec_line
+Restart=always
+RestartSec=3
+WorkingDirectory=$workdir
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+}
+
+write_openrc_service() {
+  local name="$1" desc="$2" run_cmd="$3" workdir="$4"
+  local logfile="$DATA_DIR/$name.log" errfile="$DATA_DIR/$name.err"
+  cat > "/etc/init.d/$name" <<SERVICE
+#!/sbin/openrc-run
+# managed by Pangolite
+name="$name"
+description="$desc"
+pidfile="/run/$name.pid"
+command="/bin/sh"
+command_args="-c '$run_cmd'"
+command_background="yes"
+directory="$workdir"
+output_log="$logfile"
+error_log="$errfile"
+
+start_pre() {
+  checkpath --directory --mode 0755 "$workdir"
+  checkpath --directory --mode 0700 "$DATA_DIR"
+}
+
+depend() {
+  need net
+  after firewall
+}
+SERVICE
+  chmod 0755 "/etc/init.d/$name"
+}
+
+write_sysv_service() {
+  local name="$1" desc="$2" run_cmd="$3"
+  local logfile="$DATA_DIR/$name.log" pidfile="/var/run/$name.pid"
+  cat > "/etc/init.d/$name" <<SERVICE
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          $name
+# Required-Start:    \$remote_fs \$syslog \$network
+# Required-Stop:     \$remote_fs \$syslog \$network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: $desc
+### END INIT INFO
+# managed by Pangolite
+PIDFILE="$pidfile"
+LOGFILE="$logfile"
+start() {
+  if [ -f "\$PIDFILE" ] && kill -0 "\$(cat \$PIDFILE)" 2>/dev/null; then echo "$name ya esta ejecutandose"; return 0; fi
+  echo "Starting $name"
+  start-stop-daemon --start --background --make-pidfile --pidfile "\$PIDFILE" --exec /bin/sh -- -c "$run_cmd >>\$LOGFILE 2>&1"
+}
+stop() {
+  echo "Stopping $name"
+  start-stop-daemon --stop --pidfile "\$PIDFILE" --retry TERM/10/KILL/5 2>/dev/null || true
+  rm -f "\$PIDFILE"
+}
+case "\$1" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  status) [ -f "\$PIDFILE" ] && kill -0 "\$(cat \$PIDFILE)" 2>/dev/null && echo "$name activo" || echo "$name detenido" ;;
+  *) echo "Uso: \$0 {start|stop|restart|status}"; exit 1 ;;
+esac
+SERVICE
+  chmod 0755 "/etc/init.d/$name"
+}
+
+write_runit_service() {
+  local name="$1" run_cmd="$2"
+  mkdir -p "/etc/sv/$name"
+  cat > "/etc/sv/$name/run" <<SERVICE
+#!/bin/sh
+# managed by Pangolite
+exec /bin/sh -c "$run_cmd"
+SERVICE
+  chmod 0755 "/etc/sv/$name/run"
+}
+
+write_managed_service() {
+  local name="$1" desc="$2" run_cmd="$3" systemd_exec="$4" env_line="$5" workdir="$6"
+  case "$INIT_SYSTEM" in
+    systemd) write_systemd_service "$name" "$desc" "$systemd_exec" "$env_line" "$workdir" ;;
+    openrc) write_openrc_service "$name" "$desc" "$run_cmd" "$workdir" ;;
+    sysvinit) write_sysv_service "$name" "$desc" "$run_cmd" ;;
+    runit) write_runit_service "$name" "$run_cmd" ;;
+  esac
+}
 
 ensure_traefik() {
-  mkdir -p "$TRAEFIK_DIR" "$TRAEFIK_DIR/dynamic"
+  mkdir -p "$TRAEFIK_DIR" "$TRAEFIK_DIR/dynamic" "$DATA_DIR"
   touch "$TRAEFIK_DIR/acme.json"
   chmod 600 "$TRAEFIK_DIR/acme.json"
 
@@ -118,57 +307,24 @@ ensure_traefik() {
     log "Traefik instalado en $traefik_bin"
   fi
 
-  if ! systemctl list-unit-files 2>/dev/null | grep -q '^traefik\.service'; then
-    cat > /etc/systemd/system/traefik.service <<SERVICE
-[Unit]
-Description=Traefik reverse proxy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=$traefik_bin --configFile=$TRAEFIK_DIR/traefik.yml
-Restart=always
-RestartSec=3
-LimitNOFILE=1048576
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-    systemctl daemon-reload
-    log "Servicio systemd de Traefik creado"
-  fi
+  local traefik_run="exec $traefik_bin --configFile=$TRAEFIK_DIR/traefik.yml"
+  write_managed_service "traefik" "Traefik reverse proxy" "$traefik_run" "$traefik_bin --configFile=$TRAEFIK_DIR/traefik.yml" "" "$TRAEFIK_DIR"
+  log "Servicio $INIT_SYSTEM de Traefik creado/actualizado"
 }
-
 
 detect_server_ip() {
   local ip_value=""
   ip_value="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-  if [ -z "$ip_value" ]; then
-    ip_value="$(curl -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)"
-  fi
-  if [ -z "$ip_value" ] && command -v ip >/dev/null 2>&1; then
-    ip_value="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}' || true)"
-  fi
-  if [ -z "$ip_value" ]; then
-    ip_value="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-  fi
+  if [ -z "$ip_value" ]; then ip_value="$(curl -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)"; fi
+  if [ -z "$ip_value" ] && command -v ip >/dev/null 2>&1; then ip_value="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++){if($i=="src"){print $(i+1); exit}}}' || true)"; fi
+  if [ -z "$ip_value" ]; then ip_value="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"; fi
   SERVER_IP="$ip_value"
-  if [ -n "$SERVER_IP" ]; then
-    log "IP del servidor detectada: $SERVER_IP"
-  else
-    log "No se pudo detectar IP del servidor; el panel seguira en 0.0.0.0:2424"
-  fi
+  if [ -n "$SERVER_IP" ]; then log "IP del servidor detectada: $SERVER_IP"; else log "No se pudo detectar IP del servidor; el panel seguira en 0.0.0.0:2424"; fi
 }
 
 set_env_value() {
   local key="$1" value="$2"
-  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
-  fi
+  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"; else printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"; fi
 }
 
 write_env_file() {
@@ -204,9 +360,7 @@ ENV
   set_env_value PANGOLITE_BACKUP_INTERVAL_HOURS "${PANGOLITE_BACKUP_INTERVAL_HOURS:-24}"
   set_env_value PANGOLITE_BACKUP_RETENTION_DAYS "${PANGOLITE_BACKUP_RETENTION_DAYS:-14}"
   set_env_value PANGOLITE_SUSPENSION_TEMPLATE_DIR "$DATA_DIR/templates/suspension"
-  if [ -n "$SERVER_IP" ]; then
-    set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"
-  fi
+  if [ -n "$SERVER_IP" ]; then set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"; fi
 }
 
 prepare_runtime_dirs() {
@@ -241,33 +395,10 @@ build_and_install() {
 }
 
 write_service() {
-  systemctl stop pangolite >/dev/null 2>&1 || true
-  cat > "$SERVICE_FILE" <<SERVICE
-[Unit]
-Description=Pangolite control plane
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=$ENV_FILE
-ExecStart=$BIN_PATH serve
-Restart=always
-RestartSec=3
-WorkingDirectory=$INSTALL_DIR
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-UMask=0077
-LimitNOFILE=65535
-# No se usa ReadWritePaths aqui: si /etc/traefik no existe, systemd falla en NAMESPACE antes de ejecutar el binario.
-# init.sh crea las rutas necesarias y Pangolite valida permisos al renderizar Traefik.
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-  systemctl daemon-reload
-  systemctl enable --now pangolite
+  service_stop pangolite
+  local pangolite_run="cd $INSTALL_DIR; set -a; . $ENV_FILE; set +a; exec $BIN_PATH serve"
+  write_managed_service "pangolite" "Pangolite control plane" "$pangolite_run" "$BIN_PATH serve" "EnvironmentFile=$ENV_FILE" "$INSTALL_DIR"
+  service_enable_start pangolite
 }
 
 wait_health() {
@@ -279,8 +410,7 @@ wait_health() {
     fi
     sleep 1
   done
-  systemctl status pangolite --no-pager || true
-  journalctl -u pangolite -n 100 --no-pager || true
+  service_status_hint pangolite
   fail "Pangolite no respondio en $HEALTH_URL"
 }
 
@@ -299,22 +429,13 @@ configure_traefik_if_available() {
   "$BIN_PATH" render-traefik
   touch "$TRAEFIK_DIR/acme.json"
   chmod 600 "$TRAEFIK_DIR/acme.json"
-  systemctl daemon-reload
-  systemctl enable --now traefik >/dev/null 2>&1 || true
-  if ! systemctl is-active --quiet traefik; then
-    systemctl restart traefik || {
-      journalctl -u traefik -n 120 --no-pager || true
-      fail "Traefik no pudo iniciar. Revisa puertos ocupados o configuracion previa."
-    }
-  else
-    systemctl restart traefik || {
-      journalctl -u traefik -n 120 --no-pager || true
-      fail "Traefik no pudo recargar configuracion estatica inicial."
-    }
-  fi
+  service_enable_start traefik
+  service_restart traefik || {
+    service_status_hint traefik
+    fail "Traefik no pudo reiniciarse. Revisa puertos ocupados o configuracion previa."
+  }
   log "Traefik activo; HTTP/HTTPS se actualizara automaticamente por configuracion dinamica"
 }
-
 
 print_credentials() {
   log "Credenciales iniciales"
@@ -329,9 +450,9 @@ print_credentials() {
 main() {
   require_root
   log "Validando dependencias base"
-  need_cmd systemctl
   need_cmd curl
   need_cmd tar
+  detect_init_system
   ensure_go
   detect_server_ip
   write_env_file
@@ -358,9 +479,8 @@ Archivos:
   Env: $ENV_FILE
 
 Comandos utiles:
-  systemctl status pangolite --no-pager
-  journalctl -u pangolite -f
-  $BIN_PATH render-traefik # normalmente la UI aplica cambios automaticamente
+  pangolite doctor
+  $BIN_PATH render-traefik # normalmente la UI aplica cambios dinamicos automaticamente
 
 INFO
 }

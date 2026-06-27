@@ -539,26 +539,35 @@ write_openrc_service() {
   desc="$2"
   run_cmd="$3"
   file="/etc/init.d/$name"
+  log_file="$DATA_DIR/$name.log"
+  err_file="$DATA_DIR/$name.err"
   cat > "$file" <<SERVICE
 #!/sbin/openrc-run
+# managed by Pangolite
 name="$name"
 description="$desc"
 pidfile="/run/$name.pid"
 
+start_pre() {
+  checkpath --directory --mode 0700 "$DATA_DIR"
+}
+
 start() {
   ebegin "Starting $name"
-  start-stop-daemon --start --background --make-pidfile --pidfile "\$pidfile" --exec /bin/sh -- -c "$run_cmd"
+  start-stop-daemon --start --background --make-pidfile --pidfile "\$pidfile" --exec /bin/sh -- -c "$run_cmd >>$log_file 2>>$err_file"
   eend \$?
 }
 
 stop() {
   ebegin "Stopping $name"
-  start-stop-daemon --stop --pidfile "\$pidfile" --retry TERM/10/KILL/5
-  eend \$?
+  start-stop-daemon --stop --pidfile "\$pidfile" --retry TERM/10/KILL/5 2>/dev/null || true
+  rm -f "\$pidfile"
+  eend 0
 }
 
 depend() {
   need net
+  after firewall
 }
 SERVICE
   chmod 0755 "$file"
@@ -647,13 +656,13 @@ write_service_files() {
       ;;
     openrc)
       write_openrc_service "$APP_NAME" "Pangolite control plane" "$pangolite_run"
-      if [ "$SKIP_TRAEFIK" != "1" ] && [ ! -x /etc/init.d/traefik ]; then
+      if [ "$SKIP_TRAEFIK" != "1" ]; then
         write_openrc_service "traefik" "Traefik reverse proxy" "$traefik_run"
       fi
       ;;
     sysvinit)
       write_sysv_service "$APP_NAME" "Pangolite control plane" "$pangolite_run"
-      if [ "$SKIP_TRAEFIK" != "1" ] && [ ! -x /etc/init.d/traefik ]; then
+      if [ "$SKIP_TRAEFIK" != "1" ] && { [ ! -x /etc/init.d/traefik ] || grep -q 'managed by Pangolite\|Traefik reverse proxy' /etc/init.d/traefik 2>/dev/null; }; then
         write_sysv_service "traefik" "Traefik reverse proxy" "$traefik_run"
       fi
       ;;

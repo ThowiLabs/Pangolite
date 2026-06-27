@@ -211,6 +211,20 @@ El correo ACME también puede quedar configurado aunque todavía no publiques el
 
 Solo los cambios que agregan o eliminan puertos TCP/UDP públicos requieren tocar entrypoints estáticos. Pangolite lo detecta y ejecuta un reinicio controlado de Traefik automáticamente.
 
+
+### Compatibilidad de servicios en Linux
+
+Pangolite detecta el gestor de servicios disponible y usa el comando correcto para reiniciar Traefik cuando un cambio modifica entrypoints TCP/UDP:
+
+```txt
+systemd  -> systemctl restart traefik
+OpenRC   -> rc-service traefik restart
+SysVinit -> service traefik restart
+runit    -> sv restart traefik
+```
+
+En Alpine/OpenRC, HTTP/HTTPS se recarga por `providers.file.watch=true` o por el provider HTTP de Traefik sin reiniciar. Los puertos TCP/UDP nuevos sí requieren reinicio controlado porque Traefik no agrega entrypoints estáticos en caliente.
+
 ## Recarga automática de Traefik
 
 Pangolite instala o detecta Traefik del sistema y genera una configuración estática con:

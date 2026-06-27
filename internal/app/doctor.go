@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type DoctorCheck struct {
@@ -25,6 +24,12 @@ func RunDoctor(ctx context.Context, c Config, w io.Writer) error {
 	}
 
 	add("ok", "version", Version)
+	manager := DetectServiceManager()
+	if manager.Available() {
+		add("ok", "gestor servicios", manager.String())
+	} else {
+		add("warn", "gestor servicios", "no detectado")
+	}
 	if c.DataPath == "" {
 		add("fail", "sqlite", "PANGOLITE_DATA no configurado")
 	} else if _, err := os.Stat(c.DataPath); err != nil {
@@ -101,12 +106,12 @@ func RunDoctor(ctx context.Context, c Config, w io.Writer) error {
 	checkTCPPort("80")
 	checkTCPPort("443")
 
-	if serviceState, ok := detectServiceState("pangolite"); ok {
+	if serviceState, ok := ServiceState("pangolite"); ok {
 		add("ok", "servicio pangolite", serviceState)
 	} else {
 		add("warn", "servicio pangolite", "no se pudo consultar estado")
 	}
-	if serviceState, ok := detectServiceState("traefik"); ok {
+	if serviceState, ok := ServiceState("traefik"); ok {
 		add("ok", "servicio traefik", serviceState)
 	} else {
 		add("warn", "servicio traefik", "no se pudo consultar estado")
@@ -123,42 +128,4 @@ func RunDoctor(ctx context.Context, c Config, w io.Writer) error {
 		return fmt.Errorf("doctor encontro %d problema(s) critico(s)", failures)
 	}
 	return nil
-}
-
-func detectServiceState(name string) (string, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		out, err := exec.CommandContext(ctx, "systemctl", "is-active", name).CombinedOutput()
-		state := strings.TrimSpace(string(out))
-		if state == "" && err != nil {
-			state = err.Error()
-		}
-		return state, true
-	}
-	if _, err := exec.LookPath("rc-service"); err == nil {
-		out, err := exec.CommandContext(ctx, "rc-service", name, "status").CombinedOutput()
-		state := strings.TrimSpace(string(out))
-		if state == "" && err != nil {
-			state = err.Error()
-		}
-		return state, true
-	}
-	if _, err := exec.LookPath("service"); err == nil {
-		out, err := exec.CommandContext(ctx, "service", name, "status").CombinedOutput()
-		state := strings.TrimSpace(string(out))
-		if state == "" && err != nil {
-			state = err.Error()
-		}
-		return state, true
-	}
-	if _, err := exec.LookPath("sv"); err == nil {
-		out, err := exec.CommandContext(ctx, "sv", "status", name).CombinedOutput()
-		state := strings.TrimSpace(string(out))
-		if state == "" && err != nil {
-			state = err.Error()
-		}
-		return state, true
-	}
-	return "", false
 }
