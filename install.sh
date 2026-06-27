@@ -3,7 +3,7 @@ set -eu
 
 APP_NAME="pangolite"
 REPO="${PANGOLITE_REPO:-thowilabs/pangolite}"
-VERSION=""
+REQUESTED_VERSION=""
 INSTALL_DIR="${PANGOLITE_INSTALL_DIR:-/opt/pangolite}"
 DATA_DIR="${PANGOLITE_DATA_DIR:-$INSTALL_DIR/data}"
 PUBLIC_DIR="$INSTALL_DIR/public"
@@ -61,11 +61,11 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --version)
       [ "$#" -ge 2 ] || fail "--version requiere un valor"
-      VERSION="$2"
+      REQUESTED_VERSION="$2"
       shift 2
       ;;
     --version=*)
-      VERSION="${1#--version=}"
+      REQUESTED_VERSION="${1#--version=}"
       shift
       ;;
     --repo)
@@ -250,8 +250,8 @@ normalize_version() {
 
 release_url_for() {
   asset="$1"
-  if [ -n "$VERSION" ]; then
-    v="$(normalize_version "$VERSION")"
+  if [ -n "$REQUESTED_VERSION" ]; then
+    v="$(normalize_version "$REQUESTED_VERSION")"
     printf 'https://github.com/%s/releases/download/v%s/%s' "$REPO" "$v" "$asset"
   else
     printf 'https://github.com/%s/releases/latest/download/%s' "$REPO" "$asset"
@@ -387,8 +387,8 @@ install_binaries() {
 
   if [ -f "$TMP_DIR/extract/VERSION" ]; then
     cp "$TMP_DIR/extract/VERSION" "$INSTALL_DIR/VERSION"
-  elif [ -n "$VERSION" ]; then
-    normalize_version "$VERSION" > "$INSTALL_DIR/VERSION"
+  elif [ -n "$REQUESTED_VERSION" ]; then
+    normalize_version "$REQUESTED_VERSION" > "$INSTALL_DIR/VERSION"
   else
     echo "latest" > "$INSTALL_DIR/VERSION"
   fi

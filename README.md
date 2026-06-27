@@ -5,7 +5,7 @@ Pangolite es una plataforma de administración de proxys y túneles escrita en G
 Repositorio previsto:
 
 ```text
-github.com/thowilabs/pangolite
+github.com/ThowiLabs/Pangolite
 ```
 
 ## Estado del proyecto
@@ -80,13 +80,13 @@ Servidor Linux con:
 Última versión publicada:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thowilabs/pangolite/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/ThowiLabs/Pangolite/main/install.sh | sudo sh
 ```
 
 Versión específica:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thowilabs/pangolite/main/install.sh | sudo sh -s -- --version 0.1
+curl -fsSL https://raw.githubusercontent.com/ThowiLabs/Pangolite/main/install.sh | sudo sh -s -- --version 0.1
 ```
 
 Desde un ZIP del código fuente, para desarrollo:
