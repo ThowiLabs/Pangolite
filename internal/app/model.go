@@ -27,6 +27,9 @@ const (
 
 	ProtectionLoginHTML  = "html"
 	ProtectionLoginBasic = "basic"
+
+	DomainStatusActive = "active"
+	DomainStatusLegacy = "legacy"
 )
 
 type Project struct {
@@ -40,11 +43,27 @@ type Project struct {
 }
 
 type ManagedDomain struct {
-	ID        string    `json:"id"`
-	Domain    string    `json:"domain"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID               string    `json:"id"`
+	Domain           string    `json:"domain"`
+	Enabled          bool      `json:"enabled"`
+	Status           string    `json:"status"`
+	Primary          bool      `json:"primary"`
+	AgentCount       int       `json:"agentCount"`
+	ResourceCount    int       `json:"resourceCount"`
+	UnsafeAgentCount int       `json:"unsafeAgentCount"`
+	DeleteLocked     bool      `json:"deleteLocked"`
+	DeleteReason     string    `json:"deleteReason,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+type DomainUsage struct {
+	Agents    int `json:"agents"`
+	Resources int `json:"resources"`
+}
+
+func (u DomainUsage) Total() int {
+	return u.Agents + u.Resources
 }
 
 type AppSettings struct {
@@ -88,6 +107,11 @@ type Agent struct {
 	Name                  string    `json:"name"`
 	Token                 string    `json:"token,omitempty"`
 	TokenHash             string    `json:"-"`
+	ServerURL             string    `json:"serverUrl,omitempty"`
+	FallbackURL           string    `json:"fallbackUrl,omitempty"`
+	FallbackConfirmedAt   time.Time `json:"fallbackConfirmedAt,omitempty"`
+	FallbackReady         bool      `json:"fallbackReady"`
+	DomainID              string    `json:"domainId,omitempty"`
 	Enabled               bool      `json:"enabled"`
 	CreatedAt             time.Time `json:"createdAt"`
 	UpdatedAt             time.Time `json:"updatedAt"`
@@ -111,6 +135,11 @@ type AgentPublic struct {
 	ProjectID             string    `json:"projectId"`
 	ID                    string    `json:"id"`
 	Name                  string    `json:"name"`
+	ServerURL             string    `json:"serverUrl,omitempty"`
+	FallbackURL           string    `json:"fallbackUrl,omitempty"`
+	FallbackConfirmedAt   time.Time `json:"fallbackConfirmedAt,omitempty"`
+	FallbackReady         bool      `json:"fallbackReady"`
+	DomainID              string    `json:"domainId,omitempty"`
 	Enabled               bool      `json:"enabled"`
 	CreatedAt             time.Time `json:"createdAt"`
 	UpdatedAt             time.Time `json:"updatedAt"`
@@ -139,14 +168,23 @@ type User struct {
 	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
+type AgentDiscovery struct {
+	ServerURL   string `json:"serverUrl"`
+	FallbackURL string `json:"fallbackUrl,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+	PublicIP    string `json:"publicIp,omitempty"`
+}
+
 type AgentHeartbeat struct {
-	OS        string
-	Arch      string
-	Hostname  string
-	PublicIP  string
-	PrivateIP string
-	Version   string
-	LastError string
+	OS          string
+	Arch        string
+	Hostname    string
+	PublicIP    string
+	PrivateIP   string
+	Version     string
+	LastError   string
+	ServerURL   string
+	FallbackURL string
 }
 
 type ResourceHealth struct {
@@ -235,6 +273,11 @@ func slugify(value string) string {
 
 func (d *ManagedDomain) Normalize(now time.Time) {
 	d.Domain = strings.ToLower(strings.TrimSpace(d.Domain))
+	d.Status = strings.ToLower(strings.TrimSpace(d.Status))
+	if d.Status == "" {
+		d.Status = DomainStatusActive
+	}
+	d.Enabled = d.Status == DomainStatusActive
 	if d.CreatedAt.IsZero() {
 		d.CreatedAt = now.UTC()
 	}
@@ -251,7 +294,12 @@ func (d ManagedDomain) Validate() error {
 	if strings.HasPrefix(d.Domain, "localhost") || strings.HasSuffix(d.Domain, ".localhost") {
 		return errors.New("localhost no debe registrarse como dominio administrado")
 	}
-	return nil
+	switch d.Status {
+	case "", DomainStatusActive, DomainStatusLegacy:
+		return nil
+	default:
+		return errors.New("estado de dominio invalido")
+	}
 }
 
 func (a *AppSettings) Normalize() {
@@ -464,6 +512,9 @@ func (a *Agent) Normalize(now time.Time) {
 	a.ID = strings.TrimSpace(a.ID)
 	a.Token = strings.TrimSpace(a.Token)
 	a.TokenHash = strings.TrimSpace(a.TokenHash)
+	a.ServerURL = strings.TrimRight(strings.TrimSpace(a.ServerURL), "/")
+	a.FallbackURL = strings.TrimRight(strings.TrimSpace(a.FallbackURL), "/")
+	a.DomainID = strings.TrimSpace(a.DomainID)
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = now.UTC()
 	}
@@ -486,11 +537,21 @@ func (a Agent) Validate() error {
 	if a.TokenHash == "" && a.Token == "" {
 		return errors.New("token de agente requerido")
 	}
+	if a.DomainID != "" && !idRe.MatchString(a.DomainID) {
+		return errors.New("id de dominio de agente invalido")
+	}
+	if len(a.ServerURL) > 500 {
+		return errors.New("url de servidor demasiado larga")
+	}
+	if len(a.FallbackURL) > 500 {
+		return errors.New("url fallback demasiado larga")
+	}
 	return nil
 }
 
 func (a Agent) Public() AgentPublic {
-	return AgentPublic{ProjectID: a.ProjectID, ID: a.ID, Name: a.Name, Enabled: a.Enabled, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, LastSeen: a.LastSeen, OS: a.OS, Arch: a.Arch, Hostname: a.Hostname, PublicIP: a.PublicIP, PrivateIP: a.PrivateIP, Version: a.Version, LastError: a.LastError, Online: a.Online, ResourceCount: a.ResourceCount}
+	fallbackReady := a.FallbackURL != "" && !a.FallbackConfirmedAt.IsZero()
+	return AgentPublic{ProjectID: a.ProjectID, ID: a.ID, Name: a.Name, ServerURL: a.ServerURL, FallbackURL: a.FallbackURL, FallbackConfirmedAt: a.FallbackConfirmedAt, FallbackReady: fallbackReady, DomainID: a.DomainID, Enabled: a.Enabled, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, LastSeen: a.LastSeen, OS: a.OS, Arch: a.Arch, Hostname: a.Hostname, PublicIP: a.PublicIP, PrivateIP: a.PrivateIP, Version: a.Version, LastError: a.LastError, Online: a.Online, ResourceCount: a.ResourceCount}
 }
 
 func NormalizeUsername(username string) string {

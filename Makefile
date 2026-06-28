@@ -4,7 +4,7 @@ tidy:
 	go mod tidy
 
 test:
-	go test ./...
+	go test -timeout 2m ./...
 
 build:
 	CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o bin/pangolite ./cmd/pangolite

@@ -29,6 +29,8 @@ func run(args []string, stdout io.Writer) error {
 	var service bool
 	cfg := app.AgentClientConfig{
 		ServerURL:    os.Getenv("PANGOLITE_SERVER_URL"),
+		FallbackURL:  os.Getenv("PANGOLITE_FALLBACK_URL"),
+		ConfigPath:   envOrDefault("PANGOLITE_CONFIG_PATH", defaultClientEnvPath()),
 		AgentID:      os.Getenv("PANGOLITE_AGENT_ID"),
 		Token:        os.Getenv("PANGOLITE_AGENT_TOKEN"),
 		PollInterval: time.Second,
@@ -39,10 +41,12 @@ func run(args []string, stdout io.Writer) error {
 	fs.BoolVar(&remove, "remove", false, "detiene y elimina el cliente del sistema")
 	fs.BoolVar(&service, "service", false, "ejecuta el cliente bajo el administrador de servicios del sistema")
 	fs.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "URL publica de Pangolite")
+	fs.StringVar(&cfg.FallbackURL, "fallback-url", cfg.FallbackURL, "URL fallback por IP del VPS para redescubrir el panel")
 	fs.StringVar(&cfg.AgentID, "agent-id", cfg.AgentID, "ID del cliente creado en el panel")
 	fs.StringVar(&cfg.Token, "token", cfg.Token, "token del cliente")
 	fs.DurationVar(&cfg.PollInterval, "poll-interval", cfg.PollInterval, "pausa entre polls vacios")
 	fs.DurationVar(&cfg.RequestTimeout, "request-timeout", 0, "timeout opcional para requests HTTP al servicio local")
+	fs.StringVar(&cfg.ConfigPath, "config-file", cfg.ConfigPath, "archivo env del cliente para actualizar server-url al cambiar dominio")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -60,12 +64,19 @@ func run(args []string, stdout io.Writer) error {
 	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintln(stdout, `Uso:
-  pangolite-client --install --server-url https://panel.example.com --agent-id ID --token TOKEN
+  pangolite-client --install --server-url https://panel.example.com --fallback-url http://IP_DEL_VPS:2424 --agent-id ID --token TOKEN
   pangolite-client --remove
-  pangolite-client --server-url https://panel.example.com --agent-id ID --token TOKEN`)
+  pangolite-client --server-url https://panel.example.com --fallback-url http://IP_DEL_VPS:2424 --agent-id ID --token TOKEN`)
 		return err
 	}
 	return runForeground(cfg)
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func runForeground(cfg app.AgentClientConfig) error {

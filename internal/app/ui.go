@@ -186,14 +186,17 @@ func (s *Server) projectIDFromRequest(r *http.Request) string {
 
 func (s *Server) currentProjectIDFromRequest(r *http.Request, page panelPage) string {
 	if id := projectIDFromPath(r.URL.Path); id != "" {
+		if resolvedID, err := s.store.ResolveProjectID(id); err == nil {
+			return resolvedID
+		}
 		return id
 	}
 	if page.Key != "terminal" {
 		return ""
 	}
 	if id := strings.TrimSpace(r.URL.Query().Get("projectId")); id != "" {
-		if _, err := s.store.ProjectByID(id); err == nil {
-			return id
+		if resolvedID, err := s.store.ResolveProjectID(id); err == nil {
+			return resolvedID
 		}
 	}
 	if agentID := strings.TrimSpace(r.URL.Query().Get("agentId")); agentID != "" {
@@ -393,10 +396,20 @@ func agentSystem(a AgentPublic) string {
 }
 
 func domainStateText(d ManagedDomain) string {
-	if d.Enabled {
-		return "Activo"
+	if d.Primary {
+		return "Principal"
 	}
-	return "Inactivo"
+	switch d.Status {
+	case DomainStatusLegacy:
+		return "Heredado"
+	case DomainStatusActive:
+		return "Activo"
+	default:
+		if d.Enabled {
+			return "Activo"
+		}
+		return "Inactivo"
+	}
 }
 
 func dnsStateText(info NetworkInfo, domain string) string {

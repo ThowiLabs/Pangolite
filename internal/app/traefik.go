@@ -190,6 +190,8 @@ func EncodeTraefikJSON(resources []Resource) ([]byte, error) {
 
 type StaticTraefikData struct {
 	DashboardDomain  string
+	PanelDomains     []string
+	DashboardRule    string
 	LetsEncryptEmail string
 	ControlURL       string
 	PanelURL         string
@@ -200,7 +202,41 @@ type StaticTraefikData struct {
 	DynamicDir       string
 }
 
+func NormalizePanelDomains(primary string, domains []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(domain string) {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" || seen[domain] {
+			return
+		}
+		seen[domain] = true
+		out = append(out, domain)
+	}
+	add(primary)
+	for _, domain := range domains {
+		add(domain)
+	}
+	return out
+}
+
+func DashboardHostRule(domains []string) string {
+	parts := []string{}
+	for _, domain := range domains {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" {
+			continue
+		}
+		parts = append(parts, "Host(`"+domain+"`)")
+	}
+	return strings.Join(parts, " || ")
+}
+
 func RenderStaticTraefik(c Config, resources []Resource) error {
+	return RenderStaticTraefikWithPanelDomains(c, resources, nil)
+}
+
+func RenderStaticTraefikWithPanelDomains(c Config, resources []Resource, panelDomains []string) error {
 	if err := c.ValidateForRender(); err != nil {
 		return err
 	}
@@ -225,12 +261,15 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 		}
 	}()
 
+	panelDomains = NormalizePanelDomains(c.DashboardDomain, panelDomains)
 	data := StaticTraefikData{
 		DashboardDomain:  c.DashboardDomain,
+		PanelDomains:     panelDomains,
+		DashboardRule:    DashboardHostRule(panelDomains),
 		LetsEncryptEmail: c.LetsEncryptEmail,
 		ControlURL:       "http://127.0.0.1:2424/api/v1/traefik-config",
 		PanelURL:         "http://127.0.0.1:2424",
-		PanelEnabled:     strings.TrimSpace(c.DashboardDomain) != "",
+		PanelEnabled:     len(panelDomains) > 0,
 		ACMEEnabled:      ACMEEnabled(c),
 		DynamicDir:       filepath.Join(c.TraefikDir, "dynamic"),
 		TCPPorts:         uniquePorts(resources, ModeTCP),
@@ -243,7 +282,7 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 	if err := renderFile(staticPath, traefikYAMLTemplate, data, 0o644); err != nil {
 		return err
 	}
-	if err := renderDynamicTraefikFile(c); err != nil {
+	if err := renderDynamicTraefikFile(c, panelDomains); err != nil {
 		return err
 	}
 	acme := filepath.Join(c.TraefikDir, "acme.json")
@@ -263,6 +302,10 @@ func RenderStaticTraefik(c Config, resources []Resource) error {
 }
 
 func RenderDynamicTraefik(c Config) error {
+	return RenderDynamicTraefikWithPanelDomains(c, nil)
+}
+
+func RenderDynamicTraefikWithPanelDomains(c Config, panelDomains []string) error {
 	if err := c.ValidateForRender(); err != nil {
 		return err
 	}
@@ -279,7 +322,7 @@ func RenderDynamicTraefik(c Config) error {
 			restoreTraefikBackups(backups)
 		}
 	}()
-	if err := renderDynamicTraefikFile(c); err != nil {
+	if err := renderDynamicTraefikFile(c, panelDomains); err != nil {
 		return err
 	}
 	if err := ValidateTraefikConfig(c); err != nil {
@@ -289,16 +332,19 @@ func RenderDynamicTraefik(c Config) error {
 	return nil
 }
 
-func renderDynamicTraefikFile(c Config) error {
+func renderDynamicTraefikFile(c Config, panelDomains []string) error {
 	dynamicDir := filepath.Join(c.TraefikDir, "dynamic")
 	if err := os.MkdirAll(dynamicDir, 0o755); err != nil {
 		return err
 	}
+	panelDomains = NormalizePanelDomains(c.DashboardDomain, panelDomains)
 	data := StaticTraefikData{
 		DashboardDomain:  c.DashboardDomain,
+		PanelDomains:     panelDomains,
+		DashboardRule:    DashboardHostRule(panelDomains),
 		LetsEncryptEmail: c.LetsEncryptEmail,
 		PanelURL:         "http://127.0.0.1:2424",
-		PanelEnabled:     strings.TrimSpace(c.DashboardDomain) != "",
+		PanelEnabled:     len(panelDomains) > 0,
 		ACMEEnabled:      ACMEEnabled(c),
 		DynamicDir:       filepath.Join(c.TraefikDir, "dynamic"),
 	}
@@ -600,7 +646,7 @@ http:
   routers:
 {{- if .ACMEEnabled }}
     pangolite-panel-redirect:
-      rule: "Host(` + "`" + `{{ .DashboardDomain }}` + "`" + `)"
+      rule: {{ printf "%q" .DashboardRule }}
       service: pangolite-panel
       entryPoints:
         - web
@@ -608,17 +654,19 @@ http:
         - redirect-to-https
 
     pangolite-panel:
-      rule: "Host(` + "`" + `{{ .DashboardDomain }}` + "`" + `)"
+      rule: {{ printf "%q" .DashboardRule }}
       service: pangolite-panel
       entryPoints:
         - websecure
       tls:
         certResolver: letsencrypt
         domains:
-          - main: {{ printf "%q" .DashboardDomain }}
+{{- range .PanelDomains }}
+          - main: {{ printf "%q" . }}
+{{- end }}
 {{- else }}
     pangolite-panel:
-      rule: "Host(` + "`" + `{{ .DashboardDomain }}` + "`" + `)"
+      rule: {{ printf "%q" .DashboardRule }}
       service: pangolite-panel
       entryPoints:
         - web

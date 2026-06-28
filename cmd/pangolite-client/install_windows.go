@@ -37,7 +37,7 @@ func installClient(stdout io.Writer, cfg app.AgentClientConfig) error {
 	if err := copyFile(exe, clientBinPath, 0o755); err != nil {
 		return err
 	}
-	env := fmt.Sprintf("PANGOLITE_SERVER_URL=%s\nPANGOLITE_AGENT_ID=%s\nPANGOLITE_AGENT_TOKEN=%s\n", cfg.ServerURL, cfg.AgentID, cfg.Token)
+	env := fmt.Sprintf("PANGOLITE_SERVER_URL=%s\nPANGOLITE_FALLBACK_URL=%s\nPANGOLITE_AGENT_ID=%s\nPANGOLITE_AGENT_TOKEN=%s\n", cfg.ServerURL, cfg.FallbackURL, cfg.AgentID, cfg.Token)
 	if err := os.WriteFile(clientEnvPath, []byte(env), 0o600); err != nil {
 		return err
 	}
@@ -129,7 +129,7 @@ func loadWindowsConfig() (app.AgentClientConfig, error) {
 		}
 		m[strings.TrimSpace(k)] = strings.TrimSpace(v)
 	}
-	cfg := app.AgentClientConfig{ServerURL: m["PANGOLITE_SERVER_URL"], AgentID: m["PANGOLITE_AGENT_ID"], Token: m["PANGOLITE_AGENT_TOKEN"], PollInterval: time.Second}
+	cfg := app.AgentClientConfig{ServerURL: m["PANGOLITE_SERVER_URL"], FallbackURL: m["PANGOLITE_FALLBACK_URL"], ConfigPath: clientEnvPath, AgentID: m["PANGOLITE_AGENT_ID"], Token: m["PANGOLITE_AGENT_TOKEN"], PollInterval: time.Second}
 	if err := cfg.Validate(); err != nil {
 		return app.AgentClientConfig{}, err
 	}
@@ -161,3 +161,5 @@ func copyFile(src, dst string, mode os.FileMode) error {
 }
 
 func shellValue(v string) string { return v }
+
+func defaultClientEnvPath() string { return clientEnvPath }

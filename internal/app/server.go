@@ -54,8 +54,8 @@ type requestSession struct {
 
 func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	effective := store.EffectiveConfig(c)
-	if err := store.EnsureManagedDomain(effective.DashboardDomain); err != nil && logger != nil {
-		logger.Warn("no se pudo registrar dominio del panel", "domain", effective.DashboardDomain, "error", err.Error())
+	if err := store.SetPrimaryManagedDomain(effective.DashboardDomain, ""); err != nil && logger != nil {
+		logger.Warn("no se pudo registrar dominio principal del panel", "domain", effective.DashboardDomain, "error", err.Error())
 	}
 	if err := EnsureSuspensionTemplates(c.SuspensionTemplateDir); err != nil && logger != nil {
 		logger.Warn("no se pudieron preparar plantillas de suspension", "dir", c.SuspensionTemplateDir, "error", err.Error())
@@ -126,6 +126,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/backups/{name}/download", s.requireAuth(s.downloadBackup))
 	s.mux.HandleFunc("GET /api/domains", s.requireAuth(s.listManagedDomains))
 	s.mux.HandleFunc("POST /api/domains", s.requireAuth(s.createManagedDomain))
+	s.mux.HandleFunc("PATCH /api/domains/{id}", s.requireAuth(s.updateManagedDomain))
 	s.mux.HandleFunc("DELETE /api/domains/{id}", s.requireAuth(s.deleteManagedDomain))
 	s.mux.HandleFunc("GET /api/resources", s.requireAuth(s.listResources))
 	s.mux.HandleFunc("GET /api/resources/health", s.requireAuth(s.resourceHealth))
@@ -144,6 +145,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.requireAuth(s.deleteAgent))
 	s.mux.HandleFunc("POST /api/agents/{id}/token", s.requireAuth(s.rotateAgentToken))
 	s.mux.HandleFunc("POST /api/render-traefik", s.requireAuth(s.renderTraefik))
+	s.mux.HandleFunc("POST /api/agent/discover", s.agentDiscover)
 	s.mux.HandleFunc("POST /api/agent/poll", s.agentPoll)
 	s.mux.HandleFunc("POST /api/agent/jobs/{id}/response", s.agentJobResponse)
 	s.mux.HandleFunc("POST /api/agent/stream-poll", s.agentStreamPoll)
@@ -518,9 +520,81 @@ func (s *Server) createManagedDomain(w http.ResponseWriter, r *http.Request, rs 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	settings := s.store.LoadAppSettings(s.config)
+	if strings.TrimSpace(settings.DashboardDomain) == "" {
+		settings.DashboardDomain = domain.Domain
+		if saved, saveErr := s.store.SaveAppSettings(settings); saveErr == nil {
+			settings = saved
+			s.config.DashboardDomain = saved.DashboardDomain
+			domain, _ = s.store.ManagedDomainByID(domain.ID)
+			_ = s.applyTraefikDynamicOnly()
+		} else if s.log != nil {
+			s.log.Warn("no se pudo marcar dominio nuevo como principal", "domain", domain.Domain, "error", saveErr.Error())
+		}
+	}
 	s.log.Info("dominio administrado creado", "id", domain.ID, "domain", domain.Domain, "user", rs.User.Username)
 	s.recordAudit(r, rs, "domain.create", "domain", domain.ID, "", map[string]any{"domain": domain.Domain})
-	writeJSON(w, http.StatusCreated, domain)
+	writeJSON(w, http.StatusCreated, map[string]any{"domain": domain, "domains": s.store.ListManagedDomains(), "settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain)})
+}
+
+func (s *Server) updateManagedDomain(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id requerido")
+		return
+	}
+	defer r.Body.Close()
+	var req struct {
+		Status  string `json:"status"`
+		Primary bool   `json:"primary"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	var (
+		domain ManagedDomain
+		err    error
+	)
+	status := strings.ToLower(strings.TrimSpace(req.Status))
+	switch {
+	case req.Primary:
+		domain, err = s.store.ManagedDomainByID(id)
+		if err == nil {
+			if _, dnsErr := ValidateDashboardDomainDNS(domain.Domain, s.config.PublicIP); dnsErr != nil {
+				err = dnsErr
+				break
+			}
+			before := s.store.LoadAppSettings(s.config)
+			next := before
+			next.DashboardDomain = domain.Domain
+			if _, saveErr := s.store.SaveAppSettings(next); saveErr != nil {
+				err = saveErr
+			} else {
+				domain, err = s.store.ManagedDomainByID(id)
+			}
+		}
+	case status == DomainStatusLegacy:
+		domain, err = s.store.MarkManagedDomainLegacy(id)
+	case status == DomainStatusActive:
+		domain, err = s.store.ActivateManagedDomain(id)
+	default:
+		writeError(w, http.StatusBadRequest, "accion de dominio invalida")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	settings := s.store.LoadAppSettings(s.config)
+	s.config.DashboardDomain = settings.DashboardDomain
+	s.config.LetsEncryptEmail = settings.LetsEncryptEmail
+	traefikResult := s.applyTraefikDynamicOnly()
+	effective := s.store.EffectiveConfig(s.config)
+	certificate := ResolveCertificateStatus(effective, settings.DashboardDomain, settings.DashboardDomain != "")
+	s.log.Info("dominio administrado actualizado", "id", domain.ID, "domain", domain.Domain, "status", domain.Status, "primary", domain.Primary, "user", rs.User.Username)
+	s.recordAudit(r, rs, "domain.update", "domain", domain.ID, "", map[string]any{"domain": domain.Domain, "status": domain.Status, "primary": domain.Primary, "traefik": traefikResult.Message})
+	writeJSON(w, http.StatusOK, map[string]any{"domain": domain, "domains": s.store.ListManagedDomains(), "settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain), "certificate": certificate, "traefik": traefikResult})
 }
 
 func (s *Server) deleteManagedDomain(w http.ResponseWriter, r *http.Request, rs requestSession) {
@@ -529,13 +603,24 @@ func (s *Server) deleteManagedDomain(w http.ResponseWriter, r *http.Request, rs 
 		writeError(w, http.StatusBadRequest, "id requerido")
 		return
 	}
-	if err := s.store.DeleteManagedDomain(id); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	domain, err := s.store.ManagedDomainByID(id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	effective := s.store.EffectiveConfig(s.config)
+	if strings.EqualFold(strings.TrimSpace(effective.DashboardDomain), strings.TrimSpace(domain.Domain)) {
+		writeError(w, http.StatusBadRequest, "no se puede eliminar el dominio principal actual; configura otro dominio principal primero")
+		return
+	}
+	if err := s.store.DeleteManagedDomain(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	traefikResult := s.applyTraefikDynamicOnly()
 	s.log.Info("dominio administrado eliminado", "id", id, "user", rs.User.Username)
-	s.recordAudit(r, rs, "domain.delete", "domain", id, "", nil)
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+	s.recordAudit(r, rs, "domain.delete", "domain", id, "", map[string]any{"traefik": traefikResult.Message})
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "domains": s.store.ListManagedDomains(), "traefik": traefikResult})
 }
 
 func (s *Server) listResources(w http.ResponseWriter, r *http.Request, _ requestSession) {
@@ -944,14 +1029,16 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request, rs requestS
 		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
-	agent, err := s.store.AddAgent(Agent{ProjectID: req.ProjectID, Name: req.Name})
+	baseURL := strings.TrimRight(s.publicBaseURL(r), "/")
+	fallbackURL := strings.TrimRight(s.publicIPBaseURL(r), "/")
+	agent, err := s.store.AddAgent(Agent{ProjectID: req.ProjectID, Name: req.Name, ServerURL: baseURL, FallbackURL: fallbackURL, DomainID: s.domainIDForBaseURL(baseURL)})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.attachAgentCommands(r, &agent)
 	s.log.Info("cliente NAT creado", "id", agent.ID, "name", agent.Name, "user", rs.User.Username)
-	s.recordAudit(r, rs, "agent.create", "agent", agent.ID, agent.ProjectID, map[string]any{"name": agent.Name})
+	s.recordAudit(r, rs, "agent.create", "agent", agent.ID, agent.ProjectID, map[string]any{"name": agent.Name, "serverUrl": agent.ServerURL, "domainId": agent.DomainID})
 	writeJSON(w, http.StatusCreated, agent)
 }
 
@@ -959,14 +1046,41 @@ func (s *Server) attachAgentCommands(r *http.Request, agent *Agent) {
 	if agent == nil || agent.Token == "" {
 		return
 	}
-	base := s.publicBaseURL(r)
+	base := strings.TrimSpace(agent.ServerURL)
+	if base == "" {
+		base = s.publicBaseURL(r)
+	}
 	baseClean := strings.TrimRight(base, "/")
+	fallbackClean := strings.TrimRight(strings.TrimSpace(agent.FallbackURL), "/")
 	linuxBaseURL := baseClean + "/download/pangolite-client-linux"
 	winURL := baseClean + "/download/pangolite-client-windows-amd64.exe"
-	agent.InstallCommand = fmt.Sprintf("arch=$(uname -m); case \"$arch\" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; i386|i486|i586|i686) arch=386 ;; armv7l|armv7) arch=armv7 ;; *) echo Arquitectura no soportada: $arch >&2; exit 1 ;; esac; curl -fsSL %s-$arch -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s --agent-id %s --token %s", shellQuote(linuxBaseURL), shellQuote(baseClean), shellQuote(agent.ID), shellQuote(agent.Token))
+	fallbackArg := ""
+	if fallbackClean != "" && fallbackClean != baseClean {
+		fallbackArg = " --fallback-url " + shellQuote(fallbackClean)
+	}
+	agent.InstallCommand = fmt.Sprintf("arch=$(uname -m); case \"$arch\" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; i386|i486|i586|i686) arch=386 ;; armv7l|armv7) arch=armv7 ;; *) echo Arquitectura no soportada: $arch >&2; exit 1 ;; esac; curl -fsSL %s-$arch -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s%s --agent-id %s --token %s", shellQuote(linuxBaseURL), shellQuote(baseClean), fallbackArg, shellQuote(agent.ID), shellQuote(agent.Token))
 	agent.RemoveCommand = "sudo /opt/pangolite-client/pangolite-client --remove"
-	agent.WindowsInstallCommand = fmt.Sprintf("$u=%q; $o=Join-Path $env:TEMP 'pangolite-client.exe'; Invoke-WebRequest -UseBasicParsing $u -OutFile $o; Start-Process -Verb RunAs $o -ArgumentList '--install --server-url %s --agent-id %s --token %s'", winURL, baseClean, agent.ID, agent.Token)
+	winFallbackArg := ""
+	if fallbackClean != "" && fallbackClean != baseClean {
+		winFallbackArg = " --fallback-url " + fallbackClean
+	}
+	agent.WindowsInstallCommand = fmt.Sprintf("$u=%q; $o=Join-Path $env:TEMP 'pangolite-client.exe'; Invoke-WebRequest -UseBasicParsing $u -OutFile $o; Start-Process -Verb RunAs $o -ArgumentList '--install --server-url %s%s --agent-id %s --token %s'", winURL, baseClean, winFallbackArg, agent.ID, agent.Token)
 	agent.WindowsRemoveCommand = `Start-Process -Verb RunAs 'C:\ProgramData\Pangolite Client\pangolite-client.exe' -ArgumentList '--remove'`
+}
+
+func (s *Server) domainIDForBaseURL(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return ""
+	}
+	if d, err := s.store.ManagedDomainByDomain(host); err == nil {
+		return d.ID
+	}
+	return ""
 }
 
 func (s *Server) publicBaseURL(r *http.Request) string {
@@ -974,11 +1088,36 @@ func (s *Server) publicBaseURL(r *http.Request) string {
 	if strings.TrimSpace(effective.DashboardDomain) != "" {
 		return "https://" + strings.TrimSpace(effective.DashboardDomain)
 	}
+	if fallback := s.publicIPBaseURL(r); fallback != "" {
+		return fallback
+	}
 	host := "127.0.0.1:2424"
 	if r != nil && strings.TrimSpace(r.Host) != "" {
 		host = cleanPublicHost(r.Host)
 	}
 	return "http://" + host
+}
+
+func (s *Server) publicIPBaseURL(r *http.Request) string {
+	host := strings.TrimSpace(s.config.PublicIP)
+	if host == "" && r != nil {
+		candidate := cleanPublicHost(r.Host)
+		if h, _, err := net.SplitHostPort(candidate); err == nil {
+			candidate = h
+		}
+		candidate = strings.Trim(candidate, "[]")
+		if ip := net.ParseIP(candidate); ip != nil && !ip.IsLoopback() {
+			host = ip.String()
+		}
+	}
+	if host == "" {
+		return ""
+	}
+	port := ListenPortFromAddr(s.config.Addr)
+	if port <= 0 {
+		port = 2424
+	}
+	return "http://" + net.JoinHostPort(host, fmt.Sprint(port))
 }
 
 func cleanPublicHost(host string) string {
@@ -1039,9 +1178,19 @@ func (s *Server) rotateAgentToken(w http.ResponseWriter, r *http.Request, rs req
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	baseURL := strings.TrimRight(s.publicBaseURL(r), "/")
+	fallbackURL := strings.TrimRight(s.publicIPBaseURL(r), "/")
+	domainID := s.domainIDForBaseURL(baseURL)
+	if err := s.store.UpdateAgentInstallEndpoints(id, baseURL, fallbackURL, domainID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	agent.ServerURL = baseURL
+	agent.FallbackURL = fallbackURL
+	agent.DomainID = domainID
 	s.attachAgentCommands(r, &agent)
 	s.log.Info("token de cliente NAT rotado", "id", id, "user", rs.User.Username)
-	s.recordAudit(r, rs, "agent.token.rotate", "agent", id, agent.ProjectID, map[string]any{"name": agent.Name})
+	s.recordAudit(r, rs, "agent.token.rotate", "agent", id, agent.ProjectID, map[string]any{"name": agent.Name, "serverUrl": agent.ServerURL, "fallbackUrl": agent.FallbackURL, "domainId": agent.DomainID})
 	writeJSON(w, http.StatusOK, agent)
 }
 
@@ -1071,7 +1220,7 @@ func (s *Server) applyTraefikDynamicOnly() TraefikApplyResult {
 		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false}
 	}
 	effective := s.store.EffectiveConfig(s.config)
-	if err := RenderDynamicTraefik(effective); err != nil {
+	if err := RenderDynamicTraefikWithPanelDomains(effective, s.store.PanelDomainsForTraefik(effective.DashboardDomain)); err != nil {
 		s.log.Warn("no se pudo actualizar configuracion dinamica de Traefik", "error", err.Error())
 		return TraefikApplyResult{OK: false, Message: "no se pudo actualizar Traefik: " + err.Error(), DynamicChanged: false}
 	}
@@ -1097,7 +1246,7 @@ func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
 		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", StaticChanged: false}
 	}
 	effective := s.store.EffectiveConfig(s.config)
-	if err := RenderStaticTraefik(effective, s.store.ListResources()); err != nil {
+	if err := RenderStaticTraefikWithPanelDomains(effective, s.store.ListResources(), s.store.PanelDomainsForTraefik(effective.DashboardDomain)); err != nil {
 		s.log.Warn("no se pudo renderizar Traefik", "error", err.Error())
 		return TraefikApplyResult{OK: false, Message: "no se pudo renderizar Traefik: " + err.Error()}
 	}
@@ -1253,13 +1402,15 @@ func (s *Server) checkResourceHealth(ctx context.Context, res Resource) (out Res
 
 func (s *Server) touchAgentFromRequest(agentID string, r *http.Request) {
 	s.store.TouchAgent(agentID, AgentHeartbeat{
-		OS:        safeHeaderValue(r.Header.Get("X-Pangolite-Client-OS"), 32),
-		Arch:      safeHeaderValue(r.Header.Get("X-Pangolite-Client-Arch"), 32),
-		Hostname:  safeHeaderValue(r.Header.Get("X-Pangolite-Client-Hostname"), 120),
-		PrivateIP: safeHeaderValue(r.Header.Get("X-Pangolite-Client-Private-IP"), 64),
-		PublicIP:  safeHeaderValue(requestPublicIP(r), 64),
-		Version:   safeHeaderValue(r.Header.Get("X-Pangolite-Client-Version"), 48),
-		LastError: safeHeaderValue(r.Header.Get("X-Pangolite-Client-Last-Error"), 240),
+		OS:          safeHeaderValue(r.Header.Get("X-Pangolite-Client-OS"), 32),
+		Arch:        safeHeaderValue(r.Header.Get("X-Pangolite-Client-Arch"), 32),
+		Hostname:    safeHeaderValue(r.Header.Get("X-Pangolite-Client-Hostname"), 120),
+		PrivateIP:   safeHeaderValue(r.Header.Get("X-Pangolite-Client-Private-IP"), 64),
+		PublicIP:    safeHeaderValue(requestPublicIP(r), 64),
+		Version:     safeHeaderValue(r.Header.Get("X-Pangolite-Client-Version"), 48),
+		LastError:   safeHeaderValue(r.Header.Get("X-Pangolite-Client-Last-Error"), 240),
+		ServerURL:   safeHeaderValue(r.Header.Get("X-Pangolite-Client-Server-URL"), 500),
+		FallbackURL: safeHeaderValue(r.Header.Get("X-Pangolite-Client-Fallback-URL"), 500),
 	})
 }
 
@@ -1332,6 +1483,61 @@ func envClientPath(key, fallback string) string {
 	return fallback
 }
 
+func (s *Server) agentDiscover(w http.ResponseWriter, r *http.Request) {
+	agentID, token := agentCredentials(r)
+	agent, ok := s.store.AuthenticateAgent(agentID, token)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "credenciales de cliente invalidas")
+		return
+	}
+	s.touchAgentFromRequest(agentID, r)
+	s.writeAgentEndpointHintHeaders(w, r)
+	discovery := s.agentDiscoveryForRequest(r)
+	if discovery.ServerURL == "" {
+		discovery.ServerURL = strings.TrimRight(agent.ServerURL, "/")
+	}
+	if discovery.FallbackURL == "" {
+		discovery.FallbackURL = strings.TrimRight(agent.FallbackURL, "/")
+	}
+	if discovery.ServerURL == "" && discovery.FallbackURL != "" {
+		discovery.ServerURL = discovery.FallbackURL
+	}
+	if discovery.ServerURL == "" {
+		writeError(w, http.StatusServiceUnavailable, "no hay URL publica disponible para el panel")
+		return
+	}
+	writeJSON(w, http.StatusOK, discovery)
+}
+
+func (s *Server) agentDiscoveryForRequest(r *http.Request) AgentDiscovery {
+	effective := s.store.EffectiveConfig(s.config)
+	domain := strings.TrimSpace(effective.DashboardDomain)
+	fallback := strings.TrimRight(s.publicIPBaseURL(r), "/")
+	serverURL := ""
+	if domain != "" {
+		serverURL = "https://" + domain
+	} else {
+		serverURL = fallback
+	}
+	return AgentDiscovery{ServerURL: serverURL, FallbackURL: fallback, Domain: domain, PublicIP: strings.TrimSpace(s.config.PublicIP)}
+}
+
+func (s *Server) writeAgentEndpointHintHeaders(w http.ResponseWriter, r *http.Request) {
+	discovery := s.agentDiscoveryForRequest(r)
+	if discovery.ServerURL != "" {
+		w.Header().Set("X-Pangolite-Server-URL", discovery.ServerURL)
+	}
+	if discovery.FallbackURL != "" {
+		w.Header().Set("X-Pangolite-Fallback-URL", discovery.FallbackURL)
+	}
+	if discovery.Domain != "" {
+		w.Header().Set("X-Pangolite-Domain", discovery.Domain)
+	}
+	if discovery.PublicIP != "" {
+		w.Header().Set("X-Pangolite-Public-IP", discovery.PublicIP)
+	}
+}
+
 func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {
 	agentID, token := agentCredentials(r)
 	if _, ok := s.store.AuthenticateAgent(agentID, token); !ok {
@@ -1339,6 +1545,7 @@ func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchAgentFromRequest(agentID, r)
+	s.writeAgentEndpointHintHeaders(w, r)
 	ctx, cancel := context.WithTimeout(r.Context(), AgentPollTimeout)
 	defer cancel()
 	job, ok, err := s.hub.Poll(ctx, agentID)
@@ -1359,6 +1566,7 @@ func (s *Server) agentJobResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "credenciales de agente invalidas")
 		return
 	}
+	s.writeAgentEndpointHintHeaders(w, r)
 	jobID := r.PathValue("id")
 	if jobID == "" {
 		writeError(w, http.StatusBadRequest, "job id requerido")
@@ -1388,6 +1596,7 @@ func (s *Server) agentStreamPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchAgentFromRequest(agentID, r)
+	s.writeAgentEndpointHintHeaders(w, r)
 	ctx, cancel := context.WithTimeout(r.Context(), AgentPollTimeout)
 	defer cancel()
 	job, ok, err := s.hub.PollStream(ctx, agentID)
@@ -1632,6 +1841,10 @@ func (s *Server) proxyLocalResource(w http.ResponseWriter, r *http.Request, reso
 		req.Host = target.Host
 		req.Header.Set("X-Forwarded-Host", r.Host)
 		req.Header.Set("X-Forwarded-Proto", forwardedProto(r))
+		stripInternalProxyHeaders(req.Header)
+		if resource.ProtectionMode != ProtectionNone {
+			req.Header.Del("Authorization")
+		}
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
 		if s.log != nil {
@@ -1671,11 +1884,14 @@ func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource 
 		Method:       r.Method,
 		Path:         r.URL.EscapedPath(),
 		RawQuery:     r.URL.RawQuery,
-		Header:       cloneSafeHeader(r.Header),
+		Header:       cloneProxyRequestHeader(r.Header),
 		Body:         body,
 		TargetScheme: resource.BackendScheme,
 		TargetHost:   resource.BackendHost,
 		TargetPort:   resource.BackendPort,
+	}
+	if resource.ProtectionMode != ProtectionNone {
+		job.Header.Del("Authorization")
 	}
 	resp, err := s.hub.Submit(r.Context(), resource.AgentID, job)
 	if err != nil {

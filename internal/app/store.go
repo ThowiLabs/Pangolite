@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -64,6 +65,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		{Version: 1, Name: "esquema base", Apply: s.migrateBaseSchema},
 		{Version: 2, Name: "proyectos y compatibilidad legado", Apply: s.migrateProjectCompatibility},
 		{Version: 3, Name: "suspension proteccion y tuneles", Apply: s.migrateSuspensionProtection},
+		{Version: 4, Name: "ciclo de vida de dominios", Apply: s.migrateDomainLifecycle},
+		{Version: 5, Name: "fallback de conexion para agentes", Apply: s.migrateAgentFallbackURL},
 	}
 	latest := migrations[len(migrations)-1].Version
 	currentVersion, err := s.SchemaVersion(ctx)
@@ -192,6 +195,8 @@ func (s *Store) migrateBaseSchema(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			domain TEXT NOT NULL UNIQUE,
 			enabled INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'active',
+			is_primary INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -206,6 +211,10 @@ func (s *Store) migrateBaseSchema(ctx context.Context) error {
 			project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			token_hash TEXT NOT NULL,
+			server_url TEXT NOT NULL DEFAULT '',
+			fallback_url TEXT NOT NULL DEFAULT '',
+			fallback_confirmed_at TEXT NOT NULL DEFAULT '',
+			domain_id TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
@@ -323,6 +332,47 @@ func (s *Store) migrateSuspensionProtection(ctx context.Context) error {
 	return nil
 }
 
+func (s *Store) migrateDomainLifecycle(ctx context.Context) error {
+	for _, col := range []struct{ table, name, def string }{
+		{"managed_domains", "status", "TEXT NOT NULL DEFAULT 'active'"},
+		{"managed_domains", "is_primary", "INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "server_url", "TEXT NOT NULL DEFAULT ''"},
+		{"agents", "fallback_url", "TEXT NOT NULL DEFAULT ''"},
+		{"agents", "fallback_confirmed_at", "TEXT NOT NULL DEFAULT ''"},
+		{"agents", "domain_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureColumn(ctx, col.table, col.name, col.def); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE managed_domains SET status = CASE WHEN enabled = 1 THEN 'active' ELSE 'legacy' END WHERE status IS NULL OR status = ''`); err != nil {
+		return fmt.Errorf("normalizar estado de dominios: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE managed_domains SET enabled = CASE WHEN status = 'active' THEN 1 ELSE 0 END`); err != nil {
+		return fmt.Errorf("normalizar disponibilidad de dominios: %w", err)
+	}
+	settings := s.LoadAppSettings(Config{})
+	if settings.DashboardDomain != "" {
+		if err := s.EnsureManagedDomain(settings.DashboardDomain); err != nil {
+			return err
+		}
+		if err := s.SetPrimaryManagedDomain(settings.DashboardDomain, ""); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE agents SET server_url = ?, domain_id = COALESCE((SELECT id FROM managed_domains WHERE lower(domain) = lower(?) LIMIT 1),'') WHERE TRIM(COALESCE(server_url,'')) = ''`, "https://"+settings.DashboardDomain, settings.DashboardDomain); err != nil {
+			return fmt.Errorf("vincular clientes existentes al dominio actual: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) migrateAgentFallbackURL(ctx context.Context) error {
+	if err := s.ensureColumn(ctx, "agents", "fallback_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return s.ensureColumn(ctx, "agents", "fallback_confirmed_at", "TEXT NOT NULL DEFAULT ''")
+}
+
 func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
@@ -372,7 +422,7 @@ func (s *Store) EnsureManagedDomain(domain string) error {
 	if domain == "" || domain == "pangolite.localhost" || strings.HasSuffix(domain, ".localhost") {
 		return nil
 	}
-	d := ManagedDomain{Domain: domain, Enabled: true}
+	d := ManagedDomain{Domain: domain, Status: DomainStatusActive}
 	d.Normalize(time.Now().UTC())
 	if err := d.Validate(); err != nil {
 		return nil
@@ -384,7 +434,7 @@ func (s *Store) EnsureManagedDomain(domain string) error {
 		}
 		d.ID = id
 	}
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO managed_domains(id,domain,enabled,created_at,updated_at) VALUES(?,?,?,?,?)`, d.ID, d.Domain, boolInt(d.Enabled), formatTime(d.CreatedAt), formatTime(d.UpdatedAt))
+	_, err := s.db.Exec(`INSERT INTO managed_domains(id,domain,enabled,status,is_primary,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET status = CASE WHEN managed_domains.status = 'legacy' THEN managed_domains.status ELSE excluded.status END, enabled = CASE WHEN managed_domains.status = 'legacy' THEN 0 ELSE 1 END, updated_at = excluded.updated_at`, d.ID, d.Domain, boolInt(d.Enabled), d.Status, boolInt(d.Primary), formatTime(d.CreatedAt), formatTime(d.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("asegurar dominio administrado: %w", err)
 	}
@@ -420,6 +470,13 @@ func (s *Store) LoadAppSettings(c Config) AppSettings {
 
 func (s *Store) EffectiveConfig(c Config) Config {
 	settings := s.LoadAppSettings(c)
+	if strings.TrimSpace(settings.DashboardDomain) == "" {
+		if primary, err := s.PrimaryManagedDomain(); err == nil {
+			settings.DashboardDomain = primary.Domain
+		} else if active, activeErr := s.FirstActiveManagedDomain(); activeErr == nil {
+			settings.DashboardDomain = active.Domain
+		}
+	}
 	c.DashboardDomain = settings.DashboardDomain
 	c.LetsEncryptEmail = settings.LetsEncryptEmail
 	c.BackupIntervalHours = settings.BackupIntervalHours
@@ -428,9 +485,13 @@ func (s *Store) EffectiveConfig(c Config) Config {
 }
 
 func (s *Store) SaveAppSettings(settings AppSettings) (AppSettings, error) {
+	previous := s.LoadAppSettings(Config{})
 	settings.Normalize()
 	if err := settings.Validate(); err != nil {
 		return AppSettings{}, err
+	}
+	if previous.DashboardDomain != "" && settings.DashboardDomain == "" && s.CountAgents() > 0 {
+		return AppSettings{}, errors.New("no puedes dejar sin dominio del panel mientras existan clientes instalados; configura primero un dominio nuevo y conserva el anterior como heredado")
 	}
 	now := formatTime(time.Now().UTC())
 	tx, err := s.db.Begin()
@@ -453,7 +514,9 @@ func (s *Store) SaveAppSettings(settings AppSettings) (AppSettings, error) {
 		return AppSettings{}, fmt.Errorf("confirmar ajustes: %w", err)
 	}
 	if settings.DashboardDomain != "" {
-		_ = s.EnsureManagedDomain(settings.DashboardDomain)
+		if err := s.SetPrimaryManagedDomain(settings.DashboardDomain, previous.DashboardDomain); err != nil {
+			return AppSettings{}, err
+		}
 	}
 	return settings, nil
 }
@@ -640,7 +703,35 @@ func (s *Store) ProjectByID(id string) (Project, error) {
 	if !idRe.MatchString(id) {
 		return Project{}, errors.New("id de proyecto invalido")
 	}
-	row := s.db.QueryRow(`SELECT id,name,slug,notes,enabled,created_at,updated_at FROM projects WHERE id = ?`, id)
+	return s.projectByQuery(`SELECT id,name,slug,notes,enabled,created_at,updated_at FROM projects WHERE id = ?`, id)
+}
+
+func (s *Store) ProjectByIdentifier(identifier string) (Project, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return Project{}, errors.New("proyecto no encontrado")
+	}
+	if idRe.MatchString(identifier) {
+		if p, err := s.ProjectByID(identifier); err == nil {
+			return p, nil
+		}
+	}
+	if !slugRe.MatchString(identifier) {
+		return Project{}, errors.New("proyecto no encontrado")
+	}
+	return s.projectByQuery(`SELECT id,name,slug,notes,enabled,created_at,updated_at FROM projects WHERE slug = ?`, identifier)
+}
+
+func (s *Store) ResolveProjectID(identifier string) (string, error) {
+	p, err := s.ProjectByIdentifier(identifier)
+	if err != nil {
+		return "", err
+	}
+	return p.ID, nil
+}
+
+func (s *Store) projectByQuery(query string, args ...any) (Project, error) {
+	row := s.db.QueryRow(query, args...)
 	p, err := scanProjectRows(row)
 	if err != nil {
 		return Project{}, errors.New("proyecto no encontrado")
@@ -731,7 +822,11 @@ func (s *Store) ProjectStats() map[string]map[string]int {
 		}
 		_ = rows.Close()
 	}
-	rows, err = s.db.Query(`SELECT project_id, COUNT(*) FROM agents GROUP BY project_id`)
+	rows, err = s.db.Query(`SELECT project_id, COUNT(DISTINCT agent_id) FROM (
+		SELECT project_id, id AS agent_id FROM agents
+		UNION
+		SELECT r.project_id, r.agent_id FROM resources r JOIN agents a ON a.id = r.agent_id WHERE COALESCE(r.agent_id,'') <> ''
+	) GROUP BY project_id`)
 	if err == nil {
 		for rows.Next() {
 			var projectID string
@@ -748,25 +843,36 @@ func (s *Store) ProjectStats() map[string]map[string]int {
 	return stats
 }
 
+func (s *Store) CountAgents() int {
+	var total int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM agents`).Scan(&total)
+	return total
+}
+
 func (s *Store) ProjectDependencyCounts(projectID string) (resources int, agents int, err error) {
-	projectID = strings.TrimSpace(projectID)
-	if !idRe.MatchString(projectID) {
+	projectID, err = s.ResolveProjectID(projectID)
+	if err != nil {
 		return 0, 0, errors.New("id de proyecto invalido")
 	}
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE project_id = ?`, projectID).Scan(&resources); err != nil {
 		return 0, 0, fmt.Errorf("contar recursos del proyecto: %w", err)
 	}
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE project_id = ?`, projectID).Scan(&agents); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(DISTINCT agent_id) FROM (
+		SELECT id AS agent_id FROM agents WHERE project_id = ?
+		UNION
+		SELECT r.agent_id FROM resources r JOIN agents a ON a.id = r.agent_id WHERE r.project_id = ? AND COALESCE(r.agent_id,'') <> ''
+	)`, projectID, projectID).Scan(&agents); err != nil {
 		return 0, 0, fmt.Errorf("contar clientes de sistema del proyecto: %w", err)
 	}
 	return resources, agents, nil
 }
 
 func (s *Store) DeleteProjectIfEmpty(projectID string) error {
-	projectID = strings.TrimSpace(projectID)
-	if !idRe.MatchString(projectID) {
+	resolvedID, err := s.ResolveProjectID(projectID)
+	if err != nil {
 		return errors.New("id de proyecto invalido")
 	}
+	projectID = resolvedID
 	resources, agents, err := s.ProjectDependencyCounts(projectID)
 	if err != nil {
 		return err
@@ -786,24 +892,28 @@ func (s *Store) DeleteProjectIfEmpty(projectID string) error {
 }
 
 func (s *Store) ListManagedDomains() []ManagedDomain {
-	rows, err := s.db.Query(`SELECT id,domain,enabled,created_at,updated_at FROM managed_domains ORDER BY domain ASC`)
+	rows, err := s.db.Query(`SELECT id,domain,enabled,COALESCE(status,'active'),COALESCE(is_primary,0),created_at,updated_at FROM managed_domains ORDER BY is_primary DESC, status ASC, domain ASC`)
 	if err != nil {
 		return []ManagedDomain{}
 	}
-	defer rows.Close()
-	out := []ManagedDomain{}
+	domains := []ManagedDomain{}
 	for rows.Next() {
 		d, err := scanManagedDomainRows(rows)
 		if err == nil {
-			out = append(out, d)
+			domains = append(domains, d)
 		}
 	}
-	return out
+	_ = rows.Close()
+
+	for i := range domains {
+		domains[i] = s.hydrateManagedDomainUsageAndLock(domains[i])
+	}
+	return domains
 }
 
 func (s *Store) AddManagedDomain(domain string) (ManagedDomain, error) {
 	now := time.Now().UTC()
-	d := ManagedDomain{Domain: domain, Enabled: true}
+	d := ManagedDomain{Domain: domain, Status: DomainStatusActive}
 	d.Normalize(now)
 	if d.ID == "" {
 		id, err := randomID()
@@ -822,7 +932,7 @@ func (s *Store) AddManagedDomain(domain string) (ManagedDomain, error) {
 	if existing > 0 {
 		return ManagedDomain{}, errors.New("ya existe ese dominio administrado")
 	}
-	_, err := s.db.Exec(`INSERT INTO managed_domains(id,domain,enabled,created_at,updated_at) VALUES(?,?,?,?,?)`, d.ID, d.Domain, boolInt(d.Enabled), formatTime(d.CreatedAt), formatTime(d.UpdatedAt))
+	_, err := s.db.Exec(`INSERT INTO managed_domains(id,domain,enabled,status,is_primary,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, d.ID, d.Domain, boolInt(d.Enabled), d.Status, boolInt(d.Primary), formatTime(d.CreatedAt), formatTime(d.UpdatedAt))
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return ManagedDomain{}, errors.New("ya existe ese dominio administrado")
@@ -832,10 +942,119 @@ func (s *Store) AddManagedDomain(domain string) (ManagedDomain, error) {
 	return d, nil
 }
 
-func (s *Store) DeleteManagedDomain(id string) error {
+func (s *Store) ManagedDomainByID(id string) (ManagedDomain, error) {
 	id = strings.TrimSpace(id)
 	if !idRe.MatchString(id) {
-		return errors.New("id de dominio invalido")
+		return ManagedDomain{}, errors.New("id de dominio invalido")
+	}
+	d, err := scanManagedDomainRows(s.db.QueryRow(`SELECT id,domain,enabled,COALESCE(status,'active'),COALESCE(is_primary,0),created_at,updated_at FROM managed_domains WHERE id = ?`, id))
+	if err != nil {
+		return ManagedDomain{}, errors.New("dominio no encontrado")
+	}
+	return s.hydrateManagedDomainUsageAndLock(d), nil
+}
+
+func (s *Store) ManagedDomainByDomain(domain string) (ManagedDomain, error) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if !domainRe.MatchString(domain) {
+		return ManagedDomain{}, errors.New("dominio invalido")
+	}
+	d, err := scanManagedDomainRows(s.db.QueryRow(`SELECT id,domain,enabled,COALESCE(status,'active'),COALESCE(is_primary,0),created_at,updated_at FROM managed_domains WHERE lower(domain) = lower(?)`, domain))
+	if err != nil {
+		return ManagedDomain{}, errors.New("dominio no encontrado")
+	}
+	return s.hydrateManagedDomainUsageAndLock(d), nil
+}
+
+func (s *Store) PrimaryManagedDomain() (ManagedDomain, error) {
+	d, err := scanManagedDomainRows(s.db.QueryRow(`SELECT id,domain,enabled,COALESCE(status,'active'),COALESCE(is_primary,0),created_at,updated_at FROM managed_domains WHERE is_primary = 1 ORDER BY updated_at DESC LIMIT 1`))
+	if err != nil {
+		return ManagedDomain{}, errors.New("dominio principal no configurado")
+	}
+	return s.hydrateManagedDomainUsageAndLock(d), nil
+}
+func (s *Store) FirstActiveManagedDomain() (ManagedDomain, error) {
+	d, err := scanManagedDomainRows(s.db.QueryRow(`SELECT id,domain,enabled,COALESCE(status,'active'),COALESCE(is_primary,0),created_at,updated_at FROM managed_domains WHERE enabled = 1 AND status = 'active' ORDER BY updated_at DESC, created_at DESC LIMIT 1`))
+	if err != nil {
+		return ManagedDomain{}, errors.New("dominio activo no configurado")
+	}
+	return s.hydrateManagedDomainUsageAndLock(d), nil
+}
+
+func (s *Store) SetPrimaryManagedDomain(domain string, previousDomain string) error {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	previousDomain = strings.ToLower(strings.TrimSpace(previousDomain))
+	if domain == "" {
+		return nil
+	}
+	if err := s.EnsureManagedDomain(domain); err != nil {
+		return err
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := s.db.Exec(`UPDATE managed_domains SET is_primary = 0 WHERE is_primary = 1`); err != nil {
+		return fmt.Errorf("limpiar dominio principal anterior: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE managed_domains SET status = 'active', enabled = 1, is_primary = 1, updated_at = ? WHERE lower(domain) = lower(?)`, now, domain); err != nil {
+		return fmt.Errorf("marcar dominio principal: %w", err)
+	}
+	if previousDomain != "" && !strings.EqualFold(previousDomain, domain) {
+		usage := s.ManagedDomainUsageByDomain(previousDomain)
+		if usage.Total() > 0 || s.CountAgents() > 0 {
+			if _, err := s.db.Exec(`UPDATE managed_domains SET status = 'legacy', enabled = 0, is_primary = 0, updated_at = ? WHERE lower(domain) = lower(?)`, now, previousDomain); err != nil {
+				return fmt.Errorf("marcar dominio anterior como heredado: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) MarkManagedDomainLegacy(id string) (ManagedDomain, error) {
+	d, err := s.ManagedDomainByID(id)
+	if err != nil {
+		return ManagedDomain{}, err
+	}
+	if d.Primary {
+		return ManagedDomain{}, errors.New("no puedes marcar como heredado el dominio principal; configura primero otro dominio principal")
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := s.db.Exec(`UPDATE managed_domains SET status = 'legacy', enabled = 0, is_primary = 0, updated_at = ? WHERE id = ?`, now, id)
+	if err != nil {
+		return ManagedDomain{}, fmt.Errorf("marcar dominio heredado: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ManagedDomain{}, errors.New("dominio no encontrado")
+	}
+	return s.ManagedDomainByID(id)
+}
+
+func (s *Store) ActivateManagedDomain(id string) (ManagedDomain, error) {
+	d, err := s.ManagedDomainByID(id)
+	if err != nil {
+		return ManagedDomain{}, err
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := s.db.Exec(`UPDATE managed_domains SET status = 'active', enabled = 1, updated_at = ? WHERE id = ?`, now, d.ID)
+	if err != nil {
+		return ManagedDomain{}, fmt.Errorf("activar dominio: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ManagedDomain{}, errors.New("dominio no encontrado")
+	}
+	return s.ManagedDomainByID(id)
+}
+
+func (s *Store) DeleteManagedDomain(id string) error {
+	d, err := s.ManagedDomainByID(id)
+	if err != nil {
+		return err
+	}
+	if d.DeleteLocked {
+		if d.DeleteReason != "" {
+			return errors.New(d.DeleteReason)
+		}
+		return errors.New("no se puede eliminar este dominio; marcalo como heredado si ya no debe usarse en instalaciones nuevas")
 	}
 	res, err := s.db.Exec(`DELETE FROM managed_domains WHERE id = ?`, id)
 	if err != nil {
@@ -846,6 +1065,100 @@ func (s *Store) DeleteManagedDomain(id string) error {
 		return errors.New("dominio no encontrado")
 	}
 	return nil
+}
+
+func (s *Store) hydrateManagedDomainUsageAndLock(d ManagedDomain) ManagedDomain {
+	usage := s.ManagedDomainUsageByDomain(d.Domain)
+	d.AgentCount = usage.Agents
+	d.ResourceCount = usage.Resources
+	d.UnsafeAgentCount = s.ManagedDomainAgentsWithoutFallbackByDomain(d.Domain)
+	if d.Primary {
+		d.DeleteLocked = true
+		d.DeleteReason = "no se puede eliminar el dominio principal; configura otro dominio principal primero"
+		return d
+	}
+	if usage.Resources > 0 {
+		d.DeleteLocked = true
+		d.DeleteReason = fmt.Sprintf("no se puede eliminar: dominio usado por %d recurso(s); elimina o cambia esos recursos primero", usage.Resources)
+		return d
+	}
+	if d.UnsafeAgentCount > 0 {
+		d.DeleteLocked = true
+		d.DeleteReason = fmt.Sprintf("no se puede eliminar: %d cliente(s) fueron instalados con este dominio y aun no tienen fallback por IP confirmado", d.UnsafeAgentCount)
+		return d
+	}
+	return d
+}
+
+func (s *Store) ManagedDomainUsage(id string) DomainUsage {
+	d, err := s.ManagedDomainByIDWithoutUsage(id)
+	if err != nil {
+		return DomainUsage{}
+	}
+	return s.ManagedDomainUsageByDomain(d.Domain)
+}
+
+func (s *Store) ManagedDomainByIDWithoutUsage(id string) (ManagedDomain, error) {
+	id = strings.TrimSpace(id)
+	if !idRe.MatchString(id) {
+		return ManagedDomain{}, errors.New("id de dominio invalido")
+	}
+	return scanManagedDomainRows(s.db.QueryRow(`SELECT id,domain,enabled,COALESCE(status,'active'),COALESCE(is_primary,0),created_at,updated_at FROM managed_domains WHERE id = ?`, id))
+}
+
+func (s *Store) ManagedDomainAgentsWithoutFallbackByDomain(domain string) int {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return 0
+	}
+	var total int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE (lower(server_url) IN (?, ?) OR lower(server_url) LIKE ? OR lower(server_url) LIKE ? OR domain_id IN (SELECT id FROM managed_domains WHERE lower(domain) = lower(?))) AND (TRIM(COALESCE(fallback_url,'')) = '' OR TRIM(COALESCE(fallback_confirmed_at,'')) = '')`, "https://"+domain, "http://"+domain, "https://"+domain+"/%", "http://"+domain+"/%", domain).Scan(&total)
+	return total
+}
+
+func (s *Store) ManagedDomainUsageByDomain(domain string) DomainUsage {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return DomainUsage{}
+	}
+	var usage DomainUsage
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE lower(server_url) IN (?, ?) OR lower(server_url) LIKE ? OR lower(server_url) LIKE ? OR domain_id IN (SELECT id FROM managed_domains WHERE lower(domain) = lower(?))`, "https://"+domain, "http://"+domain, "https://"+domain+"/%", "http://"+domain+"/%", domain).Scan(&usage.Agents)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM resources WHERE lower(domain) = lower(?) OR lower(domain) LIKE lower(?)`, domain, "%."+domain).Scan(&usage.Resources)
+	return usage
+}
+
+func (s *Store) PanelDomainsForTraefik(primaryDomain string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(domain string) {
+		domain = strings.ToLower(strings.TrimSpace(domain))
+		if domain == "" || seen[domain] {
+			return
+		}
+		seen[domain] = true
+		out = append(out, domain)
+	}
+	add(primaryDomain)
+
+	legacyDomains := []string{}
+	rows, err := s.db.Query(`SELECT domain FROM managed_domains WHERE status = 'legacy' AND TRIM(domain) <> '' ORDER BY domain ASC`)
+	if err == nil {
+		for rows.Next() {
+			var domain string
+			if rows.Scan(&domain) == nil {
+				legacyDomains = append(legacyDomains, domain)
+			}
+		}
+		_ = rows.Close()
+	}
+
+	hasAgents := s.CountAgents() > 0
+	for _, domain := range legacyDomains {
+		if hasAgents || s.ManagedDomainUsageByDomain(domain).Agents > 0 {
+			add(domain)
+		}
+	}
+	return out
 }
 
 const resourceSelectSQL = `SELECT id,project_id,name,mode,COALESCE(domain,''),COALESCE(path_prefix,''),COALESCE(public_port,0),COALESCE(tunnel_port,0),COALESCE(backend_scheme,''),backend_host,backend_port,COALESCE(origin_type,'local'),COALESCE(agent_id,''),tls,enabled,COALESCE(disabled_response_mode,'403'),COALESCE(disabled_status_code,403),COALESCE(disabled_html,''),COALESCE(disabled_template_id,''),COALESCE(protection_mode,'none'),COALESCE(protection_login_mode,'html'),COALESCE(protection_hash,''),created_at,updated_at FROM resources`
@@ -871,6 +1184,11 @@ func (s *Store) ListResourcesByProject(projectID string) []Resource {
 	if projectID == "" {
 		return s.ListResources()
 	}
+	resolvedID, err := s.ResolveProjectID(projectID)
+	if err != nil {
+		return []Resource{}
+	}
+	projectID = resolvedID
 	rows, err := s.db.Query(resourceSelectSQL+` WHERE project_id = ? ORDER BY created_at ASC`, projectID)
 	if err != nil {
 		return []Resource{}
@@ -1145,11 +1463,16 @@ func (s *Store) ListAgents() []AgentPublic {
 }
 
 func (s *Store) ListAgentsByProject(projectID string) []AgentPublic {
-	query := `SELECT a.project_id,a.id,a.name,a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a`
+	query := `SELECT a.project_id,a.id,a.name,COALESCE(a.server_url,''),COALESCE(a.fallback_url,''),COALESCE(a.fallback_confirmed_at,''),COALESCE(a.domain_id,''),a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a`
 	args := []any{}
 	if strings.TrimSpace(projectID) != "" {
-		query += ` WHERE a.project_id = ?`
-		args = append(args, strings.TrimSpace(projectID))
+		resolvedID, err := s.ResolveProjectID(projectID)
+		if err != nil {
+			return []AgentPublic{}
+		}
+		projectID = resolvedID
+		query += ` WHERE a.project_id = ? OR EXISTS (SELECT 1 FROM resources r WHERE r.agent_id = a.id AND r.project_id = ?)`
+		args = append(args, projectID, projectID)
 	}
 	query += ` ORDER BY a.created_at ASC`
 	rows, err := s.db.Query(query, args...)
@@ -1162,13 +1485,15 @@ func (s *Store) ListAgentsByProject(projectID string) []AgentPublic {
 	for rows.Next() {
 		var a AgentPublic
 		var enabled int
-		var createdAt, updatedAt, lastSeen string
-		if err := rows.Scan(&a.ProjectID, &a.ID, &a.Name, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
+		var createdAt, updatedAt, fallbackConfirmedAt, lastSeen string
+		if err := rows.Scan(&a.ProjectID, &a.ID, &a.Name, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
 			continue
 		}
 		a.Enabled = enabled == 1
 		a.CreatedAt = parseTime(createdAt)
 		a.UpdatedAt = parseTime(updatedAt)
+		a.FallbackConfirmedAt = parseTime(fallbackConfirmedAt)
+		a.FallbackReady = a.FallbackURL != "" && !a.FallbackConfirmedAt.IsZero()
 		a.LastSeen = parseTime(lastSeen)
 		a.Online = a.Enabled && !a.LastSeen.IsZero() && now.Sub(a.LastSeen) <= 45*time.Second
 		out = append(out, a)
@@ -1181,17 +1506,19 @@ func (s *Store) AgentByID(id string) (AgentPublic, error) {
 	if !idRe.MatchString(id) {
 		return AgentPublic{}, errors.New("id de agente invalido")
 	}
-	query := `SELECT a.project_id,a.id,a.name,a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a WHERE a.id = ?`
+	query := `SELECT a.project_id,a.id,a.name,COALESCE(a.server_url,''),COALESCE(a.fallback_url,''),COALESCE(a.fallback_confirmed_at,''),COALESCE(a.domain_id,''),a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a WHERE a.id = ?`
 	row := s.db.QueryRow(query, id)
 	var a AgentPublic
 	var enabled int
-	var createdAt, updatedAt, lastSeen string
-	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
+	var createdAt, updatedAt, fallbackConfirmedAt, lastSeen string
+	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
 		return AgentPublic{}, errors.New("agente no encontrado")
 	}
 	a.Enabled = enabled == 1
 	a.CreatedAt = parseTime(createdAt)
 	a.UpdatedAt = parseTime(updatedAt)
+	a.FallbackConfirmedAt = parseTime(fallbackConfirmedAt)
+	a.FallbackReady = a.FallbackURL != "" && !a.FallbackConfirmedAt.IsZero()
 	a.LastSeen = parseTime(lastSeen)
 	a.Online = a.Enabled && !a.LastSeen.IsZero() && time.Since(a.LastSeen) <= 45*time.Second
 	return a, nil
@@ -1242,7 +1569,7 @@ func (s *Store) AddAgent(a Agent) (Agent, error) {
 	if err := a.Validate(); err != nil {
 		return Agent{}, err
 	}
-	_, err := s.db.Exec(`INSERT INTO agents(id,project_id,name,token_hash,enabled,created_at,updated_at,last_seen) VALUES(?,?,?,?,?,?,?,NULL)`, a.ID, a.ProjectID, a.Name, a.TokenHash, boolInt(a.Enabled), formatTime(a.CreatedAt), formatTime(a.UpdatedAt))
+	_, err := s.db.Exec(`INSERT INTO agents(id,project_id,name,token_hash,server_url,fallback_url,fallback_confirmed_at,domain_id,enabled,created_at,updated_at,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)`, a.ID, a.ProjectID, a.Name, a.TokenHash, a.ServerURL, a.FallbackURL, "", a.DomainID, boolInt(a.Enabled), formatTime(a.CreatedAt), formatTime(a.UpdatedAt))
 	if err != nil {
 		return Agent{}, fmt.Errorf("crear agente: %w", err)
 	}
@@ -1256,8 +1583,13 @@ func (s *Store) AgentExists(id string) bool {
 }
 
 func (s *Store) AgentBelongsToProject(id, projectID string) bool {
+	id = strings.TrimSpace(id)
+	projectID, err := s.ResolveProjectID(projectID)
+	if err != nil || id == "" {
+		return false
+	}
 	var count int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE id = ? AND project_id = ? AND enabled = 1`, strings.TrimSpace(id), strings.TrimSpace(projectID)).Scan(&count)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM agents a WHERE a.id = ? AND a.enabled = 1 AND (a.project_id = ? OR EXISTS (SELECT 1 FROM resources r WHERE r.agent_id = a.id AND r.project_id = ?))`, id, projectID, projectID).Scan(&count)
 	return count > 0
 }
 
@@ -1312,6 +1644,35 @@ func (s *Store) DeleteAgentAndResources(id string) (AgentPublic, []Resource, err
 	return agent, resources, nil
 }
 
+func (s *Store) UpdateAgentInstallEndpoints(id, serverURL, fallbackURL, domainID string) error {
+	id = strings.TrimSpace(id)
+	if !idRe.MatchString(id) {
+		return errors.New("id de agente invalido")
+	}
+	serverURL = strings.TrimRight(strings.TrimSpace(serverURL), "/")
+	fallbackURL = strings.TrimRight(strings.TrimSpace(fallbackURL), "/")
+	domainID = strings.TrimSpace(domainID)
+	if len(serverURL) > 500 {
+		return errors.New("url de servidor demasiado larga")
+	}
+	if len(fallbackURL) > 500 {
+		return errors.New("url fallback demasiado larga")
+	}
+	if domainID != "" && !idRe.MatchString(domainID) {
+		return errors.New("id de dominio de agente invalido")
+	}
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`UPDATE agents SET server_url = ?, fallback_url = ?, fallback_confirmed_at = '', domain_id = ?, updated_at = ? WHERE id = ?`, serverURL, fallbackURL, domainID, formatTime(now), id)
+	if err != nil {
+		return fmt.Errorf("actualizar endpoints de agente: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("agente no encontrado")
+	}
+	return nil
+}
+
 func (s *Store) RotateAgentToken(id string) (Agent, error) {
 	id = strings.TrimSpace(id)
 	if !idRe.MatchString(id) {
@@ -1330,17 +1691,19 @@ func (s *Store) RotateAgentToken(id string) (Agent, error) {
 	if n == 0 {
 		return Agent{}, errors.New("agente no encontrado")
 	}
-	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,enabled,created_at,updated_at,COALESCE(last_seen,''),COALESCE(os,''),COALESCE(arch,''),COALESCE(hostname,''),COALESCE(public_ip,''),COALESCE(private_ip,''),COALESCE(version,''),COALESCE(last_error,'') FROM agents WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,COALESCE(server_url,''),COALESCE(fallback_url,''),COALESCE(fallback_confirmed_at,''),COALESCE(domain_id,''),enabled,created_at,updated_at,COALESCE(last_seen,''),COALESCE(os,''),COALESCE(arch,''),COALESCE(hostname,''),COALESCE(public_ip,''),COALESCE(private_ip,''),COALESCE(version,''),COALESCE(last_error,'') FROM agents WHERE id = ?`, id)
 	var a Agent
 	var enabled int
-	var createdAt, updatedAt, lastSeen string
-	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError); err != nil {
+	var createdAt, updatedAt, fallbackConfirmedAt, lastSeen string
+	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError); err != nil {
 		return Agent{}, errors.New("agente no encontrado")
 	}
 	a.Token = token
 	a.Enabled = enabled == 1
 	a.CreatedAt = parseTime(createdAt)
 	a.UpdatedAt = parseTime(updatedAt)
+	a.FallbackConfirmedAt = parseTime(fallbackConfirmedAt)
+	a.FallbackReady = a.FallbackURL != "" && !a.FallbackConfirmedAt.IsZero()
 	a.LastSeen = parseTime(lastSeen)
 	return a, nil
 }
@@ -1351,11 +1714,11 @@ func (s *Store) AuthenticateAgent(id, token string) (Agent, bool) {
 	if id == "" || token == "" {
 		return Agent{}, false
 	}
-	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,enabled,created_at,updated_at,COALESCE(last_seen,''),COALESCE(os,''),COALESCE(arch,''),COALESCE(hostname,''),COALESCE(public_ip,''),COALESCE(private_ip,''),COALESCE(version,''),COALESCE(last_error,'') FROM agents WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT project_id,id,name,token_hash,COALESCE(server_url,''),COALESCE(fallback_url,''),COALESCE(fallback_confirmed_at,''),COALESCE(domain_id,''),enabled,created_at,updated_at,COALESCE(last_seen,''),COALESCE(os,''),COALESCE(arch,''),COALESCE(hostname,''),COALESCE(public_ip,''),COALESCE(private_ip,''),COALESCE(version,''),COALESCE(last_error,'') FROM agents WHERE id = ?`, id)
 	var a Agent
 	var enabled int
-	var createdAt, updatedAt, lastSeen string
-	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError); err != nil {
+	var createdAt, updatedAt, fallbackConfirmedAt, lastSeen string
+	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.TokenHash, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError); err != nil {
 		return Agent{}, false
 	}
 	if enabled != 1 || subtle.ConstantTimeCompare([]byte(a.TokenHash), []byte(hashToken(token))) != 1 {
@@ -1365,6 +1728,8 @@ func (s *Store) AuthenticateAgent(id, token string) (Agent, bool) {
 	a.Enabled = true
 	a.CreatedAt = parseTime(createdAt)
 	a.UpdatedAt = parseTime(updatedAt)
+	a.FallbackConfirmedAt = parseTime(fallbackConfirmedAt)
+	a.FallbackReady = a.FallbackURL != "" && !a.FallbackConfirmedAt.IsZero()
 	a.LastSeen = parseTime(lastSeen)
 	if now.Sub(a.LastSeen) > 30*time.Second {
 		_, _ = s.db.Exec(`UPDATE agents SET last_seen = ?, updated_at = ? WHERE id = ?`, formatTime(now), formatTime(now), a.ID)
@@ -1387,7 +1752,49 @@ func (s *Store) TouchAgent(id string, hb AgentHeartbeat) {
 	hb.PrivateIP = cleanIP(hb.PrivateIP)
 	hb.Version = cleanMeta(hb.Version, 64)
 	hb.LastError = cleanMeta(hb.LastError, 240)
-	_, _ = s.db.Exec(`UPDATE agents SET last_seen = ?, updated_at = ?, os = CASE WHEN ? <> '' THEN ? ELSE os END, arch = CASE WHEN ? <> '' THEN ? ELSE arch END, hostname = CASE WHEN ? <> '' THEN ? ELSE hostname END, public_ip = CASE WHEN ? <> '' THEN ? ELSE public_ip END, private_ip = CASE WHEN ? <> '' THEN ? ELSE private_ip END, version = CASE WHEN ? <> '' THEN ? ELSE version END, last_error = CASE WHEN ? <> '' THEN ? ELSE last_error END WHERE id = ?`, formatTime(now), formatTime(now), hb.OS, hb.OS, hb.Arch, hb.Arch, hb.Hostname, hb.Hostname, hb.PublicIP, hb.PublicIP, hb.PrivateIP, hb.PrivateIP, hb.Version, hb.Version, hb.LastError, hb.LastError, id)
+	hb.ServerURL = cleanAgentBaseURL(hb.ServerURL)
+	hb.FallbackURL = cleanAgentBaseURL(hb.FallbackURL)
+	domainID := ""
+	if hb.ServerURL != "" {
+		domainID = s.domainIDForAgentURL(hb.ServerURL)
+	}
+	fallbackConfirmedAt := ""
+	if hb.FallbackURL != "" {
+		fallbackConfirmedAt = formatTime(now)
+	}
+	_, _ = s.db.Exec(`UPDATE agents SET last_seen = ?, updated_at = ?, os = CASE WHEN ? <> '' THEN ? ELSE os END, arch = CASE WHEN ? <> '' THEN ? ELSE arch END, hostname = CASE WHEN ? <> '' THEN ? ELSE hostname END, public_ip = CASE WHEN ? <> '' THEN ? ELSE public_ip END, private_ip = CASE WHEN ? <> '' THEN ? ELSE private_ip END, version = CASE WHEN ? <> '' THEN ? ELSE version END, last_error = CASE WHEN ? <> '' THEN ? ELSE last_error END, server_url = CASE WHEN ? <> '' THEN ? ELSE server_url END, fallback_url = CASE WHEN ? <> '' THEN ? ELSE fallback_url END, fallback_confirmed_at = CASE WHEN ? <> '' THEN ? ELSE fallback_confirmed_at END, domain_id = CASE WHEN ? <> '' THEN ? ELSE domain_id END WHERE id = ?`, formatTime(now), formatTime(now), hb.OS, hb.OS, hb.Arch, hb.Arch, hb.Hostname, hb.Hostname, hb.PublicIP, hb.PublicIP, hb.PrivateIP, hb.PrivateIP, hb.Version, hb.Version, hb.LastError, hb.LastError, hb.ServerURL, hb.ServerURL, hb.FallbackURL, hb.FallbackURL, fallbackConfirmedAt, fallbackConfirmedAt, domainID, domainID, id)
+}
+
+func cleanAgentBaseURL(raw string) string {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" || len(raw) > 500 {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ""
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawQuery = ""
+	u.Fragment = ""
+	return strings.TrimRight(u.String(), "/")
+}
+
+func (s *Store) domainIDForAgentURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return ""
+	}
+	var id string
+	_ = s.db.QueryRow(`SELECT id FROM managed_domains WHERE lower(domain) = lower(?) LIMIT 1`, host).Scan(&id)
+	return id
 }
 
 func cleanMeta(v string, max int) string {
@@ -1483,12 +1890,16 @@ type managedDomainScanner interface {
 
 func scanManagedDomainRows(row managedDomainScanner) (ManagedDomain, error) {
 	var d ManagedDomain
-	var enabled int
+	var enabled, primary int
 	var createdAt, updatedAt string
-	if err := row.Scan(&d.ID, &d.Domain, &enabled, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.Domain, &enabled, &d.Status, &primary, &createdAt, &updatedAt); err != nil {
 		return ManagedDomain{}, err
 	}
+	if d.Status == "" {
+		d.Status = DomainStatusActive
+	}
 	d.Enabled = enabled == 1
+	d.Primary = primary == 1
 	d.CreatedAt = parseTime(createdAt)
 	d.UpdatedAt = parseTime(updatedAt)
 	return d, nil

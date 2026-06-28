@@ -375,7 +375,7 @@ build_and_install() {
   log "Resolviendo modulos Go"
   "$GO_BIN" mod tidy
   log "Ejecutando pruebas"
-  "$GO_BIN" test ./...
+  "$GO_BIN" test -timeout 2m ./...
   log "Compilando binario"
   CGO_ENABLED=0 "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$BIN_PATH.tmp" ./cmd/pangolite
   install -m 0755 "$BIN_PATH.tmp" "$BIN_PATH"

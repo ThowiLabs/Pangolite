@@ -34,7 +34,7 @@ func installClient(stdout io.Writer, cfg app.AgentClientConfig) error {
 	if err := copyFile(exe, clientBinPath, 0o755); err != nil {
 		return err
 	}
-	env := fmt.Sprintf("PANGOLITE_SERVER_URL=%s\nPANGOLITE_AGENT_ID=%s\nPANGOLITE_AGENT_TOKEN=%s\n", shellValue(cfg.ServerURL), shellValue(cfg.AgentID), shellValue(cfg.Token))
+	env := fmt.Sprintf("PANGOLITE_SERVER_URL=%s\nPANGOLITE_FALLBACK_URL=%s\nPANGOLITE_AGENT_ID=%s\nPANGOLITE_AGENT_TOKEN=%s\n", shellValue(cfg.ServerURL), shellValue(cfg.FallbackURL), shellValue(cfg.AgentID), shellValue(cfg.Token))
 	if err := os.WriteFile(clientEnvPath, []byte(env), 0o600); err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func removeClient(stdout io.Writer) error {
 
 func runService(stdout io.Writer) error {
 	fmt.Fprintln(stdout, "--service solo esta disponible en Windows; en Linux usa systemd/OpenRC")
-	return runForeground(app.AgentClientConfig{ServerURL: os.Getenv("PANGOLITE_SERVER_URL"), AgentID: os.Getenv("PANGOLITE_AGENT_ID"), Token: os.Getenv("PANGOLITE_AGENT_TOKEN")})
+	return runForeground(app.AgentClientConfig{ServerURL: os.Getenv("PANGOLITE_SERVER_URL"), FallbackURL: os.Getenv("PANGOLITE_FALLBACK_URL"), ConfigPath: clientEnvPath, AgentID: os.Getenv("PANGOLITE_AGENT_ID"), Token: os.Getenv("PANGOLITE_AGENT_TOKEN")})
 }
 
 func installSystemd() error {
@@ -189,3 +189,5 @@ func isSystemd() bool {
 func shellValue(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "'\\''") + "'"
 }
+
+func defaultClientEnvPath() string { return clientEnvPath }

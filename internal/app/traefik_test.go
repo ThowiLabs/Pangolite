@@ -85,3 +85,14 @@ func TestTraefikHelpListsCommand(t *testing.T) {
 		t.Fatal("debe detectar check cuando aparece en la lista de comandos")
 	}
 }
+
+func TestDashboardHostRuleMultipleDomains(t *testing.T) {
+	domains := NormalizePanelDomains("panel.example.mx", []string{"old.example.mx", "panel.example.mx"})
+	if len(domains) != 2 {
+		t.Fatalf("dominios normalizados inesperados: %#v", domains)
+	}
+	rule := DashboardHostRule(domains)
+	if rule != "Host(`panel.example.mx`) || Host(`old.example.mx`)" {
+		t.Fatalf("regla inesperada: %s", rule)
+	}
+}

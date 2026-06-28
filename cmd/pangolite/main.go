@@ -102,11 +102,13 @@ func agent(args []string, stdout io.Writer) error {
 	fs.SetOutput(stdout)
 	cfg := app.AgentClientConfig{
 		ServerURL:    os.Getenv("PANGOLITE_SERVER_URL"),
+		FallbackURL:  os.Getenv("PANGOLITE_FALLBACK_URL"),
 		AgentID:      os.Getenv("PANGOLITE_AGENT_ID"),
 		Token:        os.Getenv("PANGOLITE_AGENT_TOKEN"),
 		PollInterval: time.Second,
 	}
 	fs.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "URL publica o interna de Pangolite")
+	fs.StringVar(&cfg.FallbackURL, "fallback-url", cfg.FallbackURL, "URL fallback por IP del VPS para redescubrir el panel")
 	fs.StringVar(&cfg.AgentID, "agent-id", cfg.AgentID, "ID del agente creado en el panel")
 	fs.StringVar(&cfg.Token, "token", cfg.Token, "token del agente")
 	fs.DurationVar(&cfg.PollInterval, "poll-interval", cfg.PollInterval, "pausa entre polls vacios")

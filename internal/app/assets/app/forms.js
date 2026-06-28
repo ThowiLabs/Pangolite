@@ -102,9 +102,11 @@ async function createAgent(){
     const name=fieldValue('agentName');
     if(!name)throw new Error('Nombre del cliente de sistema requerido');
     showBusy('Creando cliente de sistema','Generando ID, token y comandos de instalación');
+    const os=fieldValue('agentInstallOS')||'linux';
     const a=await api('/api/agents',{method:'POST',body:JSON.stringify({projectId:currentProject.id,name})});
-    $('agentTokenCreate').replaceChildren(renderAgentCredentials(a,fieldValue('agentInstallOS')||'linux'));
+    $('agentTokenCreate').replaceChildren(renderAgentCredentials(a,os));
     $('agentTokenCreate').classList.remove('d-none');
+    showAgentCredentialsDialog(a,{title:'Cliente de sistema creado',meta:'Copia el token y el comando de instalacion ahora. El fallback por IP queda incluido para rescate si cambia el dominio.',os});
     setIfExists('agentName','');
     await reloadProjects();
     await loadProjectData(currentProject.id);

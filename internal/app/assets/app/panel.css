@@ -1110,3 +1110,71 @@ body.modal-open .modal-lite *{
     grid-template-columns:1fr;
   }
 }
+
+/* Modales con scroll interno: evita que la pagina se desplace cuando el contenido del modal es alto. */
+body.modal-open{
+  overflow:hidden!important;
+}
+.modal-lite.open{
+  align-items:center!important;
+  justify-content:center!important;
+  overflow:hidden!important;
+  padding:18px!important;
+}
+.modal-card{
+  max-height:calc(100dvh - 36px)!important;
+  overflow:auto!important;
+  overscroll-behavior:contain!important;
+  scrollbar-gutter:stable;
+}
+.agent-credentials-card{
+  width:min(980px, calc(100vw - 36px))!important;
+  max-height:calc(100dvh - 36px)!important;
+  display:flex!important;
+  flex-direction:column!important;
+  overflow:hidden!important;
+}
+.agent-credentials-card > .d-flex{
+  flex:0 0 auto;
+}
+#agentCredentialsBody{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+  padding-right:6px;
+}
+.modal-card::-webkit-scrollbar,
+#agentCredentialsBody::-webkit-scrollbar{
+  width:10px;
+  height:10px;
+}
+.modal-card::-webkit-scrollbar-track,
+#agentCredentialsBody::-webkit-scrollbar-track{
+  background:rgba(255,255,255,.045);
+  border-radius:999px;
+}
+.modal-card::-webkit-scrollbar-thumb,
+#agentCredentialsBody::-webkit-scrollbar-thumb{
+  background:rgba(255,255,255,.22);
+  border-radius:999px;
+  border:2px solid rgba(8,8,12,.92);
+}
+.modal-card::-webkit-scrollbar-thumb:hover,
+#agentCredentialsBody::-webkit-scrollbar-thumb:hover{
+  background:rgba(255,255,255,.34);
+}
+@media(max-width:720px){
+  .modal-lite.open{
+    padding:10px!important;
+  }
+  .modal-card,
+  .agent-credentials-card{
+    width:calc(100vw - 20px)!important;
+    max-height:calc(100dvh - 20px)!important;
+  }
+  .agent-credentials-card{
+    padding:14px!important;
+  }
+}
