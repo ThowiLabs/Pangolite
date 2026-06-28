@@ -10,7 +10,7 @@ Agregar una consola web premium al panel Pangolite para administrar el servidor 
 - Terminal local del servidor Pangolite por WebSocket en `/api/terminal/local`.
 - Terminal remota de clientes de sistema por WebSocket en `/api/terminal/agents/{id}`.
 - En Linux/Alpine se usa PTY real sobre `/dev/ptmx`, por lo que `/bin/sh`, `/bin/ash` o `/bin/bash` se comportan como terminal interactiva.
-- En Windows el cliente abre PowerShell dentro de una pseudoconsola ConPTY para tener una consola interactiva real.
+- En Windows la consola interactiva remota queda deshabilitada temporalmente y muestra un aviso claro, porque el soporte por servicio/sesión puede fallar demasiado hasta tener una implementación estable.
 - El cliente de sistema reutiliza el canal de streams persistentes ya usado para TCP remoto, agregando el modo `terminal`.
 - La terminal corre con los permisos del proceso Pangolite o del cliente de sistema. Si el servicio corre como root, la terminal local tiene privilegios root.
 
@@ -25,5 +25,5 @@ Agregar una consola web premium al panel Pangolite para administrar el servidor 
 ## Limitaciones actuales
 
 - xterm.js se carga desde CDN jsDelivr, igual que otros assets externos existentes del panel. Si se quiere operación 100% offline, se debe empaquetar xterm en `internal/app/assets/app/vendor/`.
-- Windows usa ConPTY. Requiere Windows 10 1809 / Windows Server 2019 o superior; en versiones más viejas no hay pseudoconsola nativa.
+- Windows no intenta abrir terminal interactiva por ahora. Debe mostrar advertencia y recomendar RDP, PowerShell Remoting o SSH mientras se implementa soporte confiable.
 - La terminal remota reenvía resize mediante mensajes de control internos con prefijo reservado para evitar que JSON de control llegue al shell.

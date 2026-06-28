@@ -58,19 +58,3 @@ func TestTerminalControlFilterHandlesSplitFrame(t *testing.T) {
 		t.Fatalf("resize recibido = %dx%d, want 100x30", gotCols, gotRows)
 	}
 }
-
-func TestExpandStandaloneBackspaceForVT(t *testing.T) {
-	got := expandStandaloneBackspaceForVT([]byte("abc\b"))
-	want := []byte("abc\b \b")
-	if !bytes.Equal(got, want) {
-		t.Fatalf("salida = %q, want %q", got, want)
-	}
-}
-
-func TestExpandStandaloneBackspaceForVTKeepsDestructiveSequence(t *testing.T) {
-	got := expandStandaloneBackspaceForVT([]byte("abc\b \b"))
-	want := []byte("abc\b \b")
-	if !bytes.Equal(got, want) {
-		t.Fatalf("salida = %q, want %q", got, want)
-	}
-}

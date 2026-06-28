@@ -149,7 +149,7 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 			data.TraefikConfig = string(b)
 		}
 	}
-	if page.Key == "terminal" {
+	if page.Key == "terminal" && currentID == "" {
 		data.Agents = s.store.ListAgents()
 	}
 	data.BootstrapJSON = template.JS(mustJSON(map[string]any{
