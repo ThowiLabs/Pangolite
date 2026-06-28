@@ -30,27 +30,40 @@
       <div class="ops-row"><div><div class="ops-label">Aplicación de cambios</div><div class="text-muted small">HTTP/HTTPS se actualiza sin cortar recursos existentes</div></div><div class="ops-value good">Automática</div></div>
     </div>
   </div>
-  <div class="card">
+  <div class="card project-directory-card">
     <div class="card-header">
-      <div class="toolbar mb-0"><div><div class="card-title">Proyectos</div><div class="text-muted small">Administración principal de proyectos y entornos.</div></div><div class="d-flex gap-2"><button class="btn btn-help" onclick="showHelp('Proyectos','Un proyecto agrupa recursos, dominios, reglas y clientes de sistema. El nombre no puede repetirse y sirve como contexto de operación.')"><i class="bi bi-question"></i></button><button class="btn btn-primary" onclick="openProjectModal()"><i class="bi bi-plus-lg"></i> Crear</button></div></div>
+      <div class="toolbar mb-0"><div><div class="card-title">Proyectos</div><div class="text-muted small">Workspaces operativos con métricas rápidas y acceso directo a recursos/clientes.</div></div><div class="d-flex gap-2"><button class="btn btn-help" onclick="showHelp('Proyectos','Un proyecto agrupa recursos, dominios, reglas y clientes de sistema. Selecciona un proyecto para activar su navegacion contextual en el sidebar.')"><i class="bi bi-question"></i></button><button class="btn btn-primary" onclick="openProjectModal()"><i class="bi bi-plus-lg"></i> Crear</button></div></div>
     </div>
-    <div class="card-body table-responsive"><table class="table"><thead><tr><th>Estado</th><th>Nombre</th><th>Slug</th><th>Recursos</th><th>Agentes</th><th>Activos</th><th class="text-end">Acciones</th></tr></thead><tbody id="projectRows">
-      {{if .Projects}}
-        {{range .Projects}}
-        <tr>
-          <td><span class="state-pill {{if .Enabled}}on{{else}}off{{end}}"><span class="status-dot {{if .Enabled}}ok{{end}}" aria-hidden="true"></span><span>{{if .Enabled}}Activo{{else}}Inactivo{{end}}</span></span></td>
-          <td>{{.Name}}</td>
-          <td class="font-mono">/{{.Slug}}</td>
-          <td>{{projectStats $.Stats .ID "resources"}}</td>
-          <td>{{projectStats $.Stats .ID "agents"}}</td>
-          <td>{{projectStats $.Stats .ID "activeResources"}}</td>
-          <td class="text-end"><a class="btn btn-sm btn-primary me-1" href="/projects/{{.ID}}"><i class="bi bi-box-arrow-in-right"></i> Abrir</a><a class="btn btn-sm btn-outline-secondary" href="/projects/{{.ID}}"><i class="bi bi-pencil-square"></i> Configurar</a></td>
-        </tr>
+    <div class="card-body">
+      <div id="projectRows" class="project-card-grid">
+        {{if .Projects}}
+          {{range .Projects}}
+          <article class="project-card premium-card {{if not .Enabled}}project-card-disabled{{end}}">
+            <div class="project-card-top">
+              <div>
+                <div class="project-card-eyebrow"><span class="status-dot {{if .Enabled}}ok{{end}}"></span>{{if .Enabled}}Activo{{else}}Inactivo{{end}}</div>
+                <h2 class="project-card-title">{{.Name}}</h2>
+                <div class="project-card-slug">/{{.Slug}}</div>
+              </div>
+              <a class="project-card-open" href="/projects/{{.ID}}" aria-label="Abrir {{.Name}}"><i class="bi bi-arrow-up-right"></i></a>
+            </div>
+            <div class="project-card-stats">
+              <div><strong>{{projectStats $.Stats .ID "resources"}}</strong><span>Recursos</span></div>
+              <div><strong>{{projectStats $.Stats .ID "activeResources"}}</strong><span>Activos</span></div>
+              <div><strong>{{projectStats $.Stats .ID "agents"}}</strong><span>Clientes</span></div>
+            </div>
+            <div class="project-card-actions">
+              <a class="btn btn-sm btn-primary" href="/projects/{{.ID}}"><i class="bi bi-command"></i> Resumen</a>
+              <a class="btn btn-sm btn-outline-secondary" href="/projects/{{.ID}}/resources"><i class="bi bi-diagram-3"></i> Recursos</a>
+              <a class="btn btn-sm btn-outline-secondary" href="/projects/{{.ID}}/agents"><i class="bi bi-hdd-network"></i> Clientes</a>
+            </div>
+          </article>
+          {{end}}
+        {{else}}
+          <div class="empty project-empty-wide">No hay proyectos. Usa + Crear para iniciar el onboarding y agregar el primer proyecto.</div>
         {{end}}
-      {{else}}
-        <tr><td class="empty" colspan="7">No hay proyectos. Usa + Crear para iniciar el onboarding y agregar el primer proyecto.</td></tr>
-      {{end}}
-    </tbody></table></div>
+      </div>
+    </div>
   </div>
 </section>
 {{end}}

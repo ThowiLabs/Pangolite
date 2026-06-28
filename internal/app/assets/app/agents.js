@@ -16,6 +16,7 @@ async function route(options={}){
   const initial=!!options.initial;
   document.querySelectorAll('.route-view').forEach(v=>v.classList.add('active'));
   document.querySelectorAll('.nav-link').forEach(a=>a.classList.remove('active'));
+  document.querySelectorAll('.project-nav-link').forEach(a=>a.classList.remove('active'));
   const path=location.pathname;
   if(path==='/'||path==='/projects'){
     setTop('Dashboard','Operación global');
@@ -69,24 +70,30 @@ async function route(options={}){
   setHrefIfExists('goCreateAgentFromList','/projects/'+id+'/agents/create');
   if(section==='resources'&&action==='create'){
     setTop(currentProject.name,'Crear recurso');
+    activateProjectNav('resources');
     fillDomainSelect();
     fillAgentSelect();
     return;
   }
   if(section==='agents'&&action==='create'){
     setTop(currentProject.name,'Crear cliente de sistema');
+    activateProjectNav('agents');
     return;
   }
   if(section==='resources'){
     setTop(currentProject.name,'Recursos');
+    activateProjectNav('resources');
     if(resources.length)checkResourceHealth(true);
     return;
   }
   if(section==='agents'){
     setTop(currentProject.name,'Clientes de sistema');
+    activateProjectNav('agents');
     return;
   }
   setTop(currentProject.name,'Resumen');
+  activateProjectNav('overview');
+  updateSidebarProjectContext();
   if(!initial)paintProjectOverview();
 }
 

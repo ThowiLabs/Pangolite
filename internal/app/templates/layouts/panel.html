@@ -19,19 +19,36 @@
     <i class="bi bi-list" aria-hidden="true"></i>
   </button>
   <div class="sidebar-scrim" id="sidebarScrim" aria-hidden="true"></div>
-  <aside class="sidebar" id="panelSidebar" aria-label="Navegacion principal">
-    <div class="brand"><img class="brand-logo" src="/assets/app/logo-mark.png" alt="Pangolite"><div><div class="brand-title">Pangolite</div><div class="brand-sub">Edge Platform</div></div></div>
-    <nav class="nav-section project-primary">
-      <div class="nav-title">Proyecto activo</div>
+  <aside class="sidebar sidebar-premium" id="panelSidebar" aria-label="Navegacion principal">
+    <a class="brand brand-premium" href="/" aria-label="Ir al dashboard de Pangolite">
+      <img class="brand-logo" src="/assets/app/logo-mark.png" alt="Pangolite">
+      <div class="brand-copy">
+        <div class="brand-title">Pangolite</div>
+        <div class="brand-sub">Edge Platform</div>
+      </div>
+    </a>
+
+    <nav class="nav-section nav-global nav-primary" aria-label="Navegacion principal">
+      <div class="nav-title">Dashboard</div>
+      <a class="nav-link {{if eq .Path "/"}}active{{end}}" href="/" data-nav="dashboard"><i class="bi bi-speedometer2"></i><span>Dashboard</span></a>
+    </nav>
+
+    <nav class="nav-section project-primary project-context" aria-label="Navegacion del proyecto activo">
+      <div class="nav-title">Proyectos</div>
+      <a class="nav-link project-list-link {{if and (eq .PageKey "projects") (ne .Path "/")}}active{{end}}" href="/projects" data-nav="projects"><i class="bi bi-grid-1x2"></i><span>Todos los proyectos</span></a>
+      <div class="nav-title project-active-title">Proyecto activo</div>
       <div class="project-switcher" id="projectSwitcher">
-        <button class="btn project-switcher-button" type="button" id="projectSwitcherButton" onclick="toggleProjectSwitcher()"><span><i class="bi bi-folder2-open"></i> <span id="currentProjectLabel">{{if .HasProject}}{{.CurrentProject.Name}}{{else}}Selecciona proyecto{{end}}</span></span><i class="bi bi-chevron-down"></i></button>
+        <button class="btn project-switcher-button" type="button" id="projectSwitcherButton" onclick="toggleProjectSwitcher()" aria-expanded="false" aria-controls="projectSwitcherMenu">
+          <span><i class="bi bi-folder2-open"></i> <span id="currentProjectLabel">{{if .HasProject}}{{.CurrentProject.Name}}{{else}}Selecciona proyecto{{end}}</span></span>
+          <i class="bi bi-chevron-down" aria-hidden="true"></i>
+        </button>
         <div class="project-switcher-menu" id="projectSwitcherMenu">
           <input id="projectSearch" class="form-control form-control-sm" placeholder="Buscar proyecto..." autocomplete="off">
           <div id="projectNav" class="project-results" role="listbox" aria-label="Resultados de proyectos">
             {{if .Projects}}
               {{range .Projects}}
               <button class="project-result {{if eq $.CurrentID .ID}}active{{end}}" type="button" data-project-nav="{{.ID}}" onclick="location.href='/projects/{{.ID}}'">
-                <span><span class="fw-semibold">{{.Name}}</span><div class="project-meta">{{.Slug}} · {{projectStats $.Stats .ID "resources"}} recursos · {{projectStats $.Stats .ID "agents"}} agentes</div></span><i class="bi bi-arrow-right-short" aria-hidden="true"></i>
+                <span><span class="fw-semibold">{{.Name}}</span><div class="project-meta">{{.Slug}} · {{projectStats $.Stats .ID "resources"}} recursos · {{projectStats $.Stats .ID "agents"}} clientes</div></span><i class="bi bi-arrow-right-short" aria-hidden="true"></i>
               </button>
               {{end}}
             {{else}}
@@ -40,16 +57,46 @@
           </div>
         </div>
       </div>
-      <div class="main-layout-note mt-2 px-2">Selecciona primero un proyecto. Todo lo demás depende del proyecto activo.</div>
+
+      {{if .HasProject}}
+      <div class="project-active-card" id="sidebarProjectCard" data-current-project="{{.CurrentID}}">
+        <div class="project-active-eyebrow">Workspace</div>
+        <div class="project-active-name" id="sidebarProjectName">{{.CurrentProject.Name}}</div>
+        <div class="project-active-meta" id="sidebarProjectMeta">/{{.CurrentProject.Slug}}</div>
+        <div class="project-mini-stats" aria-label="Métricas rápidas del proyecto">
+          <div><strong id="sidebarProjectResources">{{projectStats .Stats .CurrentID "resources"}}</strong><span>Recursos</span></div>
+          <div><strong id="sidebarProjectAgents">{{projectStats .Stats .CurrentID "agents"}}</strong><span>Clientes</span></div>
+          <div><strong id="sidebarProjectActive">{{projectStats .Stats .CurrentID "activeResources"}}</strong><span>Activos</span></div>
+        </div>
+      </div>
+      <div class="project-nav-menu" id="projectContextNav">
+        <a class="project-nav-link {{if eq .PageKey "project"}}active{{end}}" data-project-link="overview" href="/projects/{{.CurrentID}}"><i class="bi bi-command"></i><span>Resumen</span></a>
+        <a class="project-nav-link {{if or (eq .PageKey "resources") (eq .PageKey "resource_create")}}active{{end}}" data-project-link="resources" href="/projects/{{.CurrentID}}/resources"><i class="bi bi-diagram-3"></i><span>Recursos</span><span class="nav-count" id="sidebarResourceCount">{{projectStats .Stats .CurrentID "resources"}}</span></a>
+        <a class="project-nav-link {{if or (eq .PageKey "agents") (eq .PageKey "agent_create")}}active{{end}}" data-project-link="agents" href="/projects/{{.CurrentID}}/agents"><i class="bi bi-hdd-network"></i><span>Clientes</span><span class="nav-count" id="sidebarAgentCount">{{projectStats .Stats .CurrentID "agents"}}</span></a>
+        <div class="project-quick-actions">
+          <a class="project-mini-action" id="sidebarNewResource" href="/projects/{{.CurrentID}}/resources/create"><i class="bi bi-plus-lg"></i><span>Nuevo recurso</span></a>
+          <a class="project-mini-action" id="sidebarNewAgent" href="/projects/{{.CurrentID}}/agents/create"><i class="bi bi-plus-lg"></i><span>Nuevo cliente</span></a>
+        </div>
+      </div>
+      {{else}}
+      <div class="project-empty-card" id="sidebarProjectEmpty">
+        <i class="bi bi-folder-plus"></i>
+        <strong>Sin proyecto activo</strong>
+        <span>Selecciona un proyecto para ver sus recursos, clientes y acciones rápidas.</span>
+        <button class="btn btn-sm btn-primary" type="button" onclick="openProjectModal()"><i class="bi bi-plus-lg"></i> Crear proyecto</button>
+      </div>
+      {{end}}
     </nav>
-    <nav class="nav-section">
-      <div class="nav-title">Panel</div>
-      <a class="nav-link {{if eq .PageKey "projects"}}active{{end}}" href="/projects" data-nav="projects"><i class="bi bi-speedometer2"></i><span>Dashboard</span></a>
-      <a class="nav-link {{if eq .PageKey "logs"}}active{{end}}" href="/logs" data-nav="logs"><i class="bi bi-journal-text"></i><span>Logs</span></a>
+
+    <nav class="nav-section nav-global nav-system" aria-label="Herramientas del sistema">
       <a class="nav-link {{if eq .PageKey "maintenance"}}active{{end}}" href="/maintenance" data-nav="maintenance"><i class="bi bi-shield-check"></i><span>Seguridad</span></a>
+      <a class="nav-link {{if eq .PageKey "logs"}}active{{end}}" href="/logs" data-nav="logs"><i class="bi bi-journal-text"></i><span>Logs</span></a>
       <a class="nav-link {{if eq .PageKey "settings"}}active{{end}}" href="/settings" data-nav="settings"><i class="bi bi-sliders"></i><span>Ajustes</span></a>
     </nav>
-    <div class="side-footer"><div class="product-mini"><span class="product-status-dot"></span><div><div class="fw-semibold text-white">Sistema operativo</div><div>Dominios, túneles y recursos bajo control.</div></div></div></div>
+
+    <div class="side-footer">
+      <div class="product-mini"><span class="product-status-dot"></span><div><div class="fw-semibold text-white">Panel premium</div><div>Operación segura de dominios, túneles y recursos.</div></div></div>
+    </div>
   </aside>
   <main class="main">
     <div class="topbar">
