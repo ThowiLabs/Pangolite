@@ -15,6 +15,47 @@ function makeEmpty(message,tag='div',colspan=0){let node;if(tag==='tr'){node=tpl
 function makeIcon(icon){const i=document.createElement('i');i.className='bi '+icon;i.setAttribute('aria-hidden','true');return i}
 function setButtonContent(btn,icon,label){btn.replaceChildren();if(icon){btn.appendChild(makeIcon(icon));btn.appendChild(document.createTextNode(' '))}const span=btn.querySelector('[data-slot="label"]')||document.createElement('span');span.textContent=label||'';if(!span.parentNode)btn.appendChild(span)}
 function makeButton(label,icon,classes='btn btn-sm btn-outline-secondary',onClick=null){const btn=tplNode('tpl-action-button')||document.createElement('button');btn.type='button';btn.className=classes;setButtonContent(btn,icon,label);if(onClick)btn.addEventListener('click',onClick);return btn}
+
+function actionTargetFromEvent(event){
+  if(!event)return null;
+  if(event.submitter)return event.submitter;
+  const target=event.currentTarget||event.target;
+  if(!target)return null;
+  if(target.matches&&target.matches('button,a'))return target;
+  if(target.querySelector)return target.querySelector('button[type="submit"],button:not([type]),.btn');
+  return null;
+}
+const actionLoadingStates=new WeakMap();
+function setActionLoading(target,label='Procesando'){
+  const el=target&&target.closest?target.closest('button,a'):target;
+  if(!el||actionLoadingStates.has(el))return()=>{};
+  actionLoadingStates.set(el,{html:el.innerHTML,disabled:el.disabled,aria:el.getAttribute('aria-busy')});
+  if('disabled' in el)el.disabled=true;
+  el.setAttribute('aria-busy','true');
+  el.classList.add('btn-loading');
+  el.innerHTML='<span class="btn-loading-spinner" aria-hidden="true"></span><span>'+esc(label||'Procesando')+'</span>';
+  return()=>{
+    const st=actionLoadingStates.get(el);if(!st)return;
+    el.innerHTML=st.html;
+    if('disabled' in el)el.disabled=!!st.disabled;
+    if(st.aria===null)el.removeAttribute('aria-busy');else el.setAttribute('aria-busy',st.aria);
+    el.classList.remove('btn-loading');
+    actionLoadingStates.delete(el);
+  }
+}
+async function withActionLoading(target,label,work){
+  const done=setActionLoading(target,label);
+  try{return await work()}finally{done()}
+}
+function bindAsyncSubmit(form,handler,label='Procesando'){
+  if(!form)return;
+  form.setAttribute('action','javascript:void(0)');
+  form.addEventListener('submit',event=>{
+    event.preventDefault();
+    const target=actionTargetFromEvent(event)||form;
+    withActionLoading(target,label,()=>handler(event)).catch(err=>msg(err.message||String(err),true));
+  });
+}
 function makeLink(label,href,icon,classes='btn btn-sm btn-outline-secondary'){const a=tplNode('tpl-icon-link')||document.createElement('a');a.href=href||'#';a.className=classes;setButtonContent(a,icon,label);return a}
 function makeDownload(label,href){const a=tplNode('tpl-download-link')||document.createElement('a');a.href=href||'#';const s=slot(a,'label');if(s)s.textContent=label||'Descargar';return a}
 function makeStatePill(text,on=false,off=false){const pill=tplNode('tpl-state-pill')||document.createElement('span');pill.classList.toggle('on',!!on);pill.classList.toggle('off',!!off);const dot=pill.querySelector('.status-dot');if(dot)dot.classList.toggle('ok',!!on);setSlot(pill,'text',text);return pill}

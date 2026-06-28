@@ -96,8 +96,9 @@ async function createDomainFromForm(e){
   }catch(err){msg(err.message,true)}
   return false;
 }
-async function createAgent(){
+async function createAgent(button=null){
   if(!currentProject){msg('Selecciona un proyecto primero',true);return}
+  await withActionLoading(button,'Creando',async()=>{
   try{
     const name=fieldValue('agentName');
     if(!name)throw new Error('Nombre del cliente de sistema requerido');
@@ -112,6 +113,7 @@ async function createAgent(){
     await loadProjectData(currentProject.id);
     msg('Cliente de sistema creado. Copia el token ahora.');
   }catch(err){msg(err.message,true)}finally{hideBusy()}
+  })
 }
 function createResourcePayload(prefix=''){
   const isEdit=prefix==='edit';
@@ -194,25 +196,27 @@ async function saveResourceEdit(e){
   }catch(err){msg(err.message,true)}finally{hideBusy()}
   return false;
 }
-async function deleteResource(id){
+async function deleteResource(id,button=null){
   const r=resources.find(x=>x.id===id);
   const deleteBody='Se eliminara '+(r?r.name:shortID(id))+' y Pangolite aplicara Traefik automaticamente.'+((r&&(r.mode==='tcp'||r.mode==='udp'))?' Este recurso usa puerto TCP/UDP, por lo que Traefik podria reiniciarse para retirar el entryPoint.':'');
   if(!await confirmAction('Eliminar recurso',deleteBody,'Eliminar recurso'))return;
-  try{
-    const delResp=await api('/api/resources/'+id,{method:'DELETE'});
-    removeResourceLocal(id);
-    msg('Recurso eliminado'+(traefikNotice(delResp)?'. '+traefikNotice(delResp):''));
-    refreshCurrentProjectSoft();
-  }catch(err){msg(err.message,true)}
+  await withActionLoading(button,'Eliminando',async()=>{
+    try{
+      const delResp=await api('/api/resources/'+id,{method:'DELETE'});
+      removeResourceLocal(id);
+      msg('Recurso eliminado'+(traefikNotice(delResp)?'. '+traefikNotice(delResp):''));
+      refreshCurrentProjectSoft();
+    }catch(err){msg(err.message,true)}
+  })
 }
 function setupForms(){
-  const projectForm=maybeEl('projectForm');if(projectForm){projectForm.setAttribute('action','javascript:void(0)');projectForm.addEventListener('submit',createProjectFromForm)}
-  const projectSettingsForm=maybeEl('projectSettingsForm');if(projectSettingsForm){projectSettingsForm.setAttribute('action','javascript:void(0)');projectSettingsForm.addEventListener('submit',saveProjectSettings)}
-  const domainForm=maybeEl('domainForm');if(domainForm){domainForm.setAttribute('action','javascript:void(0)');domainForm.addEventListener('submit',createDomainFromForm)}
-  const resourceForm=maybeEl('resourceForm');if(resourceForm){resourceForm.setAttribute('action','javascript:void(0)');resourceForm.addEventListener('submit',createResourceFromForm)}
-  const editForm=maybeEl('resourceEditForm');if(editForm){editForm.setAttribute('action','javascript:void(0)');editForm.addEventListener('submit',saveResourceEdit)}
-  const settingsForm=maybeEl('dashboardSettingsForm');if(settingsForm){settingsForm.setAttribute('action','javascript:void(0)');settingsForm.addEventListener('submit',saveSettings)}
-  [['mode',syncMode],['originType',syncOrigin],['domainSelect',syncDomainMode],['subdomain',syncDomainMode],['customDomain',syncDomainMode],['tls',syncDomainMode],['disabledResponseMode',syncDisabledMode],['editMode',syncEditResourceMode],['editOriginType',syncEditResourceOrigin],['editTLS',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDomain',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDisabledResponseMode',syncEditDisabledMode],['protectionMode',syncProtectionFields],['editProtectionMode',syncEditProtectionFields],['resourceActionMode',syncResourceActionMode],['templateManagerSelect',()=>loadTemplateIntoEditor().catch(()=>{})]].forEach(([id,fn])=>{const el=maybeEl(id);if(el)el.addEventListener('input',fn);if(el)el.addEventListener('change',fn)});
+  bindAsyncSubmit(maybeEl('projectForm'),createProjectFromForm,'Creando');
+  bindAsyncSubmit(maybeEl('projectSettingsForm'),saveProjectSettings,'Guardando');
+  bindAsyncSubmit(maybeEl('domainForm'),createDomainFromForm,'Agregando');
+  bindAsyncSubmit(maybeEl('resourceForm'),createResourceFromForm,'Creando');
+  bindAsyncSubmit(maybeEl('resourceEditForm'),saveResourceEdit,'Guardando');
+  bindAsyncSubmit(maybeEl('dashboardSettingsForm'),saveSettings,'Guardando');
+  [['mode',syncMode],['originType',syncOrigin],['domainSelect',syncDomainMode],['subdomain',syncDomainMode],['customDomain',syncDomainMode],['tls',syncDomainMode],['disabledResponseMode',syncDisabledMode],['editMode',syncEditResourceMode],['editOriginType',syncEditResourceOrigin],['editTLS',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDomain',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDisabledResponseMode',syncEditDisabledMode],['protectionMode',syncProtectionFields],['editProtectionMode',syncEditProtectionFields],['resourceActionMode',syncResourceActionMode],['maintenanceOperation',syncResourceActionMode],['maintenanceScopeWeb',syncResourceActionMode],['maintenanceScopeTCP',syncResourceActionMode],['maintenanceScopeUDP',syncResourceActionMode],['templateManagerSelect',()=>loadTemplateIntoEditor().catch(()=>{})]].forEach(([id,fn])=>{const el=maybeEl(id);if(el)el.addEventListener('input',fn);if(el)el.addEventListener('change',fn)});
   const preset=maybeEl('disabledPreset');if(preset)preset.addEventListener('change',()=>{if(preset.value){setIfExists('disabledResponseMode','html');setIfExists('disabledStatusCode','403');setIfExists('disabledHtml','');syncDisabledMode()}});
   const epreset=maybeEl('editDisabledPreset');if(epreset)epreset.addEventListener('change',()=>{if(epreset.value){setIfExists('editDisabledResponseMode','html');setIfExists('editDisabledStatusCode','403');setIfExists('editDisabledHtml','');syncEditDisabledMode()}});
 }

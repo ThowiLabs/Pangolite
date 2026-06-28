@@ -2,7 +2,7 @@
 <section id="view-maintenance" class="route-view active">
   <div class="hero"><h1>Seguridad operativa</h1><p>Auditoría de cambios administrativos y respaldos seguros de SQLite antes de operaciones críticas.</p></div>
   <div class="grid grid-2 mb-3">
-    <div class="card"><div class="card-header"><div class="toolbar mb-0"><div><div class="card-title">Respaldos SQLite</div><div id="backupDirHint" class="text-muted small">{{.BackupDir}}</div></div><button class="btn btn-primary" onclick="createBackup()"><i class="bi bi-database-add"></i> Crear respaldo</button></div></div><div class="card-body"><div id="backupRows" class="table-responsive">
+    <div class="card"><div class="card-header"><div class="toolbar mb-0"><div><div class="card-title">Respaldos SQLite</div><div id="backupDirHint" class="text-muted small">{{.BackupDir}}</div></div><button class="btn btn-primary" onclick="createBackup(this)"><i class="bi bi-database-add"></i> Crear respaldo</button></div></div><div class="card-body"><div id="backupRows" class="table-responsive">
       <table class="table"><thead><tr><th>Archivo</th><th>Tamaño</th><th>Fecha</th><th class="text-end">Acciones</th></tr></thead><tbody>
       {{if .Backups}}
         {{range .Backups}}

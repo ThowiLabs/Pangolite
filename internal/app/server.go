@@ -144,6 +144,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents", s.requireAuth(s.createAgent))
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.requireAuth(s.deleteAgent))
 	s.mux.HandleFunc("POST /api/agents/{id}/token", s.requireAuth(s.rotateAgentToken))
+	s.mux.HandleFunc("POST /api/agents/{id}/maintenance", s.requireAuth(s.updateAgentMaintenance))
+	s.mux.HandleFunc("POST /api/agents/{id}/web-maintenance", s.requireAuth(s.updateAgentWebMaintenance))
 	s.mux.HandleFunc("POST /api/render-traefik", s.requireAuth(s.renderTraefik))
 	s.mux.HandleFunc("POST /api/agent/discover", s.agentDiscover)
 	s.mux.HandleFunc("POST /api/agent/poll", s.agentPoll)
@@ -1165,6 +1167,150 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request, rs requestS
 	s.log.Info("cliente NAT eliminado", "id", id, "name", agent.Name, "resources", len(deletedResources), "user", rs.User.Username, "traefik", traefikResult.Message)
 	s.recordAudit(r, rs, "agent.delete", "agent", id, agent.ProjectID, map[string]any{"name": agent.Name, "deletedResources": len(deletedResources), "traefik": traefikResult.Message})
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id, "deletedResources": len(deletedResources), "traefik": traefikResult})
+}
+
+func (s *Server) updateAgentWebMaintenance(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id requerido")
+		return
+	}
+	defer r.Body.Close()
+	var req struct {
+		Suspended            *bool  `json:"suspended"`
+		DisabledResponseMode string `json:"disabledResponseMode"`
+		DisabledStatusCode   int    `json:"disabledStatusCode"`
+		DisabledHTML         string `json:"disabledHtml"`
+		DisabledTemplateID   string `json:"disabledTemplateId"`
+		Reason               string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 192<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	if req.Suspended == nil {
+		writeError(w, http.StatusBadRequest, "suspended requerido")
+		return
+	}
+	req2 := agentMaintenanceRequest{Suspended: req.Suspended, Web: true, DisabledResponseMode: req.DisabledResponseMode, DisabledStatusCode: req.DisabledStatusCode, DisabledHTML: req.DisabledHTML, DisabledTemplateID: req.DisabledTemplateID, Reason: req.Reason}
+	s.applyAgentMaintenanceRequest(w, r, rs, id, req2)
+}
+
+type agentMaintenanceRequest struct {
+	Suspended            *bool  `json:"suspended"`
+	Web                  bool   `json:"web"`
+	TCP                  bool   `json:"tcp"`
+	UDP                  bool   `json:"udp"`
+	DisabledResponseMode string `json:"disabledResponseMode"`
+	DisabledStatusCode   int    `json:"disabledStatusCode"`
+	DisabledHTML         string `json:"disabledHtml"`
+	DisabledTemplateID   string `json:"disabledTemplateId"`
+	Reason               string `json:"reason"`
+}
+
+func (s *Server) updateAgentMaintenance(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id requerido")
+		return
+	}
+	defer r.Body.Close()
+	var req agentMaintenanceRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	if req.Suspended == nil {
+		writeError(w, http.StatusBadRequest, "suspended requerido")
+		return
+	}
+	s.applyAgentMaintenanceRequest(w, r, rs, id, req)
+}
+
+func (s *Server) applyAgentMaintenanceRequest(w http.ResponseWriter, r *http.Request, rs requestSession, id string, req agentMaintenanceRequest) {
+	if !req.Web && !req.TCP && !req.UDP {
+		writeError(w, http.StatusBadRequest, "selecciona web, tcp o udp")
+		return
+	}
+	beforeResources := s.store.ListResources()
+	if !*req.Suspended {
+		agent, resources, err := s.store.ResumeAgentResources(id, req.Web, req.TCP, req.UDP)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
+		s.log.Info("mantenimiento de cliente reactivado", "id", id, "web", req.Web, "tcp", req.TCP, "udp", req.UDP, "user", rs.User.Username, "traefik", traefikResult.Message)
+		s.recordAudit(r, rs, "agent.maintenance.resume", "agent", id, agent.ProjectID, map[string]any{"web": req.Web, "tcp": req.TCP, "udp": req.UDP, "resources": len(resources), "traefik": traefikResult.Message})
+		writeJSON(w, http.StatusOK, map[string]any{"agent": agent, "resources": resources, "suspended": false, "traefik": traefikResult})
+		return
+	}
+	webOpts := AgentWebMaintenanceOptions{ResponseMode: DisabledResponse403, StatusCode: 403}
+	var err error
+	if req.Web {
+		webOpts, err = s.agentWebMaintenanceOptions(req.DisabledResponseMode, req.DisabledStatusCode, req.DisabledHTML, req.DisabledTemplateID, req.Reason)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	agent, resources, err := s.store.SuspendAgentResources(id, AgentMaintenanceOptions{Web: req.Web, TCP: req.TCP, UDP: req.UDP, ResponseMode: webOpts.ResponseMode, StatusCode: webOpts.StatusCode, HTML: webOpts.HTML, TemplateID: webOpts.TemplateID, Reason: webOpts.Reason})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
+	affected := agent.WebSuspendedCount + agent.TCPSuspendedCount + agent.UDPSuspendedCount
+	s.log.Info("mantenimiento de cliente activado", "id", id, "resources", affected, "web", req.Web, "tcp", req.TCP, "udp", req.UDP, "user", rs.User.Username, "traefik", traefikResult.Message)
+	s.recordAudit(r, rs, "agent.maintenance.suspend", "agent", id, agent.ProjectID, map[string]any{"resources": affected, "web": req.Web, "tcp": req.TCP, "udp": req.UDP, "mode": webOpts.ResponseMode, "traefik": traefikResult.Message})
+	writeJSON(w, http.StatusOK, map[string]any{"agent": agent, "resources": resources, "suspended": true, "affected": affected, "traefik": traefikResult})
+}
+
+func (s *Server) agentWebMaintenanceOptions(mode string, status int, html string, templateID string, reason string) (AgentWebMaintenanceOptions, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = DisabledResponseHTML
+	}
+	if mode != DisabledResponse403 && mode != DisabledResponse404 && mode != DisabledResponseHidden && mode != DisabledResponseHTML {
+		return AgentWebMaintenanceOptions{}, errors.New("disabledResponseMode debe ser 403, 404, hidden o html")
+	}
+	templateID = strings.TrimSpace(templateID)
+	html = strings.TrimSpace(html)
+	if mode == DisabledResponse403 {
+		status = 403
+		html = ""
+		templateID = ""
+	}
+	if mode == DisabledResponse404 || mode == DisabledResponseHidden {
+		status = 404
+		html = ""
+		templateID = ""
+	}
+	if mode == DisabledResponseHTML {
+		if status == 0 {
+			status = 200
+		}
+		if status != 200 && status != 403 && status != 404 {
+			return AgentWebMaintenanceOptions{}, errors.New("disabledStatusCode para html debe ser 200, 403 o 404")
+		}
+		if templateID != "" {
+			if _, err := ReadSuspensionTemplate(s.config.SuspensionTemplateDir, templateID); err != nil {
+				return AgentWebMaintenanceOptions{}, err
+			}
+		} else if html == "" {
+			html = defaultAgentWebMaintenanceHTML()
+		}
+		if html != "" {
+			if err := ValidateSuspensionHTML(html); err != nil {
+				return AgentWebMaintenanceOptions{}, err
+			}
+		}
+	}
+	return AgentWebMaintenanceOptions{ResponseMode: mode, StatusCode: status, HTML: html, TemplateID: templateID, Reason: strings.TrimSpace(reason)}, nil
+}
+
+func defaultAgentWebMaintenanceHTML() string {
+	return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mantenimiento</title></head><body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:#f8fafc;font-family:system-ui,-apple-system,Segoe UI,sans-serif"><main style="max-width:680px;margin:24px;padding:36px;border:1px solid rgba(148,163,184,.28);border-radius:24px;background:rgba(15,23,42,.92);box-shadow:0 24px 80px rgba(0,0,0,.35)"><p style="margin:0 0 12px;color:#93c5fd;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Mantenimiento programado</p><h1 style="margin:0 0 14px;font-size:clamp(28px,5vw,46px);line-height:1.05">Servicio web temporalmente pausado</h1><p style="margin:0;color:#cbd5e1;font-size:18px;line-height:1.6">Estamos realizando mantenimiento. Los túneles TCP/UDP permanecen disponibles para administración interna.</p></main></body></html>`
 }
 
 func (s *Server) rotateAgentToken(w http.ResponseWriter, r *http.Request, rs requestSession) {

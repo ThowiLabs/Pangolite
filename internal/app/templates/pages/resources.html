@@ -10,7 +10,7 @@
         <td data-label="Backend" class="font-mono compact-cell">{{resourceBackend .}}</td>
         <td data-label="Origen">{{resourceOrigin .}}</td>
         <td data-label="Cliente de sistema">{{if eq .OriginType "agent"}}{{resourceAgentName .AgentID}}{{else}}-{{end}}</td>
-        <td data-label="Acciones" class="text-end"><button class="btn btn-sm {{if .Enabled}}btn-outline-danger{{else}}btn-outline-secondary{{end}}" type="button" onclick="{{if .Enabled}}openResourceAction('{{.ID}}'){{else}}quickActivate('{{.ID}}'){{end}}"><i class="bi {{if .Enabled}}bi-pause-circle{{else}}bi-play-circle{{end}}"></i> {{if .Enabled}}Suspender{{else}}Activar{{end}}</button> <button class="btn btn-sm btn-outline-secondary" type="button" onclick="openEditResource('{{.ID}}')"><i class="bi bi-pencil-square"></i> Editar</button> <button class="btn btn-sm btn-outline-danger" type="button" onclick="deleteResource('{{.ID}}')" aria-label="Eliminar recurso"><i class="bi bi-trash"></i></button></td>
+        <td data-label="Acciones" class="text-end"><button class="btn btn-sm {{if .Enabled}}btn-outline-danger{{else}}btn-outline-secondary{{end}}" type="button" onclick="{{if .Enabled}}openResourceAction('{{.ID}}'){{else}}quickActivate('{{.ID}}', this){{end}}"><i class="bi {{if .Enabled}}bi-pause-circle{{else}}bi-play-circle{{end}}"></i> {{if .Enabled}}Suspender{{else}}Activar{{end}}</button> <button class="btn btn-sm btn-outline-secondary" type="button" onclick="openEditResource('{{.ID}}')"><i class="bi bi-pencil-square"></i> Editar</button> <button class="btn btn-sm btn-outline-danger" type="button" onclick="deleteResource('{{.ID}}', this)" aria-label="Eliminar recurso"><i class="bi bi-trash"></i></button></td>
       </tr>
       {{end}}
     {{else}}

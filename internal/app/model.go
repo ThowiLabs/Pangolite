@@ -125,6 +125,17 @@ type Agent struct {
 	LastError             string    `json:"lastError,omitempty"`
 	Online                bool      `json:"online"`
 	ResourceCount         int       `json:"resourceCount"`
+	WebResourceCount      int       `json:"webResourceCount"`
+	WebEnabledCount       int       `json:"webEnabledCount"`
+	WebSuspendedCount     int       `json:"webSuspendedCount"`
+	TCPResourceCount      int       `json:"tcpResourceCount"`
+	TCPEnabledCount       int       `json:"tcpEnabledCount"`
+	TCPSuspendedCount     int       `json:"tcpSuspendedCount"`
+	UDPResourceCount      int       `json:"udpResourceCount"`
+	UDPEnabledCount       int       `json:"udpEnabledCount"`
+	UDPSuspendedCount     int       `json:"udpSuspendedCount"`
+	WebMaintenanceActive  bool      `json:"webMaintenanceActive"`
+	MaintenanceActive     bool      `json:"maintenanceActive"`
 	InstallCommand        string    `json:"installCommand,omitempty"`
 	RemoveCommand         string    `json:"removeCommand,omitempty"`
 	WindowsInstallCommand string    `json:"windowsInstallCommand,omitempty"`
@@ -153,6 +164,17 @@ type AgentPublic struct {
 	LastError             string    `json:"lastError,omitempty"`
 	Online                bool      `json:"online"`
 	ResourceCount         int       `json:"resourceCount"`
+	WebResourceCount      int       `json:"webResourceCount"`
+	WebEnabledCount       int       `json:"webEnabledCount"`
+	WebSuspendedCount     int       `json:"webSuspendedCount"`
+	TCPResourceCount      int       `json:"tcpResourceCount"`
+	TCPEnabledCount       int       `json:"tcpEnabledCount"`
+	TCPSuspendedCount     int       `json:"tcpSuspendedCount"`
+	UDPResourceCount      int       `json:"udpResourceCount"`
+	UDPEnabledCount       int       `json:"udpEnabledCount"`
+	UDPSuspendedCount     int       `json:"udpSuspendedCount"`
+	WebMaintenanceActive  bool      `json:"webMaintenanceActive"`
+	MaintenanceActive     bool      `json:"maintenanceActive"`
 	InstallCommand        string    `json:"installCommand,omitempty"`
 	RemoveCommand         string    `json:"removeCommand,omitempty"`
 	WindowsInstallCommand string    `json:"windowsInstallCommand,omitempty"`

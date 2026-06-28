@@ -67,6 +67,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		{Version: 3, Name: "suspension proteccion y tuneles", Apply: s.migrateSuspensionProtection},
 		{Version: 4, Name: "ciclo de vida de dominios", Apply: s.migrateDomainLifecycle},
 		{Version: 5, Name: "fallback de conexion para agentes", Apply: s.migrateAgentFallbackURL},
+		{Version: 6, Name: "mantenimiento web por cliente", Apply: s.migrateAgentWebMaintenance},
+		{Version: 7, Name: "mantenimiento unificado por cliente", Apply: s.migrateAgentMaintenance},
 	}
 	latest := migrations[len(migrations)-1].Version
 	currentVersion, err := s.SchemaVersion(ctx)
@@ -371,6 +373,77 @@ func (s *Store) migrateAgentFallbackURL(ctx context.Context) error {
 		return err
 	}
 	return s.ensureColumn(ctx, "agents", "fallback_confirmed_at", "TEXT NOT NULL DEFAULT ''")
+}
+
+func (s *Store) migrateAgentWebMaintenance(ctx context.Context) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS agent_web_maintenance (
+			agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+			response_mode TEXT NOT NULL DEFAULT 'html',
+			status_code INTEGER NOT NULL DEFAULT 503,
+			disabled_html TEXT NOT NULL DEFAULT '',
+			disabled_template_id TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS agent_web_maintenance_resources (
+			agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+			resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+			was_enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY(agent_id, resource_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_web_maintenance_resources_agent ON agent_web_maintenance_resources(agent_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("crear tablas de mantenimiento web: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) migrateAgentMaintenance(ctx context.Context) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS agent_maintenance (
+			agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+			web_enabled INTEGER NOT NULL DEFAULT 0,
+			tcp_enabled INTEGER NOT NULL DEFAULT 0,
+			udp_enabled INTEGER NOT NULL DEFAULT 0,
+			response_mode TEXT NOT NULL DEFAULT 'html',
+			status_code INTEGER NOT NULL DEFAULT 503,
+			disabled_html TEXT NOT NULL DEFAULT '',
+			disabled_template_id TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS agent_maintenance_resources (
+			agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+			resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+			resource_mode TEXT NOT NULL DEFAULT 'http',
+			was_enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY(agent_id, resource_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_maintenance_resources_agent ON agent_maintenance_resources(agent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_maintenance_resources_mode ON agent_maintenance_resources(resource_mode)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("crear tablas de mantenimiento unificado: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO agent_maintenance(agent_id,web_enabled,tcp_enabled,udp_enabled,response_mode,status_code,disabled_html,disabled_template_id,reason,created_at,updated_at)
+		SELECT agent_id,1,0,0,response_mode,status_code,disabled_html,disabled_template_id,reason,created_at,updated_at FROM agent_web_maintenance`); err != nil {
+		return fmt.Errorf("migrar mantenimiento web previo: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO agent_maintenance_resources(agent_id,resource_id,resource_mode,was_enabled,created_at)
+		SELECT agent_id,resource_id,'http',was_enabled,created_at FROM agent_web_maintenance_resources`); err != nil {
+		return fmt.Errorf("migrar recursos web en mantenimiento previo: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
@@ -1463,7 +1536,7 @@ func (s *Store) ListAgents() []AgentPublic {
 }
 
 func (s *Store) ListAgentsByProject(projectID string) []AgentPublic {
-	query := `SELECT a.project_id,a.id,a.name,COALESCE(a.server_url,''),COALESCE(a.fallback_url,''),COALESCE(a.fallback_confirmed_at,''),COALESCE(a.domain_id,''),a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a`
+	query := `SELECT a.project_id,a.id,a.name,COALESCE(a.server_url,''),COALESCE(a.fallback_url,''),COALESCE(a.fallback_confirmed_at,''),COALESCE(a.domain_id,''),a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'http'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'http' AND r.enabled = 1),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance_resources amr WHERE amr.agent_id = a.id AND amr.resource_mode = 'http'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'tcp'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'tcp' AND r.enabled = 1),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance_resources amr WHERE amr.agent_id = a.id AND amr.resource_mode = 'tcp'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'udp'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'udp' AND r.enabled = 1),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance_resources amr WHERE amr.agent_id = a.id AND amr.resource_mode = 'udp'),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance am WHERE am.agent_id = a.id),0) FROM agents a`
 	args := []any{}
 	if strings.TrimSpace(projectID) != "" {
 		resolvedID, err := s.ResolveProjectID(projectID)
@@ -1485,8 +1558,9 @@ func (s *Store) ListAgentsByProject(projectID string) []AgentPublic {
 	for rows.Next() {
 		var a AgentPublic
 		var enabled int
+		var maintenanceActive int
 		var createdAt, updatedAt, fallbackConfirmedAt, lastSeen string
-		if err := rows.Scan(&a.ProjectID, &a.ID, &a.Name, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
+		if err := rows.Scan(&a.ProjectID, &a.ID, &a.Name, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount, &a.WebResourceCount, &a.WebEnabledCount, &a.WebSuspendedCount, &a.TCPResourceCount, &a.TCPEnabledCount, &a.TCPSuspendedCount, &a.UDPResourceCount, &a.UDPEnabledCount, &a.UDPSuspendedCount, &maintenanceActive); err != nil {
 			continue
 		}
 		a.Enabled = enabled == 1
@@ -1494,6 +1568,8 @@ func (s *Store) ListAgentsByProject(projectID string) []AgentPublic {
 		a.UpdatedAt = parseTime(updatedAt)
 		a.FallbackConfirmedAt = parseTime(fallbackConfirmedAt)
 		a.FallbackReady = a.FallbackURL != "" && !a.FallbackConfirmedAt.IsZero()
+		a.WebMaintenanceActive = a.WebSuspendedCount > 0
+		a.MaintenanceActive = maintenanceActive > 0
 		a.LastSeen = parseTime(lastSeen)
 		a.Online = a.Enabled && !a.LastSeen.IsZero() && now.Sub(a.LastSeen) <= 45*time.Second
 		out = append(out, a)
@@ -1506,12 +1582,13 @@ func (s *Store) AgentByID(id string) (AgentPublic, error) {
 	if !idRe.MatchString(id) {
 		return AgentPublic{}, errors.New("id de agente invalido")
 	}
-	query := `SELECT a.project_id,a.id,a.name,COALESCE(a.server_url,''),COALESCE(a.fallback_url,''),COALESCE(a.fallback_confirmed_at,''),COALESCE(a.domain_id,''),a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0) FROM agents a WHERE a.id = ?`
+	query := `SELECT a.project_id,a.id,a.name,COALESCE(a.server_url,''),COALESCE(a.fallback_url,''),COALESCE(a.fallback_confirmed_at,''),COALESCE(a.domain_id,''),a.enabled,a.created_at,a.updated_at,COALESCE(a.last_seen,''),COALESCE(a.os,''),COALESCE(a.arch,''),COALESCE(a.hostname,''),COALESCE(a.public_ip,''),COALESCE(a.private_ip,''),COALESCE(a.version,''),COALESCE(a.last_error,''),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'http'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'http' AND r.enabled = 1),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance_resources amr WHERE amr.agent_id = a.id AND amr.resource_mode = 'http'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'tcp'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'tcp' AND r.enabled = 1),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance_resources amr WHERE amr.agent_id = a.id AND amr.resource_mode = 'tcp'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'udp'),0),COALESCE((SELECT COUNT(*) FROM resources r WHERE r.agent_id = a.id AND r.mode = 'udp' AND r.enabled = 1),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance_resources amr WHERE amr.agent_id = a.id AND amr.resource_mode = 'udp'),0),COALESCE((SELECT COUNT(*) FROM agent_maintenance am WHERE am.agent_id = a.id),0) FROM agents a WHERE a.id = ?`
 	row := s.db.QueryRow(query, id)
 	var a AgentPublic
 	var enabled int
+	var maintenanceActive int
 	var createdAt, updatedAt, fallbackConfirmedAt, lastSeen string
-	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount); err != nil {
+	if err := row.Scan(&a.ProjectID, &a.ID, &a.Name, &a.ServerURL, &a.FallbackURL, &fallbackConfirmedAt, &a.DomainID, &enabled, &createdAt, &updatedAt, &lastSeen, &a.OS, &a.Arch, &a.Hostname, &a.PublicIP, &a.PrivateIP, &a.Version, &a.LastError, &a.ResourceCount, &a.WebResourceCount, &a.WebEnabledCount, &a.WebSuspendedCount, &a.TCPResourceCount, &a.TCPEnabledCount, &a.TCPSuspendedCount, &a.UDPResourceCount, &a.UDPEnabledCount, &a.UDPSuspendedCount, &maintenanceActive); err != nil {
 		return AgentPublic{}, errors.New("agente no encontrado")
 	}
 	a.Enabled = enabled == 1
@@ -1519,6 +1596,8 @@ func (s *Store) AgentByID(id string) (AgentPublic, error) {
 	a.UpdatedAt = parseTime(updatedAt)
 	a.FallbackConfirmedAt = parseTime(fallbackConfirmedAt)
 	a.FallbackReady = a.FallbackURL != "" && !a.FallbackConfirmedAt.IsZero()
+	a.WebMaintenanceActive = a.WebSuspendedCount > 0
+	a.MaintenanceActive = maintenanceActive > 0
 	a.LastSeen = parseTime(lastSeen)
 	a.Online = a.Enabled && !a.LastSeen.IsZero() && time.Since(a.LastSeen) <= 45*time.Second
 	return a, nil
@@ -1642,6 +1721,171 @@ func (s *Store) DeleteAgentAndResources(id string) (AgentPublic, []Resource, err
 		return AgentPublic{}, nil, fmt.Errorf("confirmar eliminacion de cliente: %w", err)
 	}
 	return agent, resources, nil
+}
+
+type AgentWebMaintenanceOptions struct {
+	ResponseMode string
+	StatusCode   int
+	HTML         string
+	TemplateID   string
+	Reason       string
+}
+
+type AgentMaintenanceOptions struct {
+	Web          bool
+	TCP          bool
+	UDP          bool
+	ResponseMode string
+	StatusCode   int
+	HTML         string
+	TemplateID   string
+	Reason       string
+}
+
+func (o AgentMaintenanceOptions) modes() []string {
+	modes := make([]string, 0, 3)
+	if o.Web {
+		modes = append(modes, ModeHTTP)
+	}
+	if o.TCP {
+		modes = append(modes, ModeTCP)
+	}
+	if o.UDP {
+		modes = append(modes, ModeUDP)
+	}
+	return modes
+}
+
+func maintenanceModeWhere(modes []string) (string, []any) {
+	parts := make([]string, 0, len(modes))
+	args := make([]any, 0, len(modes))
+	for _, mode := range modes {
+		parts = append(parts, "?")
+		args = append(args, mode)
+	}
+	return strings.Join(parts, ","), args
+}
+
+func (s *Store) SuspendAgentResources(agentID string, opts AgentMaintenanceOptions) (AgentPublic, []Resource, error) {
+	agentID = strings.TrimSpace(agentID)
+	if !idRe.MatchString(agentID) {
+		return AgentPublic{}, nil, errors.New("id de agente invalido")
+	}
+	agent, err := s.AgentByID(agentID)
+	if err != nil {
+		return AgentPublic{}, nil, err
+	}
+	modes := opts.modes()
+	if len(modes) == 0 {
+		return AgentPublic{}, nil, errors.New("selecciona web, tcp o udp")
+	}
+	mode := strings.TrimSpace(opts.ResponseMode)
+	if mode == "" {
+		mode = DisabledResponseHTML
+	}
+	status := opts.StatusCode
+	if status == 0 {
+		status = 503
+	}
+	reason := strings.TrimSpace(opts.Reason)
+	now := time.Now().UTC()
+	modePlaceholders, modeArgs := maintenanceModeWhere(modes)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("iniciar mantenimiento: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO agent_maintenance(agent_id,web_enabled,tcp_enabled,udp_enabled,response_mode,status_code,disabled_html,disabled_template_id,reason,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(agent_id) DO UPDATE SET web_enabled = MAX(agent_maintenance.web_enabled, excluded.web_enabled), tcp_enabled = MAX(agent_maintenance.tcp_enabled, excluded.tcp_enabled), udp_enabled = MAX(agent_maintenance.udp_enabled, excluded.udp_enabled), response_mode = excluded.response_mode, status_code = excluded.status_code, disabled_html = excluded.disabled_html, disabled_template_id = excluded.disabled_template_id, reason = excluded.reason, updated_at = excluded.updated_at`, agentID, boolInt(opts.Web), boolInt(opts.TCP), boolInt(opts.UDP), mode, status, opts.HTML, opts.TemplateID, reason, formatTime(now), formatTime(now)); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("registrar mantenimiento: %w", err)
+	}
+	insertArgs := append([]any{agentID, formatTime(now), agentID}, modeArgs...)
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO agent_maintenance_resources(agent_id, resource_id, resource_mode, was_enabled, created_at)
+		SELECT ?, id, mode, enabled, ? FROM resources WHERE agent_id = ? AND mode IN (`+modePlaceholders+`) AND enabled = 1`, insertArgs...); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("marcar recursos en mantenimiento: %w", err)
+	}
+	if opts.Web {
+		if _, err := tx.Exec(`UPDATE resources SET enabled = 0, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, disabled_template_id = ?, updated_at = ?
+			WHERE agent_id = ? AND mode = 'http' AND enabled = 1`, mode, status, opts.HTML, opts.TemplateID, formatTime(now), agentID); err != nil {
+			return AgentPublic{}, nil, fmt.Errorf("suspender recursos web del cliente: %w", err)
+		}
+	}
+	if opts.TCP {
+		if _, err := tx.Exec(`UPDATE resources SET enabled = 0, updated_at = ? WHERE agent_id = ? AND mode = 'tcp' AND enabled = 1`, formatTime(now), agentID); err != nil {
+			return AgentPublic{}, nil, fmt.Errorf("suspender recursos tcp del cliente: %w", err)
+		}
+	}
+	if opts.UDP {
+		if _, err := tx.Exec(`UPDATE resources SET enabled = 0, updated_at = ? WHERE agent_id = ? AND mode = 'udp' AND enabled = 1`, formatTime(now), agentID); err != nil {
+			return AgentPublic{}, nil, fmt.Errorf("suspender recursos udp del cliente: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("confirmar mantenimiento: %w", err)
+	}
+	updated, err := s.AgentByID(agentID)
+	if err != nil {
+		updated = agent
+	}
+	return updated, s.ListResourcesByAgent(agentID), nil
+}
+
+func (s *Store) ResumeAgentResources(agentID string, web bool, tcp bool, udp bool) (AgentPublic, []Resource, error) {
+	agentID = strings.TrimSpace(agentID)
+	if !idRe.MatchString(agentID) {
+		return AgentPublic{}, nil, errors.New("id de agente invalido")
+	}
+	agent, err := s.AgentByID(agentID)
+	if err != nil {
+		return AgentPublic{}, nil, err
+	}
+	opts := AgentMaintenanceOptions{Web: web, TCP: tcp, UDP: udp}
+	modes := opts.modes()
+	if len(modes) == 0 {
+		return AgentPublic{}, nil, errors.New("selecciona web, tcp o udp")
+	}
+	modePlaceholders, modeArgs := maintenanceModeWhere(modes)
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("iniciar reactivacion: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	updateArgs := append([]any{formatTime(now), agentID}, modeArgs...)
+	if _, err := tx.Exec(`UPDATE resources SET enabled = 1, updated_at = ? WHERE id IN (SELECT resource_id FROM agent_maintenance_resources WHERE agent_id = ? AND was_enabled = 1 AND resource_mode IN (`+modePlaceholders+`))`, updateArgs...); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("reactivar recursos del cliente: %w", err)
+	}
+	deleteArgs := append([]any{agentID}, modeArgs...)
+	if _, err := tx.Exec(`DELETE FROM agent_maintenance_resources WHERE agent_id = ? AND resource_mode IN (`+modePlaceholders+`)`, deleteArgs...); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("limpiar recursos de mantenimiento: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE agent_maintenance SET
+		web_enabled = CASE WHEN EXISTS (SELECT 1 FROM agent_maintenance_resources WHERE agent_id = ? AND resource_mode = 'http') THEN 1 ELSE 0 END,
+		tcp_enabled = CASE WHEN EXISTS (SELECT 1 FROM agent_maintenance_resources WHERE agent_id = ? AND resource_mode = 'tcp') THEN 1 ELSE 0 END,
+		udp_enabled = CASE WHEN EXISTS (SELECT 1 FROM agent_maintenance_resources WHERE agent_id = ? AND resource_mode = 'udp') THEN 1 ELSE 0 END,
+		updated_at = ? WHERE agent_id = ?`, agentID, agentID, agentID, formatTime(now), agentID); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("actualizar mantenimiento activo: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM agent_maintenance WHERE agent_id = ? AND NOT EXISTS (SELECT 1 FROM agent_maintenance_resources WHERE agent_id = ?)`, agentID, agentID); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("cerrar mantenimiento: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return AgentPublic{}, nil, fmt.Errorf("confirmar reactivacion: %w", err)
+	}
+	updated, err := s.AgentByID(agentID)
+	if err != nil {
+		updated = agent
+	}
+	return updated, s.ListResourcesByAgent(agentID), nil
+}
+
+func (s *Store) SuspendAgentWebResources(agentID string, opts AgentWebMaintenanceOptions) (AgentPublic, []Resource, error) {
+	return s.SuspendAgentResources(agentID, AgentMaintenanceOptions{Web: true, ResponseMode: opts.ResponseMode, StatusCode: opts.StatusCode, HTML: opts.HTML, TemplateID: opts.TemplateID, Reason: opts.Reason})
+}
+
+func (s *Store) ResumeAgentWebResources(agentID string) (AgentPublic, []Resource, error) {
+	return s.ResumeAgentResources(agentID, true, false, false)
 }
 
 func (s *Store) UpdateAgentInstallEndpoints(id, serverURL, fallbackURL, domainID string) error {

@@ -426,3 +426,123 @@ func TestEffectiveConfigUsesActiveManagedDomainWhenDashboardSettingIsEmpty(t *te
 		t.Fatalf("se esperaba usar dominio activo como principal efectivo, got %q", effective.DashboardDomain)
 	}
 }
+
+func TestSuspendAgentWebResourcesKeepsTCPAndRestoresOnlyAffected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	project, err := store.AddProject(Project{Name: "Proyecto Mantenimiento"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.AddAgent(Agent{ProjectID: project.ID, Name: "cliente-mantenimiento"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webActive, err := store.AddResource(Resource{ProjectID: project.ID, Name: "Web activa", Mode: ModeHTTP, Domain: "web.example.mx", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, OriginType: OriginAgent, AgentID: agent.ID, TLS: true, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webOff, err := store.AddResource(Resource{ProjectID: project.ID, Name: "Web apagada", Mode: ModeHTTP, Domain: "off.example.mx", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8081, OriginType: OriginAgent, AgentID: agent.ID, TLS: true, Enabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp, err := store.AddResource(Resource{ProjectID: project.ID, Name: "SSH", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, OriginType: OriginAgent, AgentID: agent.ID, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, resources, err := store.SuspendAgentWebResources(agent.ID, AgentWebMaintenanceOptions{ResponseMode: DisabledResponseHTML, StatusCode: 200, HTML: "<h1>Mantenimiento</h1>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.WebMaintenanceActive || updated.WebSuspendedCount != 1 {
+		t.Fatalf("mantenimiento inesperado: %#v", updated)
+	}
+	if len(resources) != 3 {
+		t.Fatalf("recursos inesperados: %#v", resources)
+	}
+	activeAfter, _ := store.ResourceByID(webActive.ID)
+	if activeAfter.Enabled || activeAfter.DisabledResponseMode != DisabledResponseHTML {
+		t.Fatalf("web activa debe quedar suspendida: %#v", activeAfter)
+	}
+	tcpAfter, _ := store.ResourceByID(tcp.ID)
+	if !tcpAfter.Enabled {
+		t.Fatalf("tcp no debe suspenderse: %#v", tcpAfter)
+	}
+	_, _, err = store.ResumeAgentWebResources(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeRestored, _ := store.ResourceByID(webActive.ID)
+	if !activeRestored.Enabled {
+		t.Fatalf("web afectada debe reactivarse: %#v", activeRestored)
+	}
+	offStillOff, _ := store.ResourceByID(webOff.ID)
+	if offStillOff.Enabled {
+		t.Fatalf("web que ya estaba apagada no debe activarse: %#v", offStillOff)
+	}
+	tcpRestored, _ := store.ResourceByID(tcp.ID)
+	if !tcpRestored.Enabled {
+		t.Fatalf("tcp debe seguir activo: %#v", tcpRestored)
+	}
+}
+
+func TestSuspendAgentMaintenanceCanTargetTCPUDP(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	project, err := store.AddProject(Project{Name: "Proyecto TCP UDP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.AddAgent(Agent{ProjectID: project.ID, Name: "cliente-tcpudp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	web, err := store.AddResource(Resource{ProjectID: project.ID, Name: "Web", Mode: ModeHTTP, Domain: "web.example.mx", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, OriginType: OriginAgent, AgentID: agent.ID, TLS: true, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp, err := store.AddResource(Resource{ProjectID: project.ID, Name: "SSH", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, OriginType: OriginAgent, AgentID: agent.ID, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	udp, err := store.AddResource(Resource{ProjectID: project.ID, Name: "DNS", Mode: ModeUDP, PublicPort: 5353, BackendHost: "127.0.0.1", BackendPort: 53, OriginType: OriginAgent, AgentID: agent.ID, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err := store.SuspendAgentResources(agent.ID, AgentMaintenanceOptions{TCP: true, UDP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.MaintenanceActive || updated.TCPSuspendedCount != 1 || updated.UDPSuspendedCount != 1 || updated.WebSuspendedCount != 0 {
+		t.Fatalf("mantenimiento tcp/udp inesperado: %#v", updated)
+	}
+	webAfter, _ := store.ResourceByID(web.ID)
+	if !webAfter.Enabled {
+		t.Fatalf("web no debe suspenderse: %#v", webAfter)
+	}
+	tcpAfter, _ := store.ResourceByID(tcp.ID)
+	udpAfter, _ := store.ResourceByID(udp.ID)
+	if tcpAfter.Enabled || udpAfter.Enabled {
+		t.Fatalf("tcp/udp deben quedar suspendidos: tcp=%#v udp=%#v", tcpAfter, udpAfter)
+	}
+	updated, _, err = store.ResumeAgentResources(agent.ID, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TCPSuspendedCount != 0 || updated.UDPSuspendedCount != 1 || !updated.MaintenanceActive {
+		t.Fatalf("debe quedar solo udp suspendido: %#v", updated)
+	}
+	tcpRestored, _ := store.ResourceByID(tcp.ID)
+	udpStillOff, _ := store.ResourceByID(udp.ID)
+	if !tcpRestored.Enabled || udpStillOff.Enabled {
+		t.Fatalf("reactivacion parcial inesperada: tcp=%#v udp=%#v", tcpRestored, udpStillOff)
+	}
+}
