@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	AgentPollTimeout = 25 * time.Second
+	AgentPollTimeout        = 25 * time.Second
+	AgentStreamModeTerminal = "terminal"
 )
 
 type AgentJob struct {
@@ -42,6 +43,9 @@ type AgentStreamJob struct {
 	Mode       string `json:"mode"`
 	TargetHost string `json:"targetHost"`
 	TargetPort int    `json:"targetPort"`
+	Shell      string `json:"shell,omitempty"`
+	Cols       int    `json:"cols,omitempty"`
+	Rows       int    `json:"rows,omitempty"`
 }
 
 type StreamSession struct {

@@ -1,0 +1,51 @@
+{{define "page_content"}}
+<section id="view-terminal" class="route-view active terminal-route">
+  <div class="card terminal-card" id="terminalCard">
+    <div class="card-header terminal-toolbar">
+      <div class="terminal-toolbar-left">
+        <span id="terminalStatus" class="terminal-status off"><span class="status-dot"></span> Desconectado</span>
+      </div>
+      <div class="terminal-actions">
+        <select id="terminalTarget" class="form-select form-select-sm" aria-label="Destino de terminal">
+          <option value="local">Servidor local</option>
+          {{if .Agents}}
+          <optgroup label="Clientes de sistema">
+            {{range .Agents}}
+            <option value="agent:{{.ID}}" {{if not .Online}}disabled{{end}}>{{.Name}} · {{if .Online}}online{{else}}offline{{end}} · {{agentSystem .}}</option>
+            {{end}}
+          </optgroup>
+          {{end}}
+        </select>
+        <select id="terminalTheme" class="form-select form-select-sm" aria-label="Tema de terminal">
+          <option value="black">Negro</option>
+          <option value="dark">Solarized oscuro</option>
+          <option value="light">Solarized claro</option>
+        </select>
+        <button class="btn btn-sm btn-primary" id="terminalConnectBtn" type="button"><i class="bi bi-plug"></i> <span>Conectar</span></button>
+        <button class="btn btn-sm btn-outline-secondary" id="terminalDisconnectBtn" type="button" disabled><i class="bi bi-x-circle"></i> <span>Desconectar</span></button>
+        <button class="btn btn-sm btn-outline-secondary" id="terminalFullscreenBtn" type="button" aria-pressed="false"><i class="bi bi-fullscreen"></i> <span>Pantalla completa</span></button>
+      </div>
+    </div>
+    <div class="card-body terminal-body-wrap">
+      <div id="terminalBox" class="terminal-box" aria-label="Terminal web">
+        <div id="terminalOverlay" class="terminal-overlay" aria-live="polite">
+          <div class="terminal-overlay-card">
+            <div id="terminalOverlaySpinner" class="terminal-overlay-spinner d-none" aria-hidden="true"></div>
+            <div id="terminalOverlayTitle" class="terminal-overlay-title">Aún no conectado</div>
+            <p id="terminalOverlayText" class="terminal-overlay-text">Selecciona un destino y presiona Conectar para abrir una consola.</p>
+            <button id="terminalOverlayButton" class="btn btn-sm btn-primary" type="button"><i class="bi bi-plug"></i> <span>Conectar</span></button>
+          </div>
+        </div>
+      </div>
+      <div id="terminalContextMenu" class="terminal-context-menu" role="menu" aria-hidden="true">
+        <button type="button" data-terminal-action="copy" role="menuitem"><i class="bi bi-clipboard"></i><span>Copiar</span><small>Ctrl+Insert</small></button>
+        <button type="button" data-terminal-action="paste" role="menuitem"><i class="bi bi-clipboard-plus"></i><span>Pegar</span><small>Ctrl+V</small></button>
+        <button type="button" data-terminal-action="reset" role="menuitem"><i class="bi bi-aspect-ratio"></i><span>Reajustar vista</span><small>resize</small></button>
+      </div>
+      <div id="terminalFallback" class="terminal-fallback d-none">
+        No se pudo cargar xterm.js desde CDN. Revisa conexión del navegador o empaqueta xterm localmente en assets.
+      </div>
+    </div>
+  </div>
+</section>
+{{end}}

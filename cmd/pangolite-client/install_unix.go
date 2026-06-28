@@ -98,7 +98,6 @@ Restart=always
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=true
 UMask=0077
 LimitNOFILE=65535
 

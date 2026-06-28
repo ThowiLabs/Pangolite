@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -57,6 +58,7 @@ var panelRoutes = map[string]panelPage{
 	"/logs":        {Template: "logs.html", Title: "Pangolite - Logs", Key: "logs", Crumb: "Logs", Heading: "Diagnostico del sistema"},
 	"/maintenance": {Template: "maintenance.html", Title: "Pangolite - Seguridad", Key: "maintenance", Crumb: "Seguridad", Heading: "Auditoría y respaldos"},
 	"/settings":    {Template: "settings.html", Title: "Pangolite - Ajustes", Key: "settings", Crumb: "Ajustes", Heading: "Configuración del sistema"},
+	"/terminal":    {Template: "terminal.html", Title: "Pangolite - Terminal", Key: "terminal", Crumb: "Terminal", Heading: "Consola web"},
 }
 
 func panelPageForPath(path string) panelPage {
@@ -96,7 +98,7 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 	certificate := ResolveCertificateStatus(effective, settings.DashboardDomain, settings.DashboardDomain != "")
 	projects := s.store.ListProjects()
 	stats := s.store.ProjectStats()
-	currentID := projectIDFromPath(r.URL.Path)
+	currentID := s.currentProjectIDFromRequest(r, page)
 	data := uiPageData{
 		Title:         page.Title,
 		Path:          r.URL.Path,
@@ -147,6 +149,9 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 			data.TraefikConfig = string(b)
 		}
 	}
+	if page.Key == "terminal" {
+		data.Agents = s.store.ListAgents()
+	}
 	data.BootstrapJSON = template.JS(mustJSON(map[string]any{
 		"csrfToken":           data.CSRFToken,
 		"user":                publicUser(rs.User),
@@ -168,10 +173,35 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 		"maxLogEntries":       data.MaxLogEntries,
 		"traefikConfig":       data.TraefikConfig,
 		"suspensionTemplates": data.SuspensionTemplates,
+		"serverOS":            runtime.GOOS,
 		"path":                data.Path,
 		"pageKey":             data.PageKey,
 	}))
 	return data
+}
+
+func (s *Server) projectIDFromRequest(r *http.Request) string {
+	return s.currentProjectIDFromRequest(r, panelPageForPath(r.URL.Path))
+}
+
+func (s *Server) currentProjectIDFromRequest(r *http.Request, page panelPage) string {
+	if id := projectIDFromPath(r.URL.Path); id != "" {
+		return id
+	}
+	if page.Key != "terminal" {
+		return ""
+	}
+	if id := strings.TrimSpace(r.URL.Query().Get("projectId")); id != "" {
+		if _, err := s.store.ProjectByID(id); err == nil {
+			return id
+		}
+	}
+	if agentID := strings.TrimSpace(r.URL.Query().Get("agentId")); agentID != "" {
+		if agent, err := s.store.AgentByID(agentID); err == nil {
+			return agent.ProjectID
+		}
+	}
+	return ""
 }
 
 func projectIDFromPath(path string) string {

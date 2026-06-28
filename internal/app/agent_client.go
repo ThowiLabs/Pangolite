@@ -205,6 +205,10 @@ func executeAgentJob(ctx context.Context, client *http.Client, job AgentJob, req
 }
 
 func handleAgentStream(ctx context.Context, base string, cfg AgentClientConfig, job AgentStreamJob, logger *slog.Logger) {
+	if job.Mode == AgentStreamModeTerminal {
+		handleAgentTerminalStream(ctx, base, cfg, job, logger)
+		return
+	}
 	if job.Mode != ModeTCP {
 		logger.Warn("stream no soportado", "stream", job.ID, "mode", job.Mode)
 		return
@@ -232,6 +236,35 @@ func handleAgentStream(ctx context.Context, base string, cfg AgentClientConfig, 
 	logger.Info("stream TCP conectado", "stream", job.ID, "target", addr)
 	if err := bridgeWebSocketNetConn(ctx, ws, backend); err != nil {
 		logger.Debug("stream TCP cerrado", "stream", job.ID, "error", err.Error())
+	}
+}
+
+func handleAgentTerminalStream(ctx context.Context, base string, cfg AgentClientConfig, job AgentStreamJob, logger *slog.Logger) {
+	wsURL, err := agentWebSocketURL(base, "/api/agent/streams/"+url.PathEscape(job.ID))
+	if err != nil {
+		logger.Warn("url de terminal invalida", "stream", job.ID, "error", err.Error())
+		return
+	}
+	header := http.Header{}
+	setAgentAuthHeader(header, cfg)
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		logger.Warn("websocket de terminal fallo", "stream", job.ID, "error", err.Error())
+		return
+	}
+
+	term, err := startTerminalProcess(ctx, terminalStartOptions{Shell: job.Shell, Cols: job.Cols, Rows: job.Rows})
+	if err != nil {
+		logger.Warn("terminal remota no disponible", "stream", job.ID, "error", err.Error())
+		_ = ws.Write(ctx, websocket.MessageText, []byte("No se pudo iniciar la terminal remota en el cliente: "+err.Error()+"\r\n"))
+		_ = ws.Close(websocket.StatusInternalError, "terminal no disponible")
+		return
+	}
+	defer term.Close()
+
+	logger.Info("terminal remota conectada", "stream", job.ID, "os", runtime.GOOS)
+	if err := bridgeWebSocketTerminalProcess(ctx, ws, term, true); err != nil {
+		logger.Debug("terminal remota cerrada", "stream", job.ID, "error", err.Error())
 	}
 }
 

@@ -30,6 +30,15 @@ async function route(options={}){
     if(!(initial&&appBoot&&appBoot.pageKey==='logs'))await loadLogs();
     return;
   }
+  if(path==='/terminal'){
+    setTop('Terminal','Consola web');
+    activateNav('terminal');
+    if(currentProject){
+      document.querySelectorAll('[data-project-nav="'+currentProject.id+'"]').forEach(a=>a.classList.add('active'));
+      updateProjectSwitcherLabel();
+    }
+    return;
+  }
   if(path==='/maintenance'){
     setTop('Seguridad','Auditoría y respaldos');
     activateNav('maintenance');

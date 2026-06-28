@@ -138,6 +138,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/resources/{id}", s.requireAuth(s.deleteResource))
 	s.mux.HandleFunc("GET /api/agents", s.requireAuth(s.listAgents))
 	s.mux.HandleFunc("GET /api/agents/{id}", s.requireAuth(s.getAgentDetail))
+	s.mux.HandleFunc("GET /api/terminal/local", s.localTerminalSocket)
+	s.mux.HandleFunc("GET /api/terminal/agents/{id}", s.agentTerminalSocket)
 	s.mux.HandleFunc("POST /api/agents", s.requireAuth(s.createAgent))
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.requireAuth(s.deleteAgent))
 	s.mux.HandleFunc("POST /api/agents/{id}/token", s.requireAuth(s.rotateAgentToken))

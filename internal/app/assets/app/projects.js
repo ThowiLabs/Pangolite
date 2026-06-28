@@ -16,6 +16,7 @@ function updateSidebarProjectContext(){
   setTextIfExists('sidebarAgentCount',st.agents||agents.length||0);
   setHrefIfExists('sidebarNewResource','/projects/'+currentProject.id+'/resources/create');
   setHrefIfExists('sidebarNewAgent','/projects/'+currentProject.id+'/agents/create');
+  setHrefIfExists('terminalNavLink','/terminal?projectId='+encodeURIComponent(currentProject.id));
   document.querySelectorAll('[data-project-link]').forEach(a=>{
     const key=a.getAttribute('data-project-link');
     if(key==='overview')a.href='/projects/'+currentProject.id;
