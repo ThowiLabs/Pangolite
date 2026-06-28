@@ -48,14 +48,14 @@ function paintDomains(){
     setSlot(tr,'created',fmt(d.createdAt));
     const actions=slot(tr,'actions');
     if(!actions)return rows.appendChild(tr);
-    if(!d.primary&&d.status!=='legacy')actions.appendChild(domainActionButton('Heredar','bi-archive','btn btn-sm btn-outline-secondary',event=>markDomainLegacy(d.id,event.currentTarget),'Oculta el dominio en nuevas instalaciones, pero conserva compatibilidad.'));
-    if(!d.primary)actions.appendChild(domainActionButton('Hacer principal','bi-star','btn btn-sm btn-outline-secondary',event=>makeDomainPrimary(d.id,event.currentTarget),'Usar como dominio del panel y nuevos clientes.'));
-    if(d.status==='legacy')actions.appendChild(domainActionButton('Activar','bi-toggle-on','btn btn-sm btn-outline-secondary',event=>activateDomain(d.id,event.currentTarget),'Volver a mostrar como dominio disponible.'));
     const locked=!!d.deleteLocked||d.primary||(d.resourceCount||0)>0;
     const deleteHint=locked?(d.deleteReason||'No se puede eliminar mientras sea principal, tenga recursos o clientes sin fallback confirmado.'):((d.agentCount||0)>0?'Eliminar: clientes con fallback por IP confirmado.':'Eliminar definitivamente el dominio.');
-    const del=domainActionButton('Eliminar','bi-trash','btn btn-sm btn-outline-danger',event=>deleteDomain(d.id,event.currentTarget),deleteHint);
-    del.disabled=locked;
-    actions.appendChild(del);
+    const menuItems=[];
+    if(!d.primary&&d.status!=='legacy')menuItems.push(makeActionMenuItem('Heredar','bi-archive',{onClick:event=>markDomainLegacy(d.id,event.currentTarget),title:'Oculta el dominio en nuevas instalaciones, pero conserva compatibilidad.'}));
+    if(!d.primary)menuItems.push(makeActionMenuItem('Hacer principal','bi-star',{onClick:event=>makeDomainPrimary(d.id,event.currentTarget),title:'Usar como dominio del panel y nuevos clientes.'}));
+    if(d.status==='legacy')menuItems.push(makeActionMenuItem('Activar','bi-toggle-on',{onClick:event=>activateDomain(d.id,event.currentTarget),title:'Volver a mostrar como dominio disponible.'}));
+    menuItems.push(makeActionMenuItem('Eliminar','bi-trash',{danger:true,disabled:locked,onClick:event=>deleteDomain(d.id,event.currentTarget),title:deleteHint}));
+    actions.appendChild(makeActionDropdown(menuItems,'Acciones de dominio'));
     rows.appendChild(tr)
   })
 }
