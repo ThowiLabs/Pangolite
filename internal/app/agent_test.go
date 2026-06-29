@@ -79,17 +79,106 @@ func TestTunnelHubLargePayloadWithoutHardLimit(t *testing.T) {
 	}
 }
 
-func TestCloneProxyRequestHeaderDropsInternalCookies(t *testing.T) {
+func TestCloneProxyRequestHeaderPreservesAppCSRFAndDropsInternalHeaders(t *testing.T) {
 	h := http.Header{}
-	h.Set("Cookie", "pangolite_session=secret; app_session=ok; pangolite_resource_abc=secret2")
+	h.Set("Cookie", "pangolite_session=secret; XSRF-TOKEN=csrf-cookie; laravel_session=ok; pangolite_resource_abc=secret2")
 	h.Set("X-CSRF-Token", "csrf")
+	h.Set("X-XSRF-Token", "xsrf")
 	h.Set("X-Pangolite-Agent", "agent")
 	out := cloneProxyRequestHeader(h)
-	if out.Get("X-CSRF-Token") != "" || out.Get("X-Pangolite-Agent") != "" {
-		t.Fatal("headers internos no deben reenviarse a backends")
+	if out.Get("X-CSRF-Token") != "csrf" || out.Get("X-XSRF-Token") != "xsrf" {
+		t.Fatal("headers CSRF de la app publicada deben conservarse")
 	}
-	if got := out.Get("Cookie"); got != "app_session=ok" {
+	if out.Get("X-Pangolite-Agent") != "" {
+		t.Fatal("headers internos X-Pangolite no deben reenviarse a backends")
+	}
+	if got := out.Get("Cookie"); got != "XSRF-TOKEN=csrf-cookie; laravel_session=ok" {
 		t.Fatalf("cookies filtradas inesperadas: %q", got)
+	}
+}
+
+func TestCloneSafeHeaderDropsDynamicConnectionHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set("Connection", "close, X-Debug-Hop")
+	h.Set("X-Debug-Hop", "drop-me")
+	h.Set("X-App-Header", "keep-me")
+	out := cloneSafeHeader(h)
+	if out.Get("Connection") != "" || out.Get("X-Debug-Hop") != "" {
+		t.Fatalf("headers hop-by-hop dinamicos no fueron filtrados: %#v", out)
+	}
+	if out.Get("X-App-Header") != "keep-me" {
+		t.Fatalf("header end-to-end no preservado: %#v", out)
+	}
+}
+
+func TestExecuteAgentJobDoesNotFollowBackendRedirects(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"/dashboard"}, "Set-Cookie": []string{"laravel_session=abc; Path=/; HttpOnly"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})}
+	resp := executeAgentJob(context.Background(), client, AgentJob{
+		ID:           "job-redirect",
+		Kind:         ModeHTTP,
+		Method:       http.MethodPost,
+		Path:         "/login",
+		TargetScheme: "http",
+		TargetHost:   "127.0.0.1",
+		TargetPort:   8181,
+		PublicScheme: "https",
+		PublicHost:   "jyv.example.com",
+	}, 0)
+	if calls != 1 {
+		t.Fatalf("el agente no debe seguir redirects del backend; llamadas=%d", calls)
+	}
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("redirect del backend debe devolverse al navegador: %#v", resp)
+	}
+	if got := resp.Header.Get("Set-Cookie"); got == "" {
+		t.Fatal("Set-Cookie de redirect debe preservarse")
+	}
+}
+
+func TestExecuteAgentJobPreservesMethodBodyHostAndForwardedHeaders(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut {
+			t.Fatalf("metodo no preservado: %s", req.Method)
+		}
+		if req.Host != "api.example.com" {
+			t.Fatalf("Host publico no preservado: %q", req.Host)
+		}
+		if req.Header.Get("X-Forwarded-Host") != "api.example.com" || req.Header.Get("X-Forwarded-Proto") != "https" || req.Header.Get("X-Forwarded-Port") != "443" {
+			t.Fatalf("headers forwarded incompletos: %#v", req.Header)
+		}
+		body, _ := io.ReadAll(req.Body)
+		if string(body) != `{"name":"ok"}` {
+			t.Fatalf("body no preservado: %q", string(body))
+		}
+		if req.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("Content-Type no preservado: %q", req.Header.Get("Content-Type"))
+		}
+		return &http.Response{StatusCode: http.StatusNoContent, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})}
+	resp := executeAgentJob(context.Background(), client, AgentJob{
+		ID:           "job-put",
+		Kind:         ModeHTTP,
+		Method:       http.MethodPut,
+		Path:         "/api/items/1",
+		Header:       http.Header{"Content-Type": []string{"application/json"}},
+		Body:         []byte(`{"name":"ok"}`),
+		TargetScheme: "http",
+		TargetHost:   "127.0.0.1",
+		TargetPort:   8181,
+		PublicScheme: "https",
+		PublicHost:   "api.example.com",
+	}, 0)
+	if resp.StatusCode != http.StatusNoContent || resp.Error != "" {
+		t.Fatalf("respuesta inesperada: %#v", resp)
 	}
 }
 

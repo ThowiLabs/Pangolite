@@ -27,6 +27,8 @@ type AgentJob struct {
 	TargetScheme string      `json:"targetScheme"`
 	TargetHost   string      `json:"targetHost"`
 	TargetPort   int         `json:"targetPort"`
+	PublicScheme string      `json:"publicScheme,omitempty"`
+	PublicHost   string      `json:"publicHost,omitempty"`
 }
 
 type AgentResponse struct {

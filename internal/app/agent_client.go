@@ -505,10 +505,14 @@ func executeAgentJob(ctx context.Context, client *http.Client, job AgentJob, req
 	if job.Kind == ModeUDP {
 		return runUDPAgentJob(ctx, job)
 	}
-	if job.TargetScheme != "http" && job.TargetScheme != "https" {
+	targetScheme := strings.ToLower(strings.TrimSpace(job.TargetScheme))
+	if targetScheme == "" {
+		targetScheme = "http"
+	}
+	if targetScheme != "http" && targetScheme != "https" {
 		return AgentResponse{JobID: job.ID, StatusCode: http.StatusBadGateway, Error: "scheme de backend no soportado"}
 	}
-	target := url.URL{Scheme: job.TargetScheme, Host: net.JoinHostPort(job.TargetHost, strconv.Itoa(job.TargetPort)), Path: job.Path, RawQuery: job.RawQuery}
+	target := url.URL{Scheme: targetScheme, Host: net.JoinHostPort(job.TargetHost, strconv.Itoa(job.TargetPort)), Path: job.Path, RawQuery: job.RawQuery}
 	if requestTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, requestTimeout)
@@ -519,7 +523,25 @@ func executeAgentJob(ctx context.Context, client *http.Client, job AgentJob, req
 		return AgentResponse{JobID: job.ID, StatusCode: http.StatusBadGateway, Error: err.Error()}
 	}
 	copySafeHeader(req.Header, job.Header)
-	res, err := client.Do(req)
+	if host := strings.TrimSpace(job.PublicHost); host != "" {
+		req.Host = host
+		if req.Header.Get("X-Forwarded-Host") == "" {
+			req.Header.Set("X-Forwarded-Host", host)
+		}
+	}
+	if proto := strings.TrimSpace(job.PublicScheme); proto != "" {
+		if req.Header.Get("X-Forwarded-Proto") == "" {
+			req.Header.Set("X-Forwarded-Proto", proto)
+		}
+		if req.Header.Get("X-Forwarded-Port") == "" {
+			req.Header.Set("X-Forwarded-Port", publicPortForScheme(proto))
+		}
+	}
+	proxyClient := *client
+	proxyClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	res, err := proxyClient.Do(req)
 	if err != nil {
 		return AgentResponse{JobID: job.ID, StatusCode: http.StatusBadGateway, Error: err.Error()}
 	}

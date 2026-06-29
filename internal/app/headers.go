@@ -18,8 +18,9 @@ var hopHeaders = map[string]bool{
 
 func cloneSafeHeader(src http.Header) http.Header {
 	dst := http.Header{}
+	dynamicHop := connectionHeaderTokens(src)
 	for k, vals := range src {
-		if hopHeaders[http.CanonicalHeaderKey(k)] {
+		if isHopByHopHeader(k, dynamicHop) {
 			continue
 		}
 		for _, v := range vals {
@@ -30,14 +31,38 @@ func cloneSafeHeader(src http.Header) http.Header {
 }
 
 func copySafeHeader(dst, src http.Header) {
+	dynamicHop := connectionHeaderTokens(src)
 	for k, vals := range src {
-		if hopHeaders[http.CanonicalHeaderKey(k)] {
+		if isHopByHopHeader(k, dynamicHop) {
 			continue
 		}
 		for _, v := range vals {
 			dst.Add(k, v)
 		}
 	}
+}
+
+func isHopByHopHeader(key string, dynamic map[string]struct{}) bool {
+	canonical := http.CanonicalHeaderKey(key)
+	if hopHeaders[canonical] {
+		return true
+	}
+	_, ok := dynamic[strings.ToLower(canonical)]
+	return ok
+}
+
+func connectionHeaderTokens(h http.Header) map[string]struct{} {
+	tokens := map[string]struct{}{}
+	for _, line := range h.Values("Connection") {
+		for _, part := range strings.Split(line, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			tokens[strings.ToLower(http.CanonicalHeaderKey(part))] = struct{}{}
+		}
+	}
+	return tokens
 }
 
 func cloneProxyRequestHeader(src http.Header) http.Header {
@@ -47,7 +72,6 @@ func cloneProxyRequestHeader(src http.Header) http.Header {
 }
 
 func stripInternalProxyHeaders(h http.Header) {
-	h.Del("X-CSRF-Token")
 	for key := range h {
 		if strings.HasPrefix(strings.ToLower(key), "x-pangolite-") {
 			h.Del(key)

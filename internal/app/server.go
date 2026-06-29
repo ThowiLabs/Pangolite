@@ -2202,26 +2202,30 @@ func (s *Server) serveResourceSessionLogin(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) proxyLocalResource(w http.ResponseWriter, r *http.Request, resource Resource) {
-	scheme := resource.BackendScheme
-	if scheme == "" {
-		scheme = "http"
-	}
-	target, err := url.Parse(fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(resource.BackendHost, fmt.Sprint(resource.BackendPort))))
+	backendScheme := resourceBackendScheme(resource)
+	target, err := url.Parse(fmt.Sprintf("%s://%s", backendScheme, net.JoinHostPort(resource.BackendHost, fmt.Sprint(resource.BackendPort))))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "backend invalido")
 		return
 	}
+	publicScheme := publicSchemeForResource(r, resource)
+	publicHost := publicHostForRequest(r)
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
-		req.Host = target.Host
-		req.Header.Set("X-Forwarded-Host", r.Host)
-		req.Header.Set("X-Forwarded-Proto", forwardedProto(r))
+		if publicHost != "" {
+			req.Host = publicHost
+		}
+		applyForwardedProxyHeaders(req.Header, r, publicScheme, publicHost)
 		stripInternalProxyHeaders(req.Header)
 		if resource.ProtectionMode != ProtectionNone {
 			req.Header.Del("Authorization")
 		}
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		rewriteProxyResponseHeaders(resp.Header, resource, publicScheme, publicHost)
+		return nil
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
 		if s.log != nil {
@@ -2232,14 +2236,95 @@ func (s *Server) proxyLocalResource(w http.ResponseWriter, r *http.Request, reso
 	proxy.ServeHTTP(w, r)
 }
 
-func forwardedProto(r *http.Request) string {
-	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
-		return proto
+func resourceBackendScheme(resource Resource) string {
+	scheme := strings.ToLower(strings.TrimSpace(resource.BackendScheme))
+	if scheme == "" {
+		return "http"
 	}
-	if r.TLS != nil {
+	return scheme
+}
+
+func publicHostForRequest(r *http.Request) string {
+	return strings.TrimSpace(r.Host)
+}
+
+func publicSchemeForResource(r *http.Request, resource Resource) string {
+	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		if i := strings.IndexByte(proto, ','); i >= 0 {
+			proto = strings.TrimSpace(proto[:i])
+		}
+		proto = strings.ToLower(proto)
+		if proto == "http" || proto == "https" {
+			return proto
+		}
+	}
+	if r.TLS != nil || resource.TLS {
 		return "https"
 	}
 	return "http"
+}
+
+func forwardedProto(r *http.Request) string {
+	return publicSchemeForResource(r, Resource{})
+}
+
+func applyForwardedProxyHeaders(h http.Header, r *http.Request, publicScheme, publicHost string) {
+	publicScheme = strings.TrimSpace(publicScheme)
+	publicHost = strings.TrimSpace(publicHost)
+	if publicHost != "" {
+		h.Set("X-Forwarded-Host", publicHost)
+	}
+	if publicScheme != "" {
+		h.Set("X-Forwarded-Proto", publicScheme)
+		h.Set("X-Forwarded-Port", publicPortForScheme(publicScheme))
+	}
+	if ip := strings.TrimSpace(requestPublicIP(r)); ip != "" {
+		h.Set("X-Real-IP", ip)
+		ensureForwardedFor(h, ip)
+		ensureForwardedHeader(h, ip, publicScheme, publicHost)
+	}
+}
+
+func publicPortForScheme(scheme string) string {
+	if strings.EqualFold(strings.TrimSpace(scheme), "https") {
+		return "443"
+	}
+	return "80"
+}
+
+func ensureForwardedFor(h http.Header, ip string) {
+	ip = strings.TrimSpace(ip)
+	if ip == "" || strings.TrimSpace(h.Get("X-Forwarded-For")) != "" {
+		return
+	}
+	h.Set("X-Forwarded-For", ip)
+}
+
+func ensureForwardedHeader(h http.Header, ip, proto, host string) {
+	parts := []string{}
+	if ip != "" {
+		parts = append(parts, "for="+quoteForwardedValue(ip))
+	}
+	if proto != "" {
+		parts = append(parts, "proto="+quoteForwardedValue(proto))
+	}
+	if host != "" {
+		parts = append(parts, "host="+quoteForwardedValue(host))
+	}
+	if len(parts) == 0 || strings.TrimSpace(h.Get("Forwarded")) != "" {
+		return
+	}
+	h.Set("Forwarded", strings.Join(parts, ";"))
+}
+
+func quoteForwardedValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return `""`
+	}
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return `"` + value + `"`
 }
 
 func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource Resource) {
@@ -2254,6 +2339,11 @@ func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource 
 		writeError(w, http.StatusInternalServerError, "no se pudo crear job")
 		return
 	}
+	backendScheme := resourceBackendScheme(resource)
+	publicScheme := publicSchemeForResource(r, resource)
+	publicHost := publicHostForRequest(r)
+	headers := cloneProxyRequestHeader(r.Header)
+	applyForwardedProxyHeaders(headers, r, publicScheme, publicHost)
 	job := AgentJob{
 		ID:           jobID,
 		Kind:         ModeHTTP,
@@ -2261,11 +2351,13 @@ func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource 
 		Method:       r.Method,
 		Path:         r.URL.EscapedPath(),
 		RawQuery:     r.URL.RawQuery,
-		Header:       cloneProxyRequestHeader(r.Header),
+		Header:       headers,
 		Body:         body,
-		TargetScheme: resource.BackendScheme,
+		TargetScheme: backendScheme,
 		TargetHost:   resource.BackendHost,
 		TargetPort:   resource.BackendPort,
+		PublicScheme: publicScheme,
+		PublicHost:   publicHost,
 	}
 	if resource.ProtectionMode != ProtectionNone {
 		job.Header.Del("Authorization")
@@ -2280,11 +2372,107 @@ func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource 
 		writeError(w, http.StatusBadGateway, resp.Error)
 		return
 	}
-	copySafeHeader(w.Header(), resp.Header)
+	respHeader := cloneSafeHeader(resp.Header)
+	rewriteProxyResponseHeaders(respHeader, resource, publicScheme, publicHost)
+	copySafeHeader(w.Header(), respHeader)
 	w.WriteHeader(resp.StatusCode)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(resp.Body)
 	}
+}
+
+func rewriteProxyResponseHeaders(h http.Header, resource Resource, publicScheme, publicHost string) {
+	publicScheme = strings.TrimSpace(publicScheme)
+	publicHost = strings.TrimSpace(publicHost)
+	if publicScheme == "" {
+		publicScheme = "https"
+	}
+	if publicHost == "" {
+		return
+	}
+	if values := h.Values("Location"); len(values) > 0 {
+		h.Del("Location")
+		for _, value := range values {
+			h.Add("Location", rewriteProxyLocation(value, resource, publicScheme, publicHost))
+		}
+	}
+	if values := h.Values("Set-Cookie"); len(values) > 0 {
+		h.Del("Set-Cookie")
+		for _, value := range values {
+			h.Add("Set-Cookie", normalizeProxySetCookie(value, resource))
+		}
+	}
+}
+
+func rewriteProxyLocation(location string, resource Resource, publicScheme, publicHost string) string {
+	location = strings.TrimSpace(location)
+	if location == "" {
+		return location
+	}
+	u, err := url.Parse(location)
+	if err != nil || !u.IsAbs() {
+		return location
+	}
+	if !proxyHostMatchesResource(u.Host, resource) {
+		return location
+	}
+	u.Scheme = publicScheme
+	u.Host = publicHost
+	return u.String()
+}
+
+func normalizeProxySetCookie(value string, resource Resource) string {
+	parts := strings.Split(value, ";")
+	if len(parts) <= 1 {
+		return value
+	}
+	kept := []string{strings.TrimSpace(parts[0])}
+	for _, part := range parts[1:] {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		name, attrValue, hasValue := strings.Cut(trimmed, "=")
+		if hasValue && strings.EqualFold(strings.TrimSpace(name), "Domain") && proxyCookieDomainMatchesResource(attrValue, resource) {
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	return strings.Join(kept, "; ")
+}
+
+func proxyCookieDomainMatchesResource(domain string, resource Resource) bool {
+	domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if domain == "" {
+		return false
+	}
+	if domain == "localhost" {
+		return true
+	}
+	if net.ParseIP(domain) != nil {
+		return true
+	}
+	targetHost := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(resource.BackendHost)), ".")
+	if h, _, err := net.SplitHostPort(targetHost); err == nil {
+		targetHost = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(h)), ".")
+	}
+	return targetHost != "" && domain == targetHost
+}
+
+func proxyHostMatchesResource(host string, resource Resource) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	targetHost := strings.ToLower(strings.TrimSpace(resource.BackendHost))
+	targetPort := fmt.Sprint(resource.BackendPort)
+	if host == net.JoinHostPort(targetHost, targetPort) {
+		return true
+	}
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		return strings.EqualFold(h, targetHost) && p == targetPort
+	}
+	return strings.EqualFold(host, targetHost)
 }
 
 type authedHandler func(http.ResponseWriter, *http.Request, requestSession)
