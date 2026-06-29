@@ -1,0 +1,73 @@
+{{define "page_content"}}
+<section class="hero compact-hero">
+  <div>
+    <p class="eyebrow">Mi cuenta</p>
+    <h1>Perfil y seguridad</h1>
+    <p>Administra el correo de recuperación y cambia tu contraseña. La administración de múltiples usuarios y roles se agregará en una fase futura.</p>
+  </div>
+</section>
+
+<div class="grid grid-2 profile-grid">
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-start gap-3">
+      <div>
+        <div class="card-title mb-1">Correo de recuperación</div>
+        <div class="text-muted small">Se usa para enviar enlaces de restablecimiento cuando SMTP está configurado y validado.</div>
+      </div>
+      <span class="state-pill" id="profileEmailState"><span class="status-dot"></span><span data-slot="text">Sin correo</span></span>
+    </div>
+    <div class="card-body">
+      <form id="profileEmailForm" class="vstack gap-3">
+        <div>
+          <label class="form-label" for="profileEmail">Correo electrónico</label>
+          <input class="form-control" id="profileEmail" type="email" autocomplete="email" placeholder="admin@midominio.com" required>
+          <div class="form-text">Este correo no cambia tu usuario de inicio de sesión.</div>
+        </div>
+        <div class="pl-callout pl-callout-primary small">
+          <strong>Recuperación por correo</strong>
+          <div>El enlace de “Olvidaste tu contraseña” aparece en login cuando SMTP está habilitado, validado y tu cuenta tiene correo.</div>
+        </div>
+        <div class="d-flex justify-content-end">
+          <button class="btn btn-primary" type="submit"><i class="bi bi-envelope-check"></i> Guardar correo</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title mb-1">Cambiar contraseña</div>
+      <div class="text-muted small">Actualiza la contraseña de acceso al panel.</div>
+    </div>
+    <div class="card-body">
+      <form id="profilePasswordForm" class="vstack gap-3" autocomplete="on">
+        <div>
+          <label class="form-label" for="profileCurrentPassword">Contraseña actual</label>
+          <input class="form-control" id="profileCurrentPassword" type="password" autocomplete="current-password" required>
+        </div>
+        <div>
+          <label class="form-label" for="profileNewPassword">Nueva contraseña</label>
+          <input class="form-control" id="profileNewPassword" type="password" autocomplete="new-password" minlength="6" required>
+        </div>
+        <div>
+          <label class="form-label" for="profileConfirmPassword">Confirmar nueva contraseña</label>
+          <input class="form-control" id="profileConfirmPassword" type="password" autocomplete="new-password" minlength="6" required>
+        </div>
+        <div class="d-flex justify-content-end">
+          <button class="btn btn-primary" type="submit"><i class="bi bi-shield-lock"></i> Cambiar contraseña</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="card mt-3">
+  <div class="card-body d-flex align-items-start gap-3 profile-future-card">
+    <i class="bi bi-people fs-3 text-white"></i>
+    <div>
+      <div class="card-title mb-1">Usuarios y roles</div>
+      <div class="text-muted">La estructura queda preparada para mover estas opciones a cuentas independientes cuando se implemente multiusuario: administrador global, administrador de proyecto, operador y solo lectura.</div>
+    </div>
+  </div>
+</div>
+{{end}}

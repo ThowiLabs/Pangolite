@@ -4,16 +4,7 @@
   <div class="card-body p-4 p-sm-5">
     {{template "auth_brand" .}}
     <div id="msg" class="alert d-none" role="alert"></div>
-    <form id="passForm">
-      <div class="form-floating mb-3">
-        <input class="form-control" id="accountEmail" type="email" autocomplete="email" placeholder="admin@midominio.com" required>
-        <label for="accountEmail">Correo de recuperación</label>
-      </div>
-      <div class="text-muted small mb-3">Este correo se usará para restablecer tu contraseña cuando SMTP esté configurado.</div>
-      <div id="currentGroup" class="form-floating mb-3 d-none">
-        <input class="form-control" id="currentPassword" type="password" autocomplete="current-password" placeholder="Actual">
-        <label for="currentPassword">Contraseña actual</label>
-      </div>
+    <form id="resetConfirmForm">
       <div class="form-floating mb-3">
         <input class="form-control" id="newPassword" type="password" autocomplete="new-password" placeholder="Nueva" minlength="6" required>
         <label for="newPassword">Nueva contraseña</label>
@@ -22,8 +13,9 @@
         <input class="form-control" id="confirmPassword" type="password" autocomplete="new-password" placeholder="Confirmar" minlength="6" required>
         <label for="confirmPassword">Confirmar contraseña</label>
       </div>
-      <button class="btn btn-primary w-100 py-2" type="submit">Guardar cuenta</button>
+      <button class="btn btn-primary w-100 py-2" type="submit">Restablecer contraseña</button>
     </form>
+    <div class="auth-secondary-action"><a href="/login" class="auth-link">Volver al login</a></div>
   </div>
 </div>
 {{end}}

@@ -105,10 +105,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /login", s.loginPage)
 	s.mux.HandleFunc("GET /password", s.passwordPage)
+	s.mux.HandleFunc("GET /reset", s.resetPasswordPage)
 	s.mux.HandleFunc("POST /api/login", s.login)
 	s.mux.HandleFunc("POST /api/logout", s.requireAuthAllowForce(s.logout))
 	s.mux.HandleFunc("GET /api/session", s.sessionInfo)
 	s.mux.HandleFunc("POST /api/password", s.requireAuthAllowForce(s.changePassword))
+	s.mux.HandleFunc("PATCH /api/profile", s.requireAuth(s.updateProfile))
+	s.mux.HandleFunc("GET /api/password-reset/status", s.passwordResetStatus)
+	s.mux.HandleFunc("POST /api/password-reset/request", s.passwordResetRequest)
+	s.mux.HandleFunc("POST /api/password-reset/confirm", s.passwordResetConfirm)
 	s.mux.HandleFunc("GET /api/v1/traefik-config", s.traefikConfig)
 	s.mux.HandleFunc("GET /api/projects", s.requireAuth(s.listProjects))
 	s.mux.HandleFunc("POST /api/projects", s.requireAuth(s.createProject))
@@ -116,6 +121,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.requireAuth(s.deleteProject))
 	s.mux.HandleFunc("GET /api/settings", s.requireAuth(s.getSettings))
 	s.mux.HandleFunc("PATCH /api/settings", s.requireAuth(s.updateSettings))
+	s.mux.HandleFunc("POST /api/settings/smtp/test", s.requireAuth(s.testSMTPSettings))
 	s.mux.HandleFunc("GET /api/system/network", s.requireAuth(s.getNetworkInfo))
 	s.mux.HandleFunc("GET /api/certificates/status", s.requireAuth(s.getCertificateStatus))
 	s.mux.HandleFunc("GET /api/system/logs", s.requireAuth(s.getSystemLogs))
@@ -174,6 +180,14 @@ func (s *Server) passwordPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderUIPage(w, "password.html", uiPageData{Title: "Pangolite - Cambiar contraseña", Heading: "Cambiar contraseña", Subtitle: "Reemplaza la contraseña temporal antes de administrar el panel.", ScriptPath: "/assets/app/password.js"})
+}
+
+func (s *Server) resetPasswordPage(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.currentSession(r); ok {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	renderUIPage(w, "reset.html", uiPageData{Title: "Pangolite - Restablecer contraseña", Heading: "Restablecer contraseña", Subtitle: "Define una nueva contraseña usando el enlace enviado por correo.", ScriptPath: "/assets/app/reset.js"})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -288,13 +302,14 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, rs reque
 	var req struct {
 		CurrentPassword string `json:"currentPassword"`
 		NewPassword     string `json:"newPassword"`
+		Email           string `json:"email"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
 	requireCurrent := !rs.User.ForcePasswordChange
-	if err := s.store.ChangePassword(rs.User.ID, req.CurrentPassword, req.NewPassword, requireCurrent); err != nil {
+	if err := s.store.ChangePassword(rs.User.ID, req.CurrentPassword, req.NewPassword, req.Email, requireCurrent); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -306,6 +321,116 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, rs reque
 	s.log.Info("password actualizada", "user", rs.User.Username)
 	s.recordAudit(r, rs, "user.password.change", "user", fmt.Sprint(rs.User.ID), "", map[string]any{"forcePasswordChange": rs.User.ForcePasswordChange})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	defer r.Body.Close()
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	if err := s.store.UpdateUserEmail(rs.User.ID, req.Email); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	user, err := s.store.UserByID(rs.User.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "no se pudo recargar perfil")
+		return
+	}
+	s.log.Info("perfil actualizado", "user", user.Username)
+	s.recordAudit(r, requestSession{Session: rs.Session, User: user, RawID: rs.RawID}, "user.profile.update", "user", fmt.Sprint(user.ID), "", map[string]any{"emailSet": strings.TrimSpace(user.Email) != ""})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": publicUser(user)})
+}
+
+func (s *Server) passwordResetStatus(w http.ResponseWriter, _ *http.Request) {
+	settings := s.store.LoadAppSettings(s.config)
+	enabled := settings.SMTPReady()
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
+}
+
+func (s *Server) passwordResetRequest(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	settings := s.store.LoadAppSettings(s.config)
+	if !settings.SMTPReady() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Si la cuenta existe y la recuperacion esta habilitada, enviaremos instrucciones."})
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" {
+		writeError(w, http.StatusBadRequest, "correo requerido")
+		return
+	}
+	if err := ValidateEmailAddress(email); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resetKey := "reset:" + email
+	if retryAt, blocked := s.loginBlocked(resetKey, r); blocked {
+		s.log.Warn("recuperacion bloqueada temporalmente", "email", email, "remote", clientIPForRateLimit(r), "retry_at", retryAt.Format(time.RFC3339))
+		writeError(w, http.StatusTooManyRequests, "demasiadas solicitudes de recuperacion; espera unos minutos antes de intentar otra vez")
+		return
+	}
+	s.recordLoginFailure(resetKey, r)
+	if user, err := s.store.UserByEmail(email); err == nil {
+		token, err := s.store.CreatePasswordResetToken(user.ID, 20*time.Minute)
+		if err == nil {
+			link := strings.TrimRight(s.publicPanelBaseURL(r), "/") + "/reset?token=" + url.QueryEscape(token)
+			body := "Solicitaste restablecer la contraseña de Pangolite.\n\nAbre este enlace para definir una nueva contraseña:\n" + link + "\n\nEl enlace vence en 20 minutos. Si no solicitaste este cambio, ignora este mensaje."
+			if mailErr := sendSMTPMail(settings, mailMessage{ToEmail: user.Email, Subject: "Restablecer contraseña de Pangolite", Text: body}); mailErr != nil {
+				s.log.Warn("no se pudo enviar recuperacion de contraseña", "user", user.Username, "error", mailErr.Error())
+			} else {
+				s.log.Info("recuperacion de contraseña enviada", "user", user.Username)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Si la cuenta existe y la recuperacion esta habilitada, enviaremos instrucciones."})
+}
+
+func (s *Server) passwordResetConfirm(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"newPassword"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	user, err := s.store.ConsumePasswordResetToken(req.Token, req.NewPassword)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.clearSessionCookie(w, r)
+	s.log.Info("password restablecida por correo", "user", user.Username)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) publicPanelBaseURL(r *http.Request) string {
+	effective := s.store.EffectiveConfig(s.config)
+	if strings.TrimSpace(effective.DashboardDomain) != "" {
+		return "https://" + strings.TrimSpace(effective.DashboardDomain)
+	}
+	scheme := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		scheme = "http"
+	}
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		host = s.config.Addr
+	}
+	return scheme + "://" + host
 }
 
 func (s *Server) traefikConfig(w http.ResponseWriter, _ *http.Request) {
@@ -457,15 +582,56 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 	beforeConfig.DashboardDomain = before.DashboardDomain
 	beforeConfig.LetsEncryptEmail = before.LetsEncryptEmail
 
-	var req AppSettings
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+	var raw struct {
+		DashboardDomain     string `json:"dashboardDomain"`
+		LetsEncryptEmail    string `json:"letsEncryptEmail"`
+		BackupIntervalHours int    `json:"backupIntervalHours"`
+		BackupRetentionDays int    `json:"backupRetentionDays"`
+		SMTPEnabled         bool   `json:"smtpEnabled"`
+		SMTPHost            string `json:"smtpHost"`
+		SMTPPort            int    `json:"smtpPort"`
+		SMTPSecurity        string `json:"smtpSecurity"`
+		SMTPUsername        string `json:"smtpUsername"`
+		SMTPPassword        string `json:"smtpPassword"`
+		SMTPFromEmail       string `json:"smtpFromEmail"`
+		SMTPFromName        string `json:"smtpFromName"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&raw); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
+	}
+	req := AppSettings{
+		DashboardDomain:     raw.DashboardDomain,
+		LetsEncryptEmail:    raw.LetsEncryptEmail,
+		BackupIntervalHours: raw.BackupIntervalHours,
+		BackupRetentionDays: raw.BackupRetentionDays,
+		SMTPEnabled:         raw.SMTPEnabled,
+		SMTPHost:            raw.SMTPHost,
+		SMTPPort:            raw.SMTPPort,
+		SMTPSecurity:        raw.SMTPSecurity,
+		SMTPUsername:        raw.SMTPUsername,
+		SMTPPassword:        raw.SMTPPassword,
+		SMTPFromEmail:       raw.SMTPFromEmail,
+		SMTPFromName:        raw.SMTPFromName,
+	}
+	if strings.TrimSpace(req.SMTPPassword) == "" {
+		req.SMTPPasswordSet = before.SMTPPasswordSet
 	}
 	req.Normalize()
 	if err := req.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.SMTPEnabled {
+		probe := req
+		if strings.TrimSpace(probe.SMTPPassword) == "" {
+			probe.SMTPPassword = before.SMTPPassword
+		}
+		probe.SMTPPasswordSet = strings.TrimSpace(probe.SMTPPassword) != ""
+		if err := validateSMTPConnectivity(probe); err != nil {
+			writeError(w, http.StatusBadRequest, "SMTP no valido: "+err.Error())
+			return
+		}
 	}
 	if req.DashboardDomain != "" {
 		if _, err := ValidateDashboardDomainDNS(req.DashboardDomain, s.config.PublicIP); err != nil {
@@ -502,6 +668,53 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 	s.recordAudit(r, rs, "settings.update", "settings", "dashboard", "", map[string]any{"dashboardDomain": settings.DashboardDomain, "acmeEmailSet": settings.LetsEncryptEmail != "", "traefik": traefikResult.Message})
 	certificate := ResolveCertificateStatus(afterConfig, settings.DashboardDomain, settings.DashboardDomain != "")
 	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "network": DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain), "certificate": certificate, "traefik": traefikResult})
+}
+
+func (s *Server) testSMTPSettings(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	defer r.Body.Close()
+	settings := s.store.LoadAppSettings(s.config)
+	before := settings
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "payload SMTP demasiado grande")
+		return
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		var raw struct {
+			SMTPEnabled   bool   `json:"smtpEnabled"`
+			SMTPHost      string `json:"smtpHost"`
+			SMTPPort      int    `json:"smtpPort"`
+			SMTPSecurity  string `json:"smtpSecurity"`
+			SMTPUsername  string `json:"smtpUsername"`
+			SMTPPassword  string `json:"smtpPassword"`
+			SMTPFromEmail string `json:"smtpFromEmail"`
+			SMTPFromName  string `json:"smtpFromName"`
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			writeError(w, http.StatusBadRequest, "JSON invalido")
+			return
+		}
+		settings.SMTPEnabled = raw.SMTPEnabled
+		settings.SMTPHost = raw.SMTPHost
+		settings.SMTPPort = raw.SMTPPort
+		settings.SMTPSecurity = raw.SMTPSecurity
+		settings.SMTPUsername = raw.SMTPUsername
+		settings.SMTPPassword = raw.SMTPPassword
+		settings.SMTPFromEmail = raw.SMTPFromEmail
+		settings.SMTPFromName = raw.SMTPFromName
+	}
+	if strings.TrimSpace(settings.SMTPPassword) == "" {
+		settings.SMTPPassword = before.SMTPPassword
+	}
+	settings.SMTPPasswordSet = strings.TrimSpace(settings.SMTPPassword) != ""
+	settings.SMTPEnabled = true
+	settings.Normalize()
+	if err := validateSMTPConnectivity(settings); err != nil {
+		writeError(w, http.StatusBadRequest, "SMTP no valido: "+err.Error())
+		return
+	}
+	s.log.Info("conexion SMTP verificada", "user", rs.User.Username, "host", settings.SMTPHost)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Conexion SMTP verificada correctamente. Puedes guardar la configuracion."})
 }
 
 func (s *Server) listManagedDomains(w http.ResponseWriter, _ *http.Request, _ requestSession) {
@@ -2214,7 +2427,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net data:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -2235,7 +2448,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func publicUser(u User) map[string]any {
-	return map[string]any{"id": u.ID, "username": u.Username, "forcePasswordChange": u.ForcePasswordChange}
+	return map[string]any{"id": u.ID, "username": u.Username, "email": u.Email, "forcePasswordChange": u.ForcePasswordChange}
 }
 
 func isUnsafeMethod(method string) bool {

@@ -3,6 +3,7 @@ package app
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStoreAddDeletePersists(t *testing.T) {
@@ -544,5 +545,41 @@ func TestSuspendAgentMaintenanceCanTargetTCPUDP(t *testing.T) {
 	udpStillOff, _ := store.ResourceByID(udp.ID)
 	if !tcpRestored.Enabled || udpStillOff.Enabled {
 		t.Fatalf("reactivacion parcial inesperada: tcp=%#v udp=%#v", tcpRestored, udpStillOff)
+	}
+}
+
+func TestPasswordResetTokenConsumesOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, temp, err := store.BootstrapAdmin("admin", "")
+	if err != nil || !created || temp == "" {
+		t.Fatalf("bootstrap invalido: %v", err)
+	}
+	user, ok := store.AuthenticateUser("admin", temp)
+	if !ok {
+		t.Fatal("admin no autentico")
+	}
+	if err := store.UpdateUserEmail(user.ID, "admin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if !store.HasAnyUserEmail() {
+		t.Fatal("se esperaba email configurado")
+	}
+	token, err := store.CreatePasswordResetToken(user.ID, 20*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumePasswordResetToken(token, "nueva-clave-segura"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.AuthenticateUser("admin", "nueva-clave-segura"); !ok {
+		t.Fatal("la nueva password no autentico")
+	}
+	if _, err := store.ConsumePasswordResetToken(token, "otra-clave-segura"); err == nil {
+		t.Fatal("se esperaba rechazar token reutilizado")
 	}
 }

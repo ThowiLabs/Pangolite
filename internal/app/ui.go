@@ -58,6 +58,7 @@ var panelRoutes = map[string]panelPage{
 	"/logs":        {Template: "logs.html", Title: "Pangolite - Logs", Key: "logs", Crumb: "Logs", Heading: "Diagnostico del sistema"},
 	"/maintenance": {Template: "maintenance.html", Title: "Pangolite - Seguridad", Key: "maintenance", Crumb: "Seguridad", Heading: "Auditoría y respaldos"},
 	"/settings":    {Template: "settings.html", Title: "Pangolite - Ajustes", Key: "settings", Crumb: "Ajustes", Heading: "Configuración del sistema"},
+	"/perfil":      {Template: "profile.html", Title: "Pangolite - Mi perfil", Key: "profile", Crumb: "Mi cuenta", Heading: "Perfil y seguridad"},
 	"/terminal":    {Template: "terminal.html", Title: "Pangolite - Terminal", Key: "terminal", Crumb: "Terminal", Heading: "Consola web"},
 }
 

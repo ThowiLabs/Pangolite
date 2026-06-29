@@ -59,6 +59,13 @@ async function route(options={}){
     if(!initial&&maybeEl('config'))await loadConfig();
     return;
   }
+  if(path==='/perfil'){
+    setTop('Mi perfil','Perfil y seguridad');
+    const item=document.querySelector('.user-menu-item[href="/perfil"]');
+    if(item)item.classList.add('active');
+    if(typeof setupProfilePage==='function')setupProfilePage();
+    return;
+  }
   const m=path.match(/^\/projects\/([^/]+)(?:\/(resources|agents)(?:\/(create))?|settings)?$/);
   if(!m){go('/projects');return}
   const id=m[1];

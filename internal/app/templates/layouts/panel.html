@@ -106,7 +106,27 @@
         <div class="crumb" id="crumb">{{.Crumb}}</div>
         <div class="page-title" id="topTitle">{{.PageHeading}}</div>
       </div>
-      <div class="top-user"><span id="userLabel" class="text-muted">{{.Username}}</span><button class="btn btn-sm btn-outline-secondary" id="logoutBtn"><i class="bi bi-box-arrow-right"></i> <span class="logout-label">Cerrar sesion</span></button></div>
+      <div class="top-user">
+        <div class="user-dropdown" id="userDropdown">
+          <button class="btn btn-sm btn-outline-secondary user-menu-toggle" type="button" id="userMenuToggle" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+            <span class="user-avatar" aria-hidden="true">{{printf "%.1s" .Username}}</span>
+            <span id="userLabel" class="user-name">{{.Username}}</span>
+            <i class="bi bi-chevron-down user-menu-chevron" aria-hidden="true"></i>
+          </button>
+          <div class="user-menu" id="userMenu" role="menu" aria-labelledby="userMenuToggle">
+            <div class="user-menu-head">
+              <span class="user-avatar user-avatar-lg" aria-hidden="true">{{printf "%.1s" .Username}}</span>
+              <div>
+                <div class="user-menu-name">{{.Username}}</div>
+                <div class="user-menu-role">Administrador · roles próximos</div>
+              </div>
+            </div>
+            <a class="user-menu-item {{if eq .PageKey "profile"}}active{{end}}" href="/perfil" role="menuitem"><i class="bi bi-person-gear"></i><span>Mi perfil</span></a>
+            <div class="user-menu-note"><i class="bi bi-people"></i><span>Múltiples usuarios y roles quedarán listos para una fase futura.</span></div>
+            <button class="user-menu-item danger" type="button" id="logoutBtn" role="menuitem"><i class="bi bi-box-arrow-right"></i><span>Cerrar sesión</span></button>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="msg" class="alert d-none" role="alert"></div>
     <div class="main-content" id="mainContent" tabindex="-1">
@@ -129,6 +149,7 @@
   <script src="/assets/app/resources.js"></script>
   <script src="/assets/app/agents.js"></script>
   <script src="/assets/app/forms.js"></script>
+  <script src="/assets/app/profile.js"></script>
   {{if eq .PageKey "terminal"}}
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>

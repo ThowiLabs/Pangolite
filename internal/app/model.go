@@ -30,6 +30,10 @@ const (
 
 	DomainStatusActive = "active"
 	DomainStatusLegacy = "legacy"
+
+	SMTPSecurityStartTLS = "starttls"
+	SMTPSecurityTLS      = "tls"
+	SMTPSecurityNone     = "none"
 )
 
 type Project struct {
@@ -71,6 +75,15 @@ type AppSettings struct {
 	LetsEncryptEmail    string `json:"letsEncryptEmail"`
 	BackupIntervalHours int    `json:"backupIntervalHours"`
 	BackupRetentionDays int    `json:"backupRetentionDays"`
+	SMTPEnabled         bool   `json:"smtpEnabled"`
+	SMTPHost            string `json:"smtpHost"`
+	SMTPPort            int    `json:"smtpPort"`
+	SMTPSecurity        string `json:"smtpSecurity"`
+	SMTPUsername        string `json:"smtpUsername"`
+	SMTPPassword        string `json:"-"`
+	SMTPPasswordSet     bool   `json:"smtpPasswordSet"`
+	SMTPFromEmail       string `json:"smtpFromEmail"`
+	SMTPFromName        string `json:"smtpFromName"`
 }
 
 type Resource struct {
@@ -184,6 +197,7 @@ type AgentPublic struct {
 type User struct {
 	ID                  int64     `json:"id"`
 	Username            string    `json:"username"`
+	Email               string    `json:"email"`
 	PasswordHash        string    `json:"-"`
 	ForcePasswordChange bool      `json:"forcePasswordChange"`
 	CreatedAt           time.Time `json:"createdAt"`
@@ -227,6 +241,15 @@ type Session struct {
 	ExpiresAt time.Time
 	CreatedAt time.Time
 	LastSeen  time.Time
+}
+
+type PasswordResetToken struct {
+	ID        int64
+	TokenHash string
+	UserID    int64
+	ExpiresAt time.Time
+	UsedAt    time.Time
+	CreatedAt time.Time
 }
 
 var (
@@ -327,6 +350,25 @@ func (d ManagedDomain) Validate() error {
 func (a *AppSettings) Normalize() {
 	a.DashboardDomain = strings.ToLower(strings.TrimSpace(a.DashboardDomain))
 	a.LetsEncryptEmail = strings.ToLower(strings.TrimSpace(a.LetsEncryptEmail))
+	a.SMTPHost = strings.TrimSpace(a.SMTPHost)
+	a.SMTPSecurity = strings.ToLower(strings.TrimSpace(a.SMTPSecurity))
+	a.SMTPUsername = strings.TrimSpace(a.SMTPUsername)
+	a.SMTPPassword = strings.TrimSpace(a.SMTPPassword)
+	a.SMTPFromEmail = strings.ToLower(strings.TrimSpace(a.SMTPFromEmail))
+	a.SMTPFromName = strings.TrimSpace(a.SMTPFromName)
+	if a.SMTPSecurity == "" {
+		a.SMTPSecurity = SMTPSecurityStartTLS
+	}
+	if a.SMTPPort == 0 {
+		switch a.SMTPSecurity {
+		case SMTPSecurityTLS:
+			a.SMTPPort = 465
+		case SMTPSecurityNone:
+			a.SMTPPort = 25
+		default:
+			a.SMTPPort = 587
+		}
+	}
 	if a.BackupIntervalHours < 0 {
 		a.BackupIntervalHours = 0
 	}
@@ -350,6 +392,9 @@ func (a AppSettings) Validate() error {
 	if a.LetsEncryptEmail != "" && !emailRe.MatchString(a.LetsEncryptEmail) {
 		return errors.New("correo ACME invalido")
 	}
+	if err := a.ValidateSMTP(false); err != nil {
+		return err
+	}
 	if a.BackupIntervalHours > 0 && a.BackupIntervalHours < 1 {
 		return errors.New("intervalo de respaldos invalido")
 	}
@@ -358,6 +403,51 @@ func (a AppSettings) Validate() error {
 	}
 	if a.BackupRetentionDays > 3650 {
 		return errors.New("retencion de respaldos demasiado alta")
+	}
+	return nil
+}
+
+func (a AppSettings) ValidateSMTP(requirePassword bool) error {
+	if !a.SMTPEnabled {
+		return nil
+	}
+	if a.SMTPHost == "" {
+		return errors.New("host SMTP requerido")
+	}
+	if strings.ContainsAny(a.SMTPHost, "/\\ \t\r\n") {
+		return errors.New("host SMTP invalido")
+	}
+	if a.SMTPPort < 1 || a.SMTPPort > 65535 {
+		return errors.New("puerto SMTP invalido")
+	}
+	switch a.SMTPSecurity {
+	case SMTPSecurityStartTLS, SMTPSecurityTLS, SMTPSecurityNone:
+	default:
+		return errors.New("seguridad SMTP invalida")
+	}
+	if a.SMTPFromEmail == "" || !emailRe.MatchString(a.SMTPFromEmail) {
+		return errors.New("correo remitente SMTP invalido")
+	}
+	if len(a.SMTPFromName) > 120 {
+		return errors.New("nombre remitente SMTP demasiado largo")
+	}
+	if requirePassword && a.SMTPUsername != "" && a.SMTPPassword == "" {
+		return errors.New("contraseña SMTP requerida para validar autenticacion")
+	}
+	return nil
+}
+
+func (a AppSettings) SMTPReady() bool {
+	return a.SMTPEnabled && a.ValidateSMTP(false) == nil && (a.SMTPUsername == "" || a.SMTPPasswordSet)
+}
+
+func ValidateEmailAddress(email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return errors.New("correo requerido")
+	}
+	if len(email) > 254 || !emailRe.MatchString(email) {
+		return errors.New("correo invalido")
 	}
 	return nil
 }

@@ -69,6 +69,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		{Version: 5, Name: "fallback de conexion para agentes", Apply: s.migrateAgentFallbackURL},
 		{Version: 6, Name: "mantenimiento web por cliente", Apply: s.migrateAgentWebMaintenance},
 		{Version: 7, Name: "mantenimiento unificado por cliente", Apply: s.migrateAgentMaintenance},
+		{Version: 8, Name: "correo de cuenta y recuperacion SMTP", Apply: s.migrateAccountEmailPasswordReset},
 	}
 	latest := migrations[len(migrations)-1].Version
 	currentVersion, err := s.SchemaVersion(ctx)
@@ -169,6 +170,7 @@ func (s *Store) migrateBaseSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL UNIQUE,
+			email TEXT NOT NULL DEFAULT '',
 			password_hash TEXT NOT NULL,
 			force_password_change INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
@@ -446,6 +448,30 @@ func (s *Store) migrateAgentMaintenance(ctx context.Context) error {
 	return nil
 }
 
+func (s *Store) migrateAccountEmailPasswordReset(ctx context.Context) error {
+	if err := s.ensureColumn(ctx, "users", "email", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS password_reset_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_hash TEXT NOT NULL UNIQUE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			expires_at TEXT NOT NULL,
+			used_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("crear tablas de recuperacion de contraseña: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
@@ -537,7 +563,35 @@ func (s *Store) LoadAppSettings(c Config) AppSettings {
 			settings.BackupRetentionDays = parsed
 		}
 	}
+	if v, ok := s.getSetting("smtp_enabled"); ok {
+		settings.SMTPEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := s.getSetting("smtp_host"); ok {
+		settings.SMTPHost = v
+	}
+	if v, ok := s.getSetting("smtp_port"); ok {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			settings.SMTPPort = parsed
+		}
+	}
+	if v, ok := s.getSetting("smtp_security"); ok {
+		settings.SMTPSecurity = v
+	}
+	if v, ok := s.getSetting("smtp_username"); ok {
+		settings.SMTPUsername = v
+	}
+	if v, ok := s.getSetting("smtp_password"); ok {
+		settings.SMTPPassword = v
+		settings.SMTPPasswordSet = strings.TrimSpace(v) != ""
+	}
+	if v, ok := s.getSetting("smtp_from_email"); ok {
+		settings.SMTPFromEmail = v
+	}
+	if v, ok := s.getSetting("smtp_from_name"); ok {
+		settings.SMTPFromName = v
+	}
 	settings.Normalize()
+	settings.SMTPPasswordSet = strings.TrimSpace(settings.SMTPPassword) != ""
 	return settings
 }
 
@@ -572,11 +626,26 @@ func (s *Store) SaveAppSettings(settings AppSettings) (AppSettings, error) {
 		return AppSettings{}, fmt.Errorf("abrir transaccion de ajustes: %w", err)
 	}
 	defer tx.Rollback()
+	if strings.TrimSpace(settings.SMTPPassword) == "" {
+		settings.SMTPPassword = previous.SMTPPassword
+	}
+	settings.SMTPPasswordSet = strings.TrimSpace(settings.SMTPPassword) != ""
+	if err := settings.ValidateSMTP(settings.SMTPEnabled && settings.SMTPUsername != "" && !settings.SMTPPasswordSet); err != nil {
+		return AppSettings{}, err
+	}
 	pairs := map[string]string{
 		"dashboard_domain":      settings.DashboardDomain,
 		"lets_encrypt_email":    settings.LetsEncryptEmail,
 		"backup_interval_hours": strconv.Itoa(settings.BackupIntervalHours),
 		"backup_retention_days": strconv.Itoa(settings.BackupRetentionDays),
+		"smtp_enabled":          boolString(settings.SMTPEnabled),
+		"smtp_host":             settings.SMTPHost,
+		"smtp_port":             strconv.Itoa(settings.SMTPPort),
+		"smtp_security":         settings.SMTPSecurity,
+		"smtp_username":         settings.SMTPUsername,
+		"smtp_password":         settings.SMTPPassword,
+		"smtp_from_email":       settings.SMTPFromEmail,
+		"smtp_from_name":        settings.SMTPFromName,
 	}
 	for key, value := range pairs {
 		if _, err := tx.Exec(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, now); err != nil {
@@ -623,7 +692,7 @@ func (s *Store) BootstrapAdmin(username, passwordFile string) (created bool, tem
 		return false, "", fmt.Errorf("hashear password inicial: %w", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := s.db.Exec(`INSERT INTO users(username,password_hash,force_password_change,created_at,updated_at) VALUES(?,?,?,?,?)`, username, string(hash), 1, now, now); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO users(username,email,password_hash,force_password_change,created_at,updated_at) VALUES(?,?,?,?,?,?)`, username, "", string(hash), 1, now, now); err != nil {
 		return false, "", fmt.Errorf("crear admin inicial: %w", err)
 	}
 	if passwordFile != "" {
@@ -668,14 +737,14 @@ func (s *Store) VerifyUserPassword(userID int64, password string) bool {
 
 func (s *Store) UserByUsername(username string) (User, error) {
 	username = NormalizeUsername(username)
-	return scanUser(s.db.QueryRow(`SELECT id, username, password_hash, force_password_change, created_at, updated_at FROM users WHERE username = ?`, username))
+	return scanUser(s.db.QueryRow(`SELECT id, username, email, password_hash, force_password_change, created_at, updated_at FROM users WHERE username = ?`, username))
 }
 
 func (s *Store) UserByID(id int64) (User, error) {
-	return scanUser(s.db.QueryRow(`SELECT id, username, password_hash, force_password_change, created_at, updated_at FROM users WHERE id = ?`, id))
+	return scanUser(s.db.QueryRow(`SELECT id, username, email, password_hash, force_password_change, created_at, updated_at FROM users WHERE id = ?`, id))
 }
 
-func (s *Store) ChangePassword(userID int64, currentPassword, newPassword string, requireCurrent bool) error {
+func (s *Store) ChangePassword(userID int64, currentPassword, newPassword, email string, requireCurrent bool) error {
 	if err := ValidatePassword(newPassword); err != nil {
 		return err
 	}
@@ -690,8 +759,20 @@ func (s *Store) ChangePassword(userID int64, currentPassword, newPassword string
 	if err != nil {
 		return fmt.Errorf("hashear nueva contraseña: %w", err)
 	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		email = strings.ToLower(strings.TrimSpace(user.Email))
+	}
+	if email == "" && !requireCurrent {
+		return errors.New("correo de recuperación requerido")
+	}
+	if email != "" {
+		if err := ValidateEmailAddress(email); err != nil {
+			return err
+		}
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.db.Exec(`UPDATE users SET password_hash = ?, force_password_change = 0, updated_at = ? WHERE id = ?`, string(hash), now, userID)
+	_, err = s.db.Exec(`UPDATE users SET email = ?, password_hash = ?, force_password_change = 0, updated_at = ? WHERE id = ?`, email, string(hash), now, userID)
 	return err
 }
 
@@ -719,13 +800,13 @@ func (s *Store) SessionWithUser(rawID string) (Session, User, bool) {
 	}
 	now := time.Now().UTC()
 	row := s.db.QueryRow(`SELECT s.id_hash, s.user_id, s.csrf_token, s.expires_at, s.created_at, s.last_seen,
-		u.id, u.username, u.password_hash, u.force_password_change, u.created_at, u.updated_at
+		u.id, u.username, u.email, u.password_hash, u.force_password_change, u.created_at, u.updated_at
 		FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ?`, hashToken(rawID))
 	var sess Session
 	var user User
 	var expiresAt, sessCreated, lastSeen, userCreated, userUpdated string
 	var force int
-	if err := row.Scan(&sess.IDHash, &sess.UserID, &sess.CSRFToken, &expiresAt, &sessCreated, &lastSeen, &user.ID, &user.Username, &user.PasswordHash, &force, &userCreated, &userUpdated); err != nil {
+	if err := row.Scan(&sess.IDHash, &sess.UserID, &sess.CSRFToken, &expiresAt, &sessCreated, &lastSeen, &user.ID, &user.Username, &user.Email, &user.PasswordHash, &force, &userCreated, &userUpdated); err != nil {
 		return Session{}, User{}, false
 	}
 	sess.ExpiresAt = parseTime(expiresAt)
@@ -735,6 +816,7 @@ func (s *Store) SessionWithUser(rawID string) (Session, User, bool) {
 	}
 	sess.CreatedAt = parseTime(sessCreated)
 	sess.LastSeen = parseTime(lastSeen)
+	user.Email = strings.ToLower(strings.TrimSpace(user.Email))
 	user.ForcePasswordChange = force == 1
 	user.CreatedAt = parseTime(userCreated)
 	user.UpdatedAt = parseTime(userUpdated)
@@ -2098,13 +2180,103 @@ func (s *Store) FindHTTPPanelResource(host, path string) (Resource, bool) {
 	return Resource{}, false
 }
 
+func (s *Store) HasAnyUserEmail() bool {
+	var count int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE TRIM(email) <> ''`).Scan(&count)
+	return count > 0
+}
+
+func (s *Store) UserByEmail(email string) (User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	return scanUser(s.db.QueryRow(`SELECT id, username, email, password_hash, force_password_change, created_at, updated_at FROM users WHERE lower(email) = lower(?) AND TRIM(email) <> ''`, email))
+}
+
+func (s *Store) UpdateUserEmail(userID int64, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if err := ValidateEmailAddress(email); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE users SET email = ?, updated_at = ? WHERE id = ?`, email, formatTime(time.Now().UTC()), userID)
+	return err
+}
+
+func (s *Store) CreatePasswordResetToken(userID int64, ttl time.Duration) (string, error) {
+	raw, err := newSecret(32)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	_, _ = s.db.Exec(`DELETE FROM password_reset_tokens WHERE user_id = ? OR expires_at <= ? OR used_at <> ''`, userID, formatTime(now))
+	_, err = s.db.Exec(`INSERT INTO password_reset_tokens(token_hash,user_id,expires_at,used_at,created_at) VALUES(?,?,?,?,?)`, hashToken(raw), userID, formatTime(now.Add(ttl)), "", formatTime(now))
+	if err != nil {
+		return "", fmt.Errorf("crear token de recuperacion: %w", err)
+	}
+	return raw, nil
+}
+
+func (s *Store) ConsumePasswordResetToken(rawToken, newPassword string) (User, error) {
+	if strings.TrimSpace(rawToken) == "" {
+		return User{}, errors.New("token requerido")
+	}
+	if err := ValidatePassword(newPassword); err != nil {
+		return User{}, err
+	}
+	now := time.Now().UTC()
+	row := s.db.QueryRow(`SELECT id, token_hash, user_id, expires_at, used_at, created_at FROM password_reset_tokens WHERE token_hash = ?`, hashToken(rawToken))
+	var t PasswordResetToken
+	var expiresAt, usedAt, createdAt string
+	if err := row.Scan(&t.ID, &t.TokenHash, &t.UserID, &expiresAt, &usedAt, &createdAt); err != nil {
+		return User{}, errors.New("token invalido o expirado")
+	}
+	t.ExpiresAt = parseTime(expiresAt)
+	t.UsedAt = parseTime(usedAt)
+	if !t.UsedAt.IsZero() || !t.ExpiresAt.After(now) {
+		return User{}, errors.New("token invalido o expirado")
+	}
+	user, err := s.UserByID(t.UserID)
+	if err != nil {
+		return User{}, errors.New("usuario no encontrado")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return User{}, fmt.Errorf("hashear nueva contraseña: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	stamp := formatTime(now)
+	if _, err := tx.Exec(`UPDATE users SET password_hash = ?, force_password_change = 0, updated_at = ? WHERE id = ?`, string(hash), stamp, user.ID); err != nil {
+		return User{}, err
+	}
+	if _, err := tx.Exec(`UPDATE password_reset_tokens SET used_at = ? WHERE id = ?`, stamp, t.ID); err != nil {
+		return User{}, err
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, user.ID); err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
+	user.PasswordHash = string(hash)
+	user.ForcePasswordChange = false
+	user.UpdatedAt = now
+	return user, nil
+}
+
+func (s *Store) DeleteExpiredPasswordResetTokens() {
+	_, _ = s.db.Exec(`DELETE FROM password_reset_tokens WHERE expires_at <= ? OR used_at <> ''`, formatTime(time.Now().UTC()))
+}
+
 func scanUser(row *sql.Row) (User, error) {
 	var u User
 	var force int
 	var createdAt, updatedAt string
-	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &force, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &force, &createdAt, &updatedAt); err != nil {
 		return User{}, err
 	}
+	u.Email = strings.ToLower(strings.TrimSpace(u.Email))
 	u.ForcePasswordChange = force == 1
 	u.CreatedAt = parseTime(createdAt)
 	u.UpdatedAt = parseTime(updatedAt)
@@ -2212,6 +2384,13 @@ func parseTime(value string) time.Time {
 	}
 	t, _ := time.Parse(time.RFC3339Nano, value)
 	return t
+}
+
+func boolString(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 func boolInt(v bool) int {
