@@ -68,7 +68,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 }
 
 func (s *Server) Handler() http.Handler {
-	return securityHeaders(s.recoverRequests(s.logRequests(s.publicResourceGateway(s.mux))))
+	return s.recoverRequests(s.logRequests(s.publicResourceGateway(securityHeaders(s.mux))))
 }
 
 func (s *Server) Run(ctx context.Context) error {
