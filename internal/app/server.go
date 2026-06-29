@@ -68,7 +68,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 }
 
 func (s *Server) Handler() http.Handler {
-	return securityHeaders(s.recoverRequests(s.logRequests(s.mux)))
+	return securityHeaders(s.recoverRequests(s.logRequests(s.publicResourceGateway(s.mux))))
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -2000,23 +2000,41 @@ func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) publicResourceGateway(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.servePublicResource(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) servePublicResource(w http.ResponseWriter, r *http.Request) bool {
+	resource, ok := s.store.FindHTTPPanelResource(r.Host, r.URL.Path)
+	if !ok {
+		return false
+	}
+	if !resource.Enabled {
+		s.serveDisabledResource(w, r, resource)
+		return true
+	}
+	if !s.ensureResourceAccess(w, r, resource) {
+		return true
+	}
+	if resource.UsesAgent() {
+		s.proxyViaAgent(w, r, resource)
+		return true
+	}
+	if resource.ProtectionMode != ProtectionNone {
+		s.proxyLocalResource(w, r, resource)
+		return true
+	}
+	return false
+}
+
 func (s *Server) publicOrIndex(w http.ResponseWriter, r *http.Request) {
-	if resource, ok := s.store.FindHTTPPanelResource(r.Host, r.URL.Path); ok {
-		if !resource.Enabled {
-			s.serveDisabledResource(w, r, resource)
-			return
-		}
-		if !s.ensureResourceAccess(w, r, resource) {
-			return
-		}
-		if resource.UsesAgent() {
-			s.proxyViaAgent(w, r, resource)
-			return
-		}
-		if resource.ProtectionMode != ProtectionNone {
-			s.proxyLocalResource(w, r, resource)
-			return
-		}
+	if s.servePublicResource(w, r) {
+		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, http.StatusNotFound, "ruta no encontrada")
