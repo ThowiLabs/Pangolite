@@ -3,6 +3,8 @@ package app
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -24,6 +26,9 @@ const (
 	ProtectionNone     = "none"
 	ProtectionPassword = "password"
 	ProtectionSession  = "session"
+
+	RedirectStatusMovedPermanently = 301
+	RedirectStatusPermanent        = 308
 
 	ProtectionLoginHTML  = "html"
 	ProtectionLoginBasic = "basic"
@@ -101,6 +106,10 @@ type Resource struct {
 	OriginType           string    `json:"originType"`
 	AgentID              string    `json:"agentId,omitempty"`
 	TLS                  bool      `json:"tls"`
+	RedirectEnabled      bool      `json:"redirectEnabled"`
+	RedirectTarget       string    `json:"redirectTarget,omitempty"`
+	RedirectStatusCode   int       `json:"redirectStatusCode,omitempty"`
+	HideWhenUnavailable  bool      `json:"hideWhenUnavailable"`
 	Enabled              bool      `json:"enabled"`
 	DisabledResponseMode string    `json:"disabledResponseMode"`
 	DisabledStatusCode   int       `json:"disabledStatusCode"`
@@ -460,6 +469,7 @@ func (r *Resource) Normalize(now time.Time) {
 	r.PathPrefix = strings.TrimSpace(r.PathPrefix)
 	r.BackendScheme = strings.ToLower(strings.TrimSpace(r.BackendScheme))
 	r.BackendHost = strings.TrimSpace(r.BackendHost)
+	r.RedirectTarget = strings.TrimSpace(r.RedirectTarget)
 	r.OriginType = strings.ToLower(strings.TrimSpace(r.OriginType))
 	r.AgentID = strings.TrimSpace(r.AgentID)
 	if r.OriginType == "" {
@@ -488,6 +498,10 @@ func (r *Resource) Normalize(now time.Time) {
 		r.ProtectionMode = ProtectionNone
 		r.ProtectionLoginMode = ProtectionLoginHTML
 		r.ProtectionHash = ""
+		r.RedirectEnabled = false
+		r.RedirectTarget = ""
+		r.RedirectStatusCode = 0
+		r.HideWhenUnavailable = false
 	}
 	if r.DisabledResponseMode == "" {
 		r.DisabledResponseMode = DisabledResponse403
@@ -497,6 +511,12 @@ func (r *Resource) Normalize(now time.Time) {
 	}
 	if r.BackendScheme == "" && r.Mode == ModeHTTP {
 		r.BackendScheme = "http"
+	}
+	if r.RedirectStatusCode == 0 {
+		r.RedirectStatusCode = RedirectStatusPermanent
+	}
+	if !r.RedirectEnabled {
+		r.RedirectTarget = ""
 	}
 	if r.PathPrefix == "" {
 		r.PathPrefix = "/"
@@ -584,6 +604,17 @@ func (r *Resource) Validate() error {
 		if r.BackendScheme != "http" && r.BackendScheme != "https" {
 			return errors.New("backendScheme debe ser http o https")
 		}
+		if r.RedirectEnabled {
+			if err := validateRedirectTarget(r.RedirectTarget); err != nil {
+				return err
+			}
+			if strings.EqualFold(redirectTargetHost(r.RedirectTarget), r.Domain) {
+				return errors.New("redirectTarget no puede ser el mismo dominio del recurso")
+			}
+			if r.RedirectStatusCode != RedirectStatusMovedPermanently && r.RedirectStatusCode != RedirectStatusPermanent {
+				return errors.New("redirectStatusCode debe ser 301 o 308")
+			}
+		}
 		if !strings.HasPrefix(r.PathPrefix, "/") {
 			return errors.New("pathPrefix debe iniciar con /")
 		}
@@ -597,6 +628,52 @@ func (r *Resource) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateRedirectTarget(target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return errors.New("redirectTarget requerido cuando la redireccion permanente esta activa")
+	}
+	if len(target) > 2048 || strings.ContainsAny(target, "`\n\r\t") {
+		return errors.New("redirectTarget contiene caracteres no permitidos")
+	}
+	if strings.HasPrefix(strings.ToLower(target), "http://") || strings.HasPrefix(strings.ToLower(target), "https://") {
+		u, err := url.Parse(target)
+		if err != nil || u.Scheme == "" || u.Hostname() == "" {
+			return errors.New("redirectTarget debe apuntar a un dominio o URL http/https valida")
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return errors.New("redirectTarget solo puede usar http o https")
+		}
+		host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+		if !domainRe.MatchString(host) && net.ParseIP(host) == nil {
+			return errors.New("redirectTarget debe apuntar a un dominio o URL http/https valida")
+		}
+		return nil
+	}
+	if strings.ContainsAny(target, "/?# ") {
+		return errors.New("si redirectTarget incluye ruta usa una URL completa http:// o https://")
+	}
+	if !domainRe.MatchString(strings.ToLower(target)) {
+		return errors.New("redirectTarget debe ser un dominio valido o una URL http/https")
+	}
+	return nil
+}
+
+func redirectTargetHost(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(target), "http://") || strings.HasPrefix(strings.ToLower(target), "https://") {
+		u, err := url.Parse(target)
+		if err != nil {
+			return ""
+		}
+		return strings.ToLower(strings.TrimSpace(u.Hostname()))
+	}
+	return strings.ToLower(target)
 }
 
 func (r Resource) UsesAgent() bool {

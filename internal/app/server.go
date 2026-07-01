@@ -434,6 +434,7 @@ func (s *Server) publicPanelBaseURL(r *http.Request) string {
 }
 
 func (s *Server) traefikConfig(w http.ResponseWriter, _ *http.Request) {
+	s.ensureUsableHTTPSSwitches()
 	b, err := EncodeTraefikJSON(s.store.ListResources())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "no se pudo generar config de Traefik")
@@ -642,9 +643,9 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 	candidateConfig := s.config
 	candidateConfig.DashboardDomain = req.DashboardDomain
 	candidateConfig.LetsEncryptEmail = req.LetsEncryptEmail
+	sslAutoWarning := ""
 	if !ACMEEnabled(candidateConfig) && s.hasHTTPSSLResources() {
-		writeError(w, http.StatusBadRequest, "no puedes desactivar ACME mientras existan recursos web con SSL activo; desactiva Usar SSL en esos recursos primero")
-		return
+		sslAutoWarning = "ACME/Let's Encrypt quedo desactivado; Pangolite desactivara automaticamente SSL en recursos web para evitar redirects HTTPS rotos."
 	}
 	settings, err := s.store.SaveAppSettings(req)
 	if err != nil {
@@ -663,6 +664,9 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request, rs reque
 	traefikResult := s.applyTraefikDynamicOnly()
 	if domainChanged || emailChanged || acmeStateChanged {
 		traefikResult = s.applyTraefikStaticAndRestart()
+	}
+	if sslAutoWarning != "" {
+		traefikResult.Warning = joinWarnings(traefikResult.Warning, sslAutoWarning)
 	}
 	s.log.Info("ajustes actualizados", "dashboard_domain", settings.DashboardDomain, "user", rs.User.Username, "traefik", traefikResult.Message)
 	s.recordAudit(r, rs, "settings.update", "settings", "dashboard", "", map[string]any{"dashboardDomain": settings.DashboardDomain, "acmeEmailSet": settings.LetsEncryptEmail != "", "traefik": traefikResult.Message})
@@ -914,6 +918,7 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	sslWarning := s.prepareHTTPSSwitch(&resource)
 	if err := s.validatePublicPortForCreate(resource); err != nil {
 		s.log.Warn("validacion de puerto publico fallo", "mode", resource.Mode, "public_port", resource.PublicPort, "origin", resource.OriginType, "agent", resource.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -934,7 +939,11 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "public_port", created.PublicPort, "tunnel_port", created.TunnelPort, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
 	s.recordAudit(r, rs, "resource.create", "resource", created.ID, created.ProjectID, map[string]any{"name": created.Name, "mode": created.Mode, "origin": created.OriginType, "publicPort": created.PublicPort, "agentId": created.AgentID, "traefik": traefikResult.Message})
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
-	writeJSON(w, http.StatusCreated, map[string]any{"resource": created, "traefik": traefikResult})
+	response := map[string]any{"resource": created, "traefik": traefikResult}
+	if sslWarning != "" {
+		response["warning"] = sslWarning
+	}
+	writeJSON(w, http.StatusCreated, response)
 }
 
 func (s *Server) validatePublicPortForCreate(resource Resource) error {
@@ -950,6 +959,18 @@ func (s *Server) validatePublicPortForUpdate(current, next Resource) error {
 	}
 	mustCheckSystem := current.Mode != next.Mode || current.PublicPort != next.PublicPort
 	return s.validatePublicPort(next.Mode, next.PublicPort, next.ID, mustCheckSystem)
+}
+
+func (s *Server) prepareHTTPSSwitch(resource *Resource) string {
+	if resource == nil {
+		return ""
+	}
+	resource.Normalize(time.Now().UTC())
+	if resource.Mode == ModeHTTP && resource.TLS && !ACMEEnabled(s.store.EffectiveConfig(s.config)) {
+		resource.TLS = false
+		return "SSL se desactivo automaticamente porque no hay correo ACME/Let's Encrypt configurado. El redireccionamiento HTTP→HTTPS tambien queda inactivo para evitar loops o dominios caidos."
+	}
+	return ""
 }
 
 func (s *Server) validateHTTPSSL(resource Resource) error {
@@ -1076,6 +1097,10 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		OriginType           string `json:"originType"`
 		AgentID              string `json:"agentId"`
 		TLS                  *bool  `json:"tls"`
+		RedirectEnabled      *bool  `json:"redirectEnabled"`
+		RedirectTarget       string `json:"redirectTarget"`
+		RedirectStatusCode   int    `json:"redirectStatusCode"`
+		HideWhenUnavailable  *bool  `json:"hideWhenUnavailable"`
 		Enabled              *bool  `json:"enabled"`
 		DisabledResponseMode string `json:"disabledResponseMode"`
 		DisabledStatusCode   int    `json:"disabledStatusCode"`
@@ -1094,7 +1119,7 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	fullEdit := req.Name != "" || req.Mode != "" || req.Domain != "" || req.PublicPort != 0 || req.BackendHost != "" || req.BackendPort != 0 || req.OriginType != "" || req.PathPrefix != "" || req.BackendScheme != "" || req.TLS != nil || req.ProjectID != "" || req.ProtectionMode != "" || req.ProtectionLoginMode != "" || req.ProtectionPassword != ""
+	fullEdit := req.Name != "" || req.Mode != "" || req.Domain != "" || req.PublicPort != 0 || req.BackendHost != "" || req.BackendPort != 0 || req.OriginType != "" || req.PathPrefix != "" || req.BackendScheme != "" || req.TLS != nil || req.RedirectEnabled != nil || req.RedirectTarget != "" || req.RedirectStatusCode != 0 || req.HideWhenUnavailable != nil || req.ProjectID != "" || req.ProtectionMode != "" || req.ProtectionLoginMode != "" || req.ProtectionPassword != ""
 	beforeResources := s.store.ListResources()
 	if !fullEdit {
 		enabled := current.Enabled
@@ -1152,10 +1177,16 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	if req.Mode != "" {
 		next.Mode = req.Mode
 	}
-	next.Domain = req.Domain
-	next.PathPrefix = req.PathPrefix
+	if req.Domain != "" {
+		next.Domain = req.Domain
+	}
+	if req.PathPrefix != "" {
+		next.PathPrefix = req.PathPrefix
+	}
 	next.PublicPort = req.PublicPort
-	next.BackendScheme = req.BackendScheme
+	if req.BackendScheme != "" {
+		next.BackendScheme = req.BackendScheme
+	}
 	if req.BackendHost != "" {
 		next.BackendHost = req.BackendHost
 	}
@@ -1168,6 +1199,18 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	next.AgentID = req.AgentID
 	if req.TLS != nil {
 		next.TLS = *req.TLS
+	}
+	if req.RedirectEnabled != nil {
+		next.RedirectEnabled = *req.RedirectEnabled
+	}
+	if req.RedirectTarget != "" || (req.RedirectEnabled != nil && !*req.RedirectEnabled) {
+		next.RedirectTarget = req.RedirectTarget
+	}
+	if req.RedirectStatusCode != 0 {
+		next.RedirectStatusCode = req.RedirectStatusCode
+	}
+	if req.HideWhenUnavailable != nil {
+		next.HideWhenUnavailable = *req.HideWhenUnavailable
 	}
 	if req.Enabled != nil {
 		next.Enabled = *req.Enabled
@@ -1191,6 +1234,7 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	sslWarning := s.prepareHTTPSSwitch(&next)
 	next.Normalize(time.Now().UTC())
 	if err := s.validatePublicPortForUpdate(current, next); err != nil {
 		s.log.Warn("validacion de puerto publico en edicion fallo", "resource", id, "mode", next.Mode, "public_port", next.PublicPort, "origin", next.OriginType, "agent", next.AgentID, "user", rs.User.Username, "error", err.Error())
@@ -1211,7 +1255,11 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	s.log.Info("recurso editado", "id", id, "mode", updated.Mode, "name", updated.Name, "user", rs.User.Username, "traefik", traefikResult.Message)
 	s.recordAudit(r, rs, "resource.update", "resource", updated.ID, updated.ProjectID, map[string]any{"name": updated.Name, "mode": updated.Mode, "origin": updated.OriginType, "publicPort": updated.PublicPort, "agentId": updated.AgentID, "traefik": traefikResult.Message})
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
-	writeJSON(w, http.StatusOK, map[string]any{"resource": updated, "traefik": traefikResult})
+	response := map[string]any{"resource": updated, "traefik": traefikResult}
+	if sslWarning != "" {
+		response["warning"] = sslWarning
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request, _ requestSession) {
@@ -1563,6 +1611,17 @@ func (s *Server) renderTraefik(w http.ResponseWriter, r *http.Request, rs reques
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": result.Message, "traefik": result})
 }
 
+func joinWarnings(values ...string) string {
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 type TraefikApplyResult struct {
 	OK              bool   `json:"ok"`
 	Message         string `json:"message"`
@@ -1575,34 +1634,62 @@ type TraefikApplyResult struct {
 }
 
 func (s *Server) applyTraefikDynamicOnly() TraefikApplyResult {
+	sslWarning := s.ensureUsableHTTPSSwitches()
 	if !s.config.AutoTraefik {
-		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false}
+		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false, Warning: sslWarning}
 	}
 	effective := s.store.EffectiveConfig(s.config)
 	if err := RenderDynamicTraefikWithPanelDomains(effective, s.store.PanelDomainsForTraefik(effective.DashboardDomain)); err != nil {
 		s.log.Warn("no se pudo actualizar configuracion dinamica de Traefik", "error", err.Error())
 		return TraefikApplyResult{OK: false, Message: "no se pudo actualizar Traefik: " + err.Error(), DynamicChanged: false}
 	}
-	return TraefikApplyResult{OK: true, Message: "Traefik recargara la configuracion dinamica automaticamente", DynamicChanged: true}
+	return TraefikApplyResult{OK: true, Message: "Traefik recargara la configuracion dinamica automaticamente", DynamicChanged: true, Warning: sslWarning}
+}
+
+func (s *Server) ensureUsableHTTPSSwitches() string {
+	if ACMEEnabled(s.store.EffectiveConfig(s.config)) {
+		return ""
+	}
+	changed, err := s.store.DisableHTTPSToggles()
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("no se pudieron desactivar SSL de recursos sin ACME", "error", err.Error())
+		}
+		return ""
+	}
+	if changed > 0 {
+		msg := fmt.Sprintf("SSL se desactivo automaticamente en %d recurso(s) porque ACME/Let's Encrypt no esta configurado; tambien se retiraron redirects HTTP→HTTPS.", changed)
+		if s.log != nil {
+			s.log.Warn(msg)
+		}
+		return msg
+	}
+	return ""
 }
 
 func (s *Server) applyTraefikAfterResourceChange(before []Resource) TraefikApplyResult {
 	if err := s.refreshBridgeListeners(); err != nil && s.log != nil {
 		s.log.Warn("no se pudieron sincronizar puentes de clientes NAT", "error", err.Error())
 	}
+	sslWarning := s.ensureUsableHTTPSSwitches()
 	if !s.config.AutoTraefik {
-		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false}
+		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false, Warning: sslWarning}
 	}
 	after := s.store.ListResources()
 	if TraefikPortSignature(before) != TraefikPortSignature(after) {
-		return s.applyTraefikStaticAndRestart()
+		result := s.applyTraefikStaticAndRestart()
+		if sslWarning != "" {
+			result.Warning = joinWarnings(result.Warning, sslWarning)
+		}
+		return result
 	}
-	return TraefikApplyResult{OK: true, Message: "Traefik detectara el cambio por configuracion dinamica", DynamicChanged: true}
+	return TraefikApplyResult{OK: true, Message: "Traefik detectara el cambio por configuracion dinamica", DynamicChanged: true, Warning: sslWarning}
 }
 
 func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
+	sslWarning := s.ensureUsableHTTPSSwitches()
 	if !s.config.AutoTraefik {
-		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", StaticChanged: false}
+		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", StaticChanged: false, Warning: sslWarning}
 	}
 	effective := s.store.EffectiveConfig(s.config)
 	if err := RenderStaticTraefikWithPanelDomains(effective, s.store.ListResources(), s.store.PanelDomainsForTraefik(effective.DashboardDomain)); err != nil {
@@ -1611,10 +1698,10 @@ func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
 	}
 	manager := DetectServiceManager()
 	if !manager.Available() {
-		return TraefikApplyResult{OK: true, Message: "configuracion estatica escrita; no se detecto gestor de servicios para reiniciar Traefik automaticamente", RestartRequired: true, StaticChanged: true, ServiceManager: manager.String(), Warning: "Este cambio agrego o retiro entrypoints TCP/UDP. Reinicia Traefik manualmente para aplicarlo."}
+		return TraefikApplyResult{OK: true, Message: "configuracion estatica escrita; no se detecto gestor de servicios para reiniciar Traefik automaticamente", RestartRequired: true, StaticChanged: true, ServiceManager: manager.String(), Warning: joinWarnings("Este cambio agrego o retiro entrypoints TCP/UDP. Reinicia Traefik manualmente para aplicarlo.", sslWarning)}
 	}
 	s.scheduleTraefikRestart("cambio de entrypoints TCP/UDP")
-	return TraefikApplyResult{OK: true, Message: fmt.Sprintf("Traefik se reiniciara en segundo plano con %s para aplicar entrypoints TCP/UDP", manager.String()), Restarted: false, RestartRequired: true, StaticChanged: true, DynamicChanged: true, ServiceManager: manager.String(), Warning: "Para agregar o quitar tuneles TCP/UDP Traefik debe reiniciar su servicio global y las conexiones activas podrian cortarse unos segundos."}
+	return TraefikApplyResult{OK: true, Message: fmt.Sprintf("Traefik se reiniciara en segundo plano con %s para aplicar entrypoints TCP/UDP", manager.String()), Restarted: false, RestartRequired: true, StaticChanged: true, DynamicChanged: true, ServiceManager: manager.String(), Warning: joinWarnings("Para agregar o quitar tuneles TCP/UDP Traefik debe reiniciar su servicio global y las conexiones activas podrian cortarse unos segundos.", sslWarning)}
 }
 
 func (s *Server) scheduleTraefikRestart(reason string) {
@@ -2018,6 +2105,10 @@ func (s *Server) servePublicResource(w http.ResponseWriter, r *http.Request) boo
 		s.serveDisabledResource(w, r, resource)
 		return true
 	}
+	if resource.RedirectEnabled {
+		s.servePermanentResourceRedirect(w, r, resource)
+		return true
+	}
 	if !s.ensureResourceAccess(w, r, resource) {
 		return true
 	}
@@ -2025,7 +2116,7 @@ func (s *Server) servePublicResource(w http.ResponseWriter, r *http.Request) boo
 		s.proxyViaAgent(w, r, resource)
 		return true
 	}
-	if resource.ProtectionMode != ProtectionNone {
+	if resource.ProtectionMode != ProtectionNone || resource.HideWhenUnavailable {
 		s.proxyLocalResource(w, r, resource)
 		return true
 	}
@@ -2050,6 +2141,52 @@ func (s *Server) publicOrIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.index(w, r, rs)
+}
+
+func (s *Server) servePermanentResourceRedirect(w http.ResponseWriter, r *http.Request, resource Resource) {
+	target := buildResourceRedirectURL(r, resource)
+	if target == "" {
+		writeError(w, http.StatusBadGateway, "redireccion permanente invalida")
+		return
+	}
+	status := resource.RedirectStatusCode
+	if status != RedirectStatusMovedPermanently && status != RedirectStatusPermanent {
+		status = RedirectStatusPermanent
+	}
+	w.Header().Set("Location", target)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(status)
+}
+
+func buildResourceRedirectURL(r *http.Request, resource Resource) string {
+	target := strings.TrimSpace(resource.RedirectTarget)
+	if target == "" {
+		return ""
+	}
+	path := r.URL.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	query := ""
+	if r.URL.RawQuery != "" {
+		query = "?" + r.URL.RawQuery
+	}
+	if strings.HasPrefix(strings.ToLower(target), "http://") || strings.HasPrefix(strings.ToLower(target), "https://") {
+		u, err := url.Parse(target)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return ""
+		}
+		if u.Path == "" || u.Path == "/" {
+			u.Path = path
+			u.RawQuery = r.URL.RawQuery
+		}
+		return u.String()
+	}
+	scheme := publicSchemeForResource(r, resource)
+	if scheme == "" {
+		scheme = "https"
+	}
+	return scheme + "://" + target + path + query
 }
 
 func (s *Server) serveDisabledResource(w http.ResponseWriter, r *http.Request, resource Resource) {
@@ -2231,7 +2368,7 @@ func (s *Server) proxyLocalResource(w http.ResponseWriter, r *http.Request, reso
 		if s.log != nil {
 			s.log.Warn("proxy local fallo", "resource", resource.ID, "error", err.Error())
 		}
-		writeError(w, http.StatusBadGateway, "backend no disponible")
+		serveUnavailableResource(w, req, resource, http.StatusBadGateway, "backend no disponible")
 	}
 	proxy.ServeHTTP(w, r)
 }
@@ -2365,11 +2502,11 @@ func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource 
 	resp, err := s.hub.Submit(r.Context(), resource.AgentID, job)
 	if err != nil {
 		s.log.Warn("tunel HTTP fallo", "agent", resource.AgentID, "resource", resource.ID, "error", err.Error())
-		writeError(w, http.StatusServiceUnavailable, "agente no disponible o sin respuesta")
+		serveUnavailableResource(w, r, resource, http.StatusServiceUnavailable, "agente no disponible o sin respuesta")
 		return
 	}
 	if resp.Error != "" {
-		writeError(w, http.StatusBadGateway, resp.Error)
+		serveUnavailableResource(w, r, resource, http.StatusBadGateway, resp.Error)
 		return
 	}
 	respHeader := cloneSafeHeader(resp.Header)
@@ -2473,6 +2610,16 @@ func proxyHostMatchesResource(host string, resource Resource) bool {
 		return strings.EqualFold(h, targetHost) && p == targetPort
 	}
 	return strings.EqualFold(host, targetHost)
+}
+
+func serveUnavailableResource(w http.ResponseWriter, r *http.Request, resource Resource, status int, message string) {
+	if resource.HideWhenUnavailable {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	writeError(w, status, message)
 }
 
 type authedHandler func(http.ResponseWriter, *http.Request, requestSession)

@@ -5,7 +5,7 @@
     {{if .Resources}}
       {{range .Resources}}
       <tr class="{{resourceRowClass .}}">
-        <td data-label="Recurso"><div class="resource-name">{{.Name}}</div><div class="resource-tags"><span class="resource-tag tag-primary">{{resourceModeLabel .Mode}}</span><span class="resource-tag {{if .Enabled}}tag-success{{else}}tag-danger{{end}}">{{resourceStatusText .}}</span><span class="resource-tag tag-muted">Resp: {{.DisabledStatusCode}}</span><span class="resource-tag tag-muted" data-health-tag="{{.ID}}">Health: -</span></div></td>
+        <td data-label="Recurso"><div class="resource-name">{{.Name}}</div><div class="resource-tags"><span class="resource-tag tag-primary">{{resourceModeLabel .Mode}}</span><span class="resource-tag {{if .Enabled}}tag-success{{else}}tag-danger{{end}}">{{resourceStatusText .}}</span>{{if .RedirectEnabled}}<span class="resource-tag tag-warning">Redirect {{.RedirectStatusCode}}</span>{{end}}{{if .HideWhenUnavailable}}<span class="resource-tag tag-muted">Caída: 404</span>{{end}}<span class="resource-tag tag-muted">Resp: {{.DisabledStatusCode}}</span><span class="resource-tag tag-muted" data-health-tag="{{.ID}}">Health: -</span></div></td>
         <td data-label="Entrada" class="font-mono compact-cell">{{resourceEntry .}}</td>
         <td data-label="Backend" class="font-mono compact-cell">{{resourceBackend .}}</td>
         <td data-label="Origen">{{resourceOrigin .}}</td>

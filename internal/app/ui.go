@@ -317,6 +317,9 @@ func resourceEntry(r Resource) string {
 }
 
 func resourceBackend(r Resource) string {
+	if r.Mode == ModeHTTP && r.RedirectEnabled {
+		return "redirect -> " + r.RedirectTarget
+	}
 	prefix := ""
 	if r.Mode == ModeHTTP && r.BackendScheme != "" {
 		prefix = r.BackendScheme + "://"

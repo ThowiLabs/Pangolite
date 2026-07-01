@@ -96,3 +96,33 @@ func TestDashboardHostRuleMultipleDomains(t *testing.T) {
 		t.Fatalf("regla inesperada: %s", rule)
 	}
 }
+
+func TestBuildTraefikConfigRedirectHTTPRoutesToPanel(t *testing.T) {
+	resources := []Resource{
+		{ID: "redir01", Name: "Dominio viejo", Mode: ModeHTTP, Domain: "old.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, TLS: true, RedirectEnabled: true, RedirectTarget: "https://new.example.com", RedirectStatusCode: RedirectStatusPermanent, Enabled: true},
+	}
+	cfg := BuildTraefikConfig(resources)
+	if cfg.HTTP == nil || len(cfg.HTTP.Services) != 1 {
+		t.Fatalf("http config inesperada: %#v", cfg.HTTP)
+	}
+	for _, svc := range cfg.HTTP.Services {
+		if got := svc.LoadBalancer.Servers[0].URL; got != "http://127.0.0.1:2424" {
+			t.Fatalf("recurso con redirect debe enrutar a Pangolite, got %s", got)
+		}
+	}
+}
+
+func TestBuildTraefikConfigHiddenUnavailableRoutesToPanel(t *testing.T) {
+	resources := []Resource{
+		{ID: "hide01", Name: "Backend oculto", Mode: ModeHTTP, Domain: "app.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8181, TLS: false, HideWhenUnavailable: true, Enabled: true},
+	}
+	cfg := BuildTraefikConfig(resources)
+	if cfg.HTTP == nil || len(cfg.HTTP.Services) != 1 {
+		t.Fatalf("http config inesperada: %#v", cfg.HTTP)
+	}
+	for _, svc := range cfg.HTTP.Services {
+		if got := svc.LoadBalancer.Servers[0].URL; got != "http://127.0.0.1:2424" {
+			t.Fatalf("recurso con caída oculta debe enrutar a Pangolite, got %s", got)
+		}
+	}
+}

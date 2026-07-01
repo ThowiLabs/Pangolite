@@ -325,3 +325,74 @@ type unexpectedAgentJobError struct {
 func (e *unexpectedAgentJobError) Error() string {
 	return "job HTTP inesperado para agente"
 }
+
+func TestPermanentResourceRedirectPreservesPathAndQuery(t *testing.T) {
+	server, store := testServerWithStore(t)
+	project, err := store.AddProject(Project{Name: "Proyecto Redirect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.AddResource(Resource{
+		ProjectID:          project.ID,
+		Name:               "Dominio viejo",
+		Mode:               ModeHTTP,
+		Domain:             "old.example.com",
+		PathPrefix:         "/",
+		BackendScheme:      "http",
+		BackendHost:        "127.0.0.1",
+		BackendPort:        8080,
+		TLS:                true,
+		Enabled:            true,
+		RedirectEnabled:    true,
+		RedirectTarget:     "https://new.example.com",
+		RedirectStatusCode: RedirectStatusPermanent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://old.example.com/login?next=%2Fhome", nil)
+	req.Host = "old.example.com"
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr, req)
+	if rr.Code != RedirectStatusPermanent {
+		t.Fatalf("status inesperado: %d", rr.Code)
+	}
+	if got := rr.Header().Get("Location"); got != "https://new.example.com/login?next=%2Fhome" {
+		t.Fatalf("location inesperado: %s", got)
+	}
+}
+
+func TestHiddenUnavailableLocalResourceReturns404(t *testing.T) {
+	server, store := testServerWithStore(t)
+	project, err := store.AddProject(Project{Name: "Proyecto Oculto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.AddResource(Resource{
+		ProjectID:           project.ID,
+		Name:                "Backend caido",
+		Mode:                ModeHTTP,
+		Domain:              "hidden.example.com",
+		PathPrefix:          "/",
+		BackendScheme:       "http",
+		BackendHost:         "127.0.0.1",
+		BackendPort:         1,
+		OriginType:          OriginLocal,
+		TLS:                 false,
+		Enabled:             true,
+		HideWhenUnavailable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://hidden.example.com/", nil)
+	req.Host = "hidden.example.com"
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("backend caido oculto debe responder 404, got %d", rr.Code)
+	}
+	if strings.TrimSpace(rr.Body.String()) != "" {
+		t.Fatalf("404 oculto no debe exponer detalle, body=%q", rr.Body.String())
+	}
+}

@@ -47,6 +47,14 @@ function syncDisabledMode(){
   const mode=fieldValue('disabledResponseMode')||'403';
   document.querySelectorAll('.html-control').forEach(el=>el.classList.toggle('d-none',mode!=='html'));
 }
+function syncRedirectFields(){
+  const on=fieldChecked('redirectEnabled');
+  document.querySelectorAll('.redirect-only').forEach(el=>el.classList.toggle('d-none',!on));
+}
+function syncEditRedirectFields(){
+  const on=fieldChecked('editRedirectEnabled');
+  document.querySelectorAll('.edit-redirect-only').forEach(el=>el.classList.toggle('d-none',!on));
+}
 function syncEditResourceMode(){
   const mode=fieldValue('editMode')||'http';
   document.querySelectorAll('.edit-http-only').forEach(el=>el.classList.toggle('d-none',mode!=='http'));
@@ -134,7 +142,11 @@ function createResourcePayload(prefix=''){
     disabledTemplateId: isEdit ? fieldValue('editDisabledPreset') : '',
     protectionMode: isEdit ? (fieldValue('editProtectionMode')||'none') : (fieldValue('protectionMode')||'none'),
     protectionLoginMode: isEdit ? (fieldValue('editProtectionLoginMode')||'html') : (fieldValue('protectionLoginMode')||'html'),
-    protectionPassword: isEdit ? fieldValue('editProtectionPassword') : fieldValue('protectionPassword')
+    protectionPassword: isEdit ? fieldValue('editProtectionPassword') : fieldValue('protectionPassword'),
+    redirectEnabled: isEdit ? fieldChecked('editRedirectEnabled') : fieldChecked('redirectEnabled'),
+    redirectTarget: isEdit ? fieldValue('editRedirectTarget') : fieldValue('redirectTarget'),
+    redirectStatusCode: isEdit ? fieldNumber('editRedirectStatusCode')||308 : fieldNumber('redirectStatusCode')||308,
+    hideWhenUnavailable: isEdit ? fieldChecked('editHideWhenUnavailable') : fieldChecked('hideWhenUnavailable')
   };
   if(mode==='http'){
     payload.domain=isEdit?fieldValue('editDomain').toLowerCase():buildDomainFromCreateForm();
@@ -143,7 +155,7 @@ function createResourcePayload(prefix=''){
     payload.tls=isEdit?fieldChecked('editTLS'):fieldChecked('tls');
     payload.publicPort=0;
   }else{
-    payload.domain='';payload.pathPrefix='';payload.backendScheme='';payload.tls=false;payload.protectionMode='none';payload.protectionLoginMode='html';payload.protectionPassword='';
+    payload.domain='';payload.pathPrefix='';payload.backendScheme='';payload.tls=false;payload.protectionMode='none';payload.protectionLoginMode='html';payload.protectionPassword='';payload.redirectEnabled=false;payload.redirectTarget='';payload.hideWhenUnavailable=false;
     payload.publicPort=fieldNumber(isEdit?'editPublicPort':'publicPort');
   }
   return payload;
@@ -159,11 +171,12 @@ async function createResourceFromForm(e){
     showBusy('Creando recurso','Validando puerto, cliente de sistema, backend y aplicando Traefik');
     const createResp=await api('/api/resources',{method:'POST',body:JSON.stringify(payload)});
     let cert=null;
-    if(payload.mode==='http')cert=await fetchCertificateStatus(payload.domain,payload.tls,'certStatusCreate');
+    if(payload.mode==='http')cert=await fetchCertificateStatus(payload.domain,!!((createResp.resource||{}).tls),'certStatusCreate');
     await reloadProjects();
     await loadProjectData(currentProject.id);
     const tmsg=traefikNotice(createResp);
-    const notice='El recurso '+payload.name+' se creó correctamente.'+(cert?' SSL: '+certText(cert)+'.':'')+(tmsg?'\n\n'+tmsg:'');
+    const warn=createResp.warning?('\n\n'+createResp.warning):'';
+    const notice='El recurso '+payload.name+' se creó correctamente.'+(cert?' SSL: '+certText(cert)+'.':'')+(tmsg?'\n\n'+tmsg:'')+warn;
     hideBusy();busyClosed=true;
     goNotice('/projects/'+currentProject.id+'/resources','Recurso creado',notice);
   }catch(err){msg(err.message,true)}finally{if(!busyClosed)hideBusy()}
@@ -172,8 +185,8 @@ async function createResourceFromForm(e){
 function openEditResource(id){
   const r=resources.find(x=>x.id===id);if(!r){msg('Recurso no encontrado',true);return}
   setIfExists('editResourceId',r.id);setIfExists('editResourceName',r.name);setIfExists('editMode',r.mode||'http');setIfExists('editOriginType',r.originType||'local');
-  fillAgentSelect();setIfExists('editAgentId',r.agentId||'');setIfExists('editDomain',r.domain||'');setIfExists('editPathPrefix',r.pathPrefix||'/');setIfExists('editTLS',!!r.tls);setIfExists('editBackendScheme',r.backendScheme||'http');setIfExists('editPublicPort',r.publicPort||'');setIfExists('editBackendHost',r.backendHost||'127.0.0.1');setIfExists('editBackendPort',r.backendPort||'');setIfExists('editResourceEnabled',String(!!r.enabled));setIfExists('editDisabledResponseMode',r.disabledResponseMode||'403');setIfExists('editDisabledStatusCode',r.disabledStatusCode||403);setIfExists('editDisabledHtml',r.disabledHtml||'');refreshTemplateSelects();setIfExists('editDisabledPreset',r.disabledTemplateId||'');setIfExists('editProtectionMode',r.protectionMode||'none');setIfExists('editProtectionLoginMode',r.protectionLoginMode||'html');setIfExists('editProtectionPassword','');
-  syncEditResourceMode();syncEditDisabledMode();syncEditProtectionFields();
+  fillAgentSelect();setIfExists('editAgentId',r.agentId||'');setIfExists('editDomain',r.domain||'');setIfExists('editPathPrefix',r.pathPrefix||'/');setIfExists('editTLS',!!r.tls);setIfExists('editBackendScheme',r.backendScheme||'http');setIfExists('editPublicPort',r.publicPort||'');setIfExists('editBackendHost',r.backendHost||'127.0.0.1');setIfExists('editBackendPort',r.backendPort||'');setIfExists('editResourceEnabled',String(!!r.enabled));setIfExists('editDisabledResponseMode',r.disabledResponseMode||'403');setIfExists('editDisabledStatusCode',r.disabledStatusCode||403);setIfExists('editDisabledHtml',r.disabledHtml||'');refreshTemplateSelects();setIfExists('editDisabledPreset',r.disabledTemplateId||'');setIfExists('editProtectionMode',r.protectionMode||'none');setIfExists('editProtectionLoginMode',r.protectionLoginMode||'html');setIfExists('editProtectionPassword','');setIfExists('editRedirectEnabled',!!r.redirectEnabled);setIfExists('editRedirectTarget',r.redirectTarget||'');setIfExists('editRedirectStatusCode',r.redirectStatusCode||308);setIfExists('editHideWhenUnavailable',!!r.hideWhenUnavailable);
+  syncEditResourceMode();syncEditDisabledMode();syncEditProtectionFields();syncEditRedirectFields();
   if((r.mode||'http')==='http')fetchCertificateStatus(r.domain,!!r.tls,'certStatusEdit').catch(()=>paintLocalCertificateHint('certStatusEdit',r.domain,!!r.tls));
   $('resourceEditModal').classList.add('open');
 }
@@ -187,12 +200,12 @@ async function saveResourceEdit(e){
     showBusy('Guardando recurso','Validando cambios y aplicando Traefik');
     const editResp=await api('/api/resources/'+id,{method:'PATCH',body:JSON.stringify(payload)});
     let cert=null;
-    if(payload.mode==='http')cert=await fetchCertificateStatus(payload.domain,payload.tls,'certStatusEdit');
+    if(payload.mode==='http')cert=await fetchCertificateStatus(payload.domain,!!((editResp.resource||{}).tls),'certStatusEdit');
     closeResourceEditModal();
     await reloadProjects();
     if(currentProject)await loadProjectData(currentProject.id);
     const tmsg=traefikNotice(editResp);
-    msg('Recurso actualizado'+(cert?'. SSL: '+certText(cert)+'.':'')+(tmsg?' '+tmsg:''));
+    msg('Recurso actualizado'+(cert?'. SSL: '+certText(cert)+'.':'')+(tmsg?' '+tmsg:'')+(editResp.warning?' '+editResp.warning:''));
   }catch(err){msg(err.message,true)}finally{hideBusy()}
   return false;
 }
@@ -217,8 +230,9 @@ function setupForms(){
   bindAsyncSubmit(maybeEl('resourceEditForm'),saveResourceEdit,'Guardando');
   bindAsyncSubmit(maybeEl('dashboardSettingsForm'),saveSettings,'Guardando');
   bindAsyncSubmit(maybeEl('smtpSettingsForm'),saveSettings,'Validando');
-  [['mode',syncMode],['originType',syncOrigin],['domainSelect',syncDomainMode],['subdomain',syncDomainMode],['customDomain',syncDomainMode],['tls',syncDomainMode],['disabledResponseMode',syncDisabledMode],['editMode',syncEditResourceMode],['editOriginType',syncEditResourceOrigin],['editTLS',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDomain',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDisabledResponseMode',syncEditDisabledMode],['protectionMode',syncProtectionFields],['editProtectionMode',syncEditProtectionFields],['resourceActionMode',syncResourceActionMode],['maintenanceOperation',syncResourceActionMode],['maintenanceScopeWeb',syncResourceActionMode],['maintenanceScopeTCP',syncResourceActionMode],['maintenanceScopeUDP',syncResourceActionMode],['templateManagerSelect',()=>loadTemplateIntoEditor().catch(()=>{})]].forEach(([id,fn])=>{const el=maybeEl(id);if(el)el.addEventListener('input',fn);if(el)el.addEventListener('change',fn)});
+  [['mode',syncMode],['originType',syncOrigin],['domainSelect',syncDomainMode],['subdomain',syncDomainMode],['customDomain',syncDomainMode],['tls',syncDomainMode],['disabledResponseMode',syncDisabledMode],['redirectEnabled',syncRedirectFields],['editMode',syncEditResourceMode],['editOriginType',syncEditResourceOrigin],['editTLS',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDomain',()=>paintLocalCertificateHint('certStatusEdit',fieldValue('editDomain').toLowerCase(),fieldChecked('editTLS'))],['editDisabledResponseMode',syncEditDisabledMode],['editRedirectEnabled',syncEditRedirectFields],['protectionMode',syncProtectionFields],['editProtectionMode',syncEditProtectionFields],['resourceActionMode',syncResourceActionMode],['maintenanceOperation',syncResourceActionMode],['maintenanceScopeWeb',syncResourceActionMode],['maintenanceScopeTCP',syncResourceActionMode],['maintenanceScopeUDP',syncResourceActionMode],['templateManagerSelect',()=>loadTemplateIntoEditor().catch(()=>{})]].forEach(([id,fn])=>{const el=maybeEl(id);if(el)el.addEventListener('input',fn);if(el)el.addEventListener('change',fn)});
   const preset=maybeEl('disabledPreset');if(preset)preset.addEventListener('change',()=>{if(preset.value){setIfExists('disabledResponseMode','html');setIfExists('disabledStatusCode','403');setIfExists('disabledHtml','');syncDisabledMode()}});
   const epreset=maybeEl('editDisabledPreset');if(epreset)epreset.addEventListener('change',()=>{if(epreset.value){setIfExists('editDisabledResponseMode','html');setIfExists('editDisabledStatusCode','403');setIfExists('editDisabledHtml','');syncEditDisabledMode()}});
+  syncRedirectFields();syncEditRedirectFields();
 }
 
