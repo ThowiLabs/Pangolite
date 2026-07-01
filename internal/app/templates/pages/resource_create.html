@@ -1,22 +1,206 @@
 {{define "page_content"}}
 <section id="view-create-resource" class="route-view active">
-      <div class="hero"><h1>Crear recurso</h1><p>Un recurso es el servicio expuesto: web HTTP/HTTPS, TCP o UDP. Puede salir directo desde el host Pangolite o por un cliente de sistema.</p></div>
-      <div class="card"><div class="card-header d-flex justify-content-between align-items-center"><div><div class="card-title">Datos del recurso</div><div class="text-muted small">Define qué se publica y dónde vive el servicio real.</div></div><button class="btn btn-help" onclick="showHelp('Crear recurso','Primero define que publicas. Luego elige origen: host local si Pangolite puede llegar directo al backend, o cliente de sistema si el backend vive dentro de un VPS/NAT/remoto.')"><i class="bi bi-question"></i></button></div><div class="card-body">
-        <form id="resourceForm">
-          <div class="grid grid-2"><div><label class="form-label">Nombre del recurso</label><input id="resourceName" name="name" class="form-control" placeholder="Panel administrativo"></div><div><label class="form-label">Tipo de publicacion</label><select id="mode" name="mode" class="form-select"><option value="http">Web HTTP/HTTPS</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></div></div>
-          <div class="grid grid-2 mt-3"><div><label class="form-label">Ubicación del servicio</label><select id="originType" name="originType" class="form-select"><option value="local">En este servidor Pangolite</option><option value="agent">En un servidor remoto conectado</option></select><div class="form-text">Usa “este servidor” si Pangolite puede llegar directo al servicio. Usa “servidor remoto” si el servicio vive en un VPS/NAT con agente instalado.</div></div><div id="agentOriginGroup" class="d-none"><label class="form-label">Servidor remoto conectado</label><select id="agentId" name="agentId" class="form-select"><option value="">Selecciona un cliente de sistema</option>{{range .Agents}}{{if .Enabled}}<option value="{{.ID}}">{{.Name}} · {{.ID}}{{if .Online}} · online{{else}} · offline{{end}}</option>{{end}}{{end}}</select><div class="form-text">Servidor que tiene instalado el cliente de sistema.</div></div></div>
-          <div id="agentTcpUdpNotice" class="alert alert-warning mt-3 d-none"><i class="bi bi-exclamation-triangle"></i> TCP remoto usa stream persistente por el cliente de sistema. UDP remoto usa intercambio de datagramas con respuesta.</div>
-          <div class="grid grid-2 mt-3 http-only"><div><label class="form-label">Dominio administrado</label><select id="domainSelect" name="domainBase" class="form-select">{{range .Domains}}{{if .Enabled}}<option value="{{.Domain}}">{{.Domain}}</option>{{end}}{{end}}<option value="custom">Custom</option></select><div class="form-text">Elige domain.tld configurado en Ajustes o Custom.</div></div><div id="managedDomainGroup"><label class="form-label">Subdominio</label><input id="subdomain" name="subdomain" class="form-control" placeholder="app"><div class="form-text">Vacio usa el dominio base. Ejemplo: app.domain.tld</div></div></div>
-          <div class="mt-3 http-only d-none" id="customDomainGroup"><label class="form-label">Dominio personalizado</label><input id="customDomain" name="customDomain" class="form-control" placeholder="app.proyecto.com"></div>
-          <div class="grid grid-2 mt-3 http-only"><div><label class="form-label">Path</label><input id="pathPrefix" name="pathPrefix" class="form-control" value="/"><div class="form-text">Usa / para todo el dominio o /app para una ruta especifica.</div></div><div><label class="form-label">Seguridad</label><div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" role="switch" id="tls" name="tls" checked><label class="form-check-label" for="tls">Usar SSL</label></div><div class="form-text">Activado: HTTPS con ACME. Desactivado: solo HTTP.</div></div></div>
-          <div class="mt-2 http-only"><span class="text-muted small">Vista previa: </span><span id="domainPreview" class="font-mono text-white">-</span></div>
-          <div class="alert pl-surface mt-2 http-only" id="certStatusCreate"><i class="bi bi-shield-lock"></i> SSL se revisará al crear el recurso.</div>
-          <div class="card pl-surface mt-3 http-only"><div class="card-body"><div class="grid grid-2"><div><label class="form-label">Redirección permanente</label><div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" role="switch" id="redirectEnabled"><label class="form-check-label" for="redirectEnabled">Redirigir este dominio a otro dominio</label></div><div class="form-text">Útil cuando cambias de dominio. Pangolite conserva path y query string.</div></div><div><label class="form-label">Si backend/cliente no responde</label><div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" role="switch" id="hideWhenUnavailable"><label class="form-check-label" for="hideWhenUnavailable">Devolver 404 oculto</label></div><div class="form-text">Marcado: si el cliente o backend cae, responde como no encontrado.</div></div></div><div class="grid grid-2 mt-3 redirect-only d-none"><div><label class="form-label">Dominio/URL destino</label><input id="redirectTarget" class="form-control" placeholder="https://nuevo-dominio.com"><div class="form-text">Puede ser dominio.tld o una URL https:// completa. Si pones solo dominio, se usa el esquema público detectado.</div></div><div><label class="form-label">Tipo</label><select id="redirectStatusCode" class="form-select"><option value="308" selected>308 permanente, conserva método</option><option value="301">301 permanente clásico</option></select></div></div></div></div>
-          <div class="grid grid-3 mt-3 http-only"><div><label class="form-label">Protección del recurso</label><select id="protectionMode" name="protectionMode" class="form-select"><option value="none">Sin protección</option><option value="password">Contraseña específica</option><option value="session">Solo usuarios con sesión Pangolite</option></select><div class="form-text">Para APIs o webs internas puedes forzar acceso antes de enviar al backend.</div></div><div class="protection-password-only d-none"><label class="form-label">Tipo de login</label><select id="protectionLoginMode" name="protectionLoginMode" class="form-select"><option value="html">HTML de login</option><option value="basic">Prompt básico del navegador/API</option></select></div><div class="protection-password-only d-none"><label class="form-label">Contraseña</label><input id="protectionPassword" name="protectionPassword" type="password" class="form-control" autocomplete="new-password" placeholder="Mínimo 6 caracteres"></div></div>
-          <div class="grid grid-2 mt-3 tcpudp-only d-none"><div><label class="form-label">Puerto publico</label><input id="publicPort" name="publicPort" type="number" class="form-control" placeholder="2222"></div><div></div></div>
-          <div class="grid grid-3 mt-3"><div class="http-only"><label class="form-label">Protocolo interno</label><select id="backendScheme" name="backendScheme" class="form-select"><option value="http">http</option><option value="https">https</option></select></div><div><label class="form-label">Host interno del servicio</label><input id="backendHost" name="backendHost" class="form-control" value="127.0.0.1"><div class="form-text">Se resuelve desde la ubicación elegida. Ejemplo: 127.0.0.1 si el servicio corre en ese mismo servidor.</div></div><div><label class="form-label">Puerto interno del servicio</label><input id="backendPort" name="backendPort" type="number" class="form-control" value="8080"></div></div>
-          <button class="btn btn-primary mt-3" type="submit"><i class="bi bi-plus-circle"></i> Crear recurso</button>
-        </form>
-      </div></div>
-    </section>
+  <div class="hero">
+    <h1>Crear recurso</h1>
+    <p>Un recurso es el servicio expuesto: web HTTP/HTTPS, TCP o UDP. Puede salir directo desde el host Pangolite, por un cliente de sistema o responder una redirección permanente.</p>
+  </div>
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <div>
+        <div class="card-title">Datos del recurso</div>
+        <div class="text-muted small">El formulario cambia según el tipo para evitar opciones incompatibles.</div>
+      </div>
+      <button class="btn btn-help" onclick="showHelp('Crear recurso','Elige primero el tipo. App local publica un backend alcanzable desde Pangolite. App por cliente usa pangolite-client. Redirección permanente solo responde 301/308 hacia otro dominio o URL.')"><i class="bi bi-question"></i></button>
+    </div>
+    <div class="card-body">
+      <form id="resourceForm">
+        <div class="grid grid-2">
+          <div>
+            <label class="form-label">Nombre del recurso</label>
+            <input id="resourceName" name="name" class="form-control" placeholder="Panel administrativo">
+          </div>
+          <div>
+            <label class="form-label">Tipo de publicación</label>
+            <select id="mode" name="mode" class="form-select pl-widget-select" data-widget-icon="bi-diagram-3">
+              <option value="http">Web HTTP/HTTPS</option>
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-2 mt-3 http-only">
+          <div>
+            <label class="form-label">Tipo de recurso web</label>
+            <select id="httpResourceKind" class="form-select pl-widget-select" data-widget-icon="bi-window-stack">
+              <option value="app-local">Aplicación local/directa</option>
+              <option value="app-agent">Aplicación por cliente/agente</option>
+              <option value="redirect">Redirección permanente</option>
+            </select>
+            <div class="form-text">Redirección no muestra cliente, backend, protección ni 404 oculto porque no depende de un servicio real.</div>
+          </div>
+          <div id="agentOriginGroup" class="resource-agent-only d-none">
+            <label class="form-label">Cliente de sistema</label>
+            <select id="agentId" name="agentId" class="form-select pl-widget-select" data-widget-kind="agent" data-widget-icon="bi-hdd-network">
+              <option value="">Selecciona un cliente de sistema</option>
+              {{range .Agents}}{{if .Enabled}}<option value="{{.ID}}" data-agent-id="{{.ID}}" data-agent-name="{{.Name}}" data-agent-online="{{if .Online}}true{{else}}false{{end}}">{{.Name}} · {{.ID}}{{if .Online}} · online{{else}} · offline{{end}}</option>{{end}}{{end}}
+            </select>
+            <div class="form-text">Servidor que tiene instalado pangolite-client. Verde: conectado. Rojo: desconectado.</div>
+          </div>
+        </div>
+
+        <div class="grid grid-2 mt-3 tcpudp-only d-none">
+          <div>
+            <label class="form-label">Ubicación del servicio</label>
+            <select id="originType" name="originType" class="form-select pl-widget-select" data-widget-icon="bi-hdd-rack">
+              <option value="local">En este servidor Pangolite</option>
+              <option value="agent">En un servidor remoto conectado</option>
+            </select>
+            <div class="form-text">Para TCP/UDP elige si Pangolite llega directo o si debe usar un cliente remoto.</div>
+          </div>
+          <div id="agentOriginTcpUdpGroup" class="resource-agent-tcpudp-only d-none">
+            <label class="form-label">Cliente de sistema</label>
+            <select id="agentIdTcpUdp" class="form-select pl-widget-select" data-widget-kind="agent" data-widget-icon="bi-hdd-network">
+              <option value="">Selecciona un cliente de sistema</option>
+              {{range .Agents}}{{if .Enabled}}<option value="{{.ID}}" data-agent-id="{{.ID}}" data-agent-name="{{.Name}}" data-agent-online="{{if .Online}}true{{else}}false{{end}}">{{.Name}} · {{.ID}}{{if .Online}} · online{{else}} · offline{{end}}</option>{{end}}{{end}}
+            </select>
+            <div class="form-text">Se sincroniza con el cliente elegido para TCP/UDP.</div>
+          </div>
+        </div>
+
+        <div id="agentTcpUdpNotice" class="alert alert-warning mt-3 d-none"><i class="bi bi-exclamation-triangle"></i> TCP remoto usa stream persistente por el cliente de sistema. UDP remoto usa intercambio de datagramas con respuesta.</div>
+
+        <div class="grid grid-2 mt-3 http-only">
+          <div>
+            <label class="form-label" id="domainCreateLabel">Dominio público</label>
+            <select id="domainSelect" name="domainBase" class="form-select pl-widget-select" data-widget-icon="bi-globe2">
+              {{range .Domains}}{{if .Enabled}}<option value="{{.Domain}}">{{.Domain}}</option>{{end}}{{end}}
+              <option value="custom">Custom</option>
+            </select>
+            <div class="form-text" id="domainCreateHelp">Elige domain.tld configurado en Ajustes o Custom.</div>
+          </div>
+          <div id="managedDomainGroup">
+            <label class="form-label">Subdominio</label>
+            <input id="subdomain" name="subdomain" class="form-control" placeholder="app">
+            <div class="form-text">Vacío usa el dominio base. Ejemplo: app.domain.tld</div>
+          </div>
+        </div>
+        <div class="mt-3 http-only d-none" id="customDomainGroup">
+          <label class="form-label">Dominio personalizado</label>
+          <input id="customDomain" name="customDomain" class="form-control" placeholder="app.proyecto.com">
+        </div>
+
+        <div class="grid grid-2 mt-3 http-only">
+          <div>
+            <label class="form-label">Path</label>
+            <input id="pathPrefix" name="pathPrefix" class="form-control" value="/">
+            <div class="form-text">Usa / para todo el dominio o /app para una ruta específica.</div>
+          </div>
+          <div>
+            <label class="form-label">SSL del dominio público</label>
+            <div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" role="switch" id="tls" name="tls" checked><label class="form-check-label" for="tls">Usar SSL si ACME está disponible</label></div>
+            <div class="form-text">Si ACME no está configurado, Pangolite desactiva este switch automáticamente para evitar HTTPS roto.</div>
+          </div>
+        </div>
+        <div class="mt-2 http-only"><span class="text-muted small">Vista previa: </span><span id="domainPreview" class="font-mono text-white">-</span></div>
+        <div class="alert pl-surface mt-2 http-only" id="certStatusCreate"><i class="bi bi-shield-lock"></i> SSL se revisará al crear el recurso.</div>
+
+        <div class="card pl-surface mt-3 http-only redirect-only d-none">
+          <div class="card-body">
+            <div class="d-flex align-items-start gap-3">
+              <div class="notice-icon"><i class="bi bi-arrow-up-right-circle"></i></div>
+              <div>
+                <div class="card-title">Redirección permanente</div>
+                <div class="form-text">Este recurso no usa cliente ni backend. Responde 301/308 y conserva path/query cuando el destino es un dominio simple.</div>
+              </div>
+            </div>
+            <div class="grid grid-2 mt-3">
+              <div>
+                <label class="form-label">Dominio/URL destino</label>
+                <input id="redirectTarget" class="form-control" placeholder="https://nuevo-dominio.com">
+                <div class="form-text">Puede ser dominio.tld o una URL https:// completa.</div>
+              </div>
+              <div>
+                <label class="form-label">Tipo</label>
+                <select id="redirectStatusCode" class="form-select pl-widget-select" data-widget-icon="bi-signpost-split">
+                  <option value="308" selected>308 permanente, conserva método</option>
+                  <option value="301">301 permanente clásico</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+        <input type="checkbox" id="redirectEnabled" class="d-none" aria-hidden="true">
+
+        <div class="card pl-surface mt-3 http-only resource-app-only">
+          <div class="card-body">
+            <div class="grid grid-2">
+              <div>
+                <label class="form-label">Si backend/cliente no responde</label>
+                <div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" role="switch" id="hideWhenUnavailable"><label class="form-check-label" for="hideWhenUnavailable">Devolver 404 oculto</label></div>
+                <div class="form-text">Marcado: si el cliente o backend cae, responde como no encontrado. No aplica a redirecciones.</div>
+              </div>
+              <div>
+                <label class="form-label">Protección rápida</label>
+                <div class="form-text mt-2">La protección se evalúa antes de enviar tráfico al backend. No aplica a redirects permanentes.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-3 mt-3 http-only resource-app-only">
+          <div>
+            <label class="form-label">Protección del recurso</label>
+            <select id="protectionMode" name="protectionMode" class="form-select pl-widget-select" data-widget-icon="bi-shield-lock">
+              <option value="none">Sin protección</option>
+              <option value="password">Contraseña específica</option>
+              <option value="session">Solo usuarios con sesión Pangolite</option>
+            </select>
+            <div class="form-text">Para APIs o webs internas puedes forzar acceso antes de enviar al backend.</div>
+          </div>
+          <div class="protection-password-only d-none">
+            <label class="form-label">Tipo de login</label>
+            <select id="protectionLoginMode" name="protectionLoginMode" class="form-select pl-widget-select" data-widget-icon="bi-box-arrow-in-right">
+              <option value="html">HTML de login</option>
+              <option value="basic">Prompt básico del navegador/API</option>
+            </select>
+          </div>
+          <div class="protection-password-only d-none">
+            <label class="form-label">Contraseña</label>
+            <input id="protectionPassword" name="protectionPassword" type="password" class="form-control" autocomplete="new-password" placeholder="Mínimo 6 caracteres">
+          </div>
+        </div>
+
+        <div class="grid grid-2 mt-3 tcpudp-only d-none">
+          <div>
+            <label class="form-label">Puerto público</label>
+            <input id="publicPort" name="publicPort" type="number" class="form-control" placeholder="2222">
+          </div>
+          <div class="main-layout-note d-flex align-items-end">Cambiar puertos TCP/UDP puede reiniciar Traefik porque modifica entrypoints estáticos.</div>
+        </div>
+
+        <div class="grid grid-3 mt-3 resource-backend-only">
+          <div class="http-only">
+            <label class="form-label">Protocolo interno</label>
+            <select id="backendScheme" name="backendScheme" class="form-select pl-widget-select" data-widget-icon="bi-link-45deg">
+              <option value="http">http</option>
+              <option value="https">https</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Host interno del servicio</label>
+            <input id="backendHost" name="backendHost" class="form-control" value="127.0.0.1">
+            <div class="form-text">Se resuelve desde la ubicación elegida. En cliente remoto, 127.0.0.1 es el equipo del cliente.</div>
+          </div>
+          <div>
+            <label class="form-label">Puerto interno del servicio</label>
+            <input id="backendPort" name="backendPort" type="number" class="form-control" value="8080">
+          </div>
+        </div>
+
+        <button class="btn btn-primary mt-3" type="submit"><i class="bi bi-plus-circle"></i> Crear recurso</button>
+      </form>
+    </div>
+  </div>
+</section>
 {{end}}

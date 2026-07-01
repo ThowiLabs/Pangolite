@@ -515,6 +515,23 @@ func (r *Resource) Normalize(now time.Time) {
 	if r.RedirectStatusCode == 0 {
 		r.RedirectStatusCode = RedirectStatusPermanent
 	}
+	if r.RedirectEnabled && r.Mode == ModeHTTP {
+		r.OriginType = OriginLocal
+		r.AgentID = ""
+		r.HideWhenUnavailable = false
+		r.ProtectionMode = ProtectionNone
+		r.ProtectionLoginMode = ProtectionLoginHTML
+		r.ProtectionHash = ""
+		if r.BackendScheme == "" {
+			r.BackendScheme = "http"
+		}
+		if r.BackendHost == "" {
+			r.BackendHost = "127.0.0.1"
+		}
+		if r.BackendPort == 0 {
+			r.BackendPort = 80
+		}
+	}
 	if !r.RedirectEnabled {
 		r.RedirectTarget = ""
 	}
