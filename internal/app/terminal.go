@@ -26,6 +26,7 @@ type terminalStartOptions struct {
 type terminalProcess struct {
 	rw        io.ReadWriteCloser
 	resize    func(cols, rows int) error
+	stop      func() error
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -51,6 +52,11 @@ func (p *terminalProcess) Close() error {
 	p.closeOnce.Do(func() {
 		if p.rw != nil {
 			p.closeErr = p.rw.Close()
+		}
+		if p.stop != nil {
+			if err := p.stop(); p.closeErr == nil {
+				p.closeErr = err
+			}
 		}
 	})
 	return p.closeErr

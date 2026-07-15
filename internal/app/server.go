@@ -1322,7 +1322,7 @@ func (s *Server) attachAgentCommands(r *http.Request, agent *Agent) {
 	if fallbackClean != "" && fallbackClean != baseClean {
 		fallbackArg = " --fallback-url " + shellQuote(fallbackClean)
 	}
-	agent.InstallCommand = fmt.Sprintf("arch=$(uname -m); case \"$arch\" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; i386|i486|i586|i686) arch=386 ;; armv7l|armv7) arch=armv7 ;; *) echo Arquitectura no soportada: $arch >&2; exit 1 ;; esac; curl -fsSL %s-$arch -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s%s --agent-id %s --token %s", shellQuote(linuxBaseURL), shellQuote(baseClean), fallbackArg, shellQuote(agent.ID), shellQuote(agent.Token))
+	agent.InstallCommand = fmt.Sprintf("arch=$(uname -m); case \"$arch\" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; i386|i486|i586|i686) arch=386 ;; armv7l|armv7|armv8l) arch=armv7 ;; *) echo Arquitectura no soportada: $arch >&2; exit 1 ;; esac; curl -fsSL %s-$arch -o /tmp/pangolite-client && chmod +x /tmp/pangolite-client && sudo /tmp/pangolite-client --install --server-url %s%s --agent-id %s --token %s", shellQuote(linuxBaseURL), shellQuote(baseClean), fallbackArg, shellQuote(agent.ID), shellQuote(agent.Token))
 	agent.RemoveCommand = "sudo /opt/pangolite-client/pangolite-client --remove"
 	winFallbackArg := ""
 	if fallbackClean != "" && fallbackClean != baseClean {

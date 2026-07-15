@@ -126,6 +126,18 @@ jobs:
           cp build/public/pangolite-client-linux-386 dist/pangolite-client_linux_386
           cp build/public/pangolite-client-linux-armv7 dist/pangolite-client_linux_armv7
           cp build/public/pangolite-client-windows-amd64.exe dist/pangolite-client_windows_amd64.exe
+
+          required_assets=(
+            dist/pangolite_linux_arm64.tar.gz
+            dist/pangolite-client_linux_arm64
+          )
+          for asset in "${required_assets[@]}"; do
+            if [[ ! -s "$asset" ]]; then
+              echo "No se genero el artefacto ARM64 requerido: $asset" >&2
+              exit 1
+            fi
+          done
+
           (cd dist && sha256sum * > checksums.txt)
 
       - name: Notas del release

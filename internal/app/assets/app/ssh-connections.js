@@ -1,4 +1,4 @@
-﻿(function(){
+(function(){
   function normalize(value){
     return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
   }
@@ -40,7 +40,7 @@
       if(currentPage>1)next.set('page',String(currentPage));else next.delete('page');
       if(perPage!==9)next.set('perPage',String(perPage));else next.delete('perPage');
       const suffix=next.toString();
-      history.replaceState(null, '', suffix ? '/ssh?' + suffix : '/ssh');
+      history.replaceState(null,'',location.pathname+(suffix?'?'+suffix:''));
     }
 
     function makeButton(label,page,options={}){
@@ -81,7 +81,7 @@
         }else{
           const first=start+1;
           const last=Math.min(start+perPage,filtered.length);
-          summary.textContent='Mostrando '+first+'â€“'+last+' de '+filtered.length+' conexiones';
+          summary.textContent='Mostrando '+first+'–'+last+' de '+filtered.length+' conexiones';
         }
       }
 
@@ -89,19 +89,19 @@
         pagination.replaceChildren();
         pagination.classList.toggle('d-none',filtered.length===0||totalPages<=1);
         if(totalPages>1){
-          pagination.appendChild(makeButton('Anterior',currentPage-1,{icon:'bi-chevron-left',disabled:currentPage===1,ariaLabel:'PÃ¡gina anterior'}));
+          pagination.appendChild(makeButton('Anterior',currentPage-1,{icon:'bi-chevron-left',disabled:currentPage===1,ariaLabel:'Página anterior'}));
           pageItems(currentPage,totalPages).forEach(item=>{
             if(typeof item==='string'){
               const dots=document.createElement('span');
               dots.className='ssh-page-ellipsis';
-              dots.textContent='â€¦';
+              dots.textContent='…';
               dots.setAttribute('aria-hidden','true');
               pagination.appendChild(dots);
               return;
             }
-            pagination.appendChild(makeButton(item,item,{active:item===currentPage,ariaLabel:'PÃ¡gina '+item}));
+            pagination.appendChild(makeButton(item,item,{active:item===currentPage,ariaLabel:'Página '+item}));
           });
-          pagination.appendChild(makeButton('Siguiente',currentPage+1,{icon:'bi-chevron-right',disabled:currentPage===totalPages,ariaLabel:'PÃ¡gina siguiente'}));
+          pagination.appendChild(makeButton('Siguiente',currentPage+1,{icon:'bi-chevron-right',disabled:currentPage===totalPages,ariaLabel:'Página siguiente'}));
         }
       }
 
@@ -142,4 +142,3 @@
 
   document.addEventListener('DOMContentLoaded',initSSHConnections);
 })();
-
