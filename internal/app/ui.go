@@ -56,55 +56,14 @@ type panelPage struct {
 	Heading  string
 }
 
-var panelRoutes = map[string]panelPage{
-	"/":            {Template: "projects.html", Title: "Pangolite - Proyectos", Key: "projects", Crumb: "Dashboard", Heading: "Operación global"},
-	"/projects":    {Template: "projects.html", Title: "Pangolite - Proyectos", Key: "projects", Crumb: "Dashboard", Heading: "Operación global"},
-	"/logs":        {Template: "logs.html", Title: "Pangolite - Logs", Key: "logs", Crumb: "Logs", Heading: "Diagnostico del sistema"},
-	"/maintenance": {Template: "maintenance.html", Title: "Pangolite - Seguridad", Key: "maintenance", Crumb: "Seguridad", Heading: "Auditoría y respaldos"},
-	"/settings":    {Template: "settings.html", Title: "Pangolite - Ajustes", Key: "settings", Crumb: "Ajustes", Heading: "Configuración del sistema"},
-	"/perfil":      {Template: "profile.html", Title: "Pangolite - Mi perfil", Key: "profile", Crumb: "Mi cuenta", Heading: "Perfil y seguridad"},
-	"/ssh":         {Template: "ssh_connections.html", Title: "Pangolite - Conexiones SSH", Key: "ssh_connections", Crumb: "Acceso remoto", Heading: "Conexiones SSH"},
-	"/terminal":    {Template: "terminal.html", Title: "Pangolite - Terminal", Key: "terminal", Crumb: "Terminal", Heading: "Consola web"},
-}
-
-func panelPageForPath(path string) panelPage {
-	path = strings.TrimRight(path, "/")
-	if path == "" {
-		path = "/"
-	}
-	if page, ok := panelRoutes[path]; ok {
-		return page
-	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) >= 2 && parts[0] == "projects" {
-		if len(parts) == 2 {
-			return panelPage{Template: "project_overview.html", Title: "Pangolite - Proyecto", Key: "project", Crumb: "Proyecto", Heading: "Resumen"}
-		}
-		if len(parts) == 3 && parts[2] == "resources" {
-			return panelPage{Template: "resources.html", Title: "Pangolite - Recursos", Key: "resources", Crumb: "Proyecto", Heading: "Recursos"}
-		}
-		if len(parts) == 4 && parts[2] == "resources" && parts[3] == "create" {
-			return panelPage{Template: "resource_create.html", Title: "Pangolite - Crear recurso", Key: "resource_create", Crumb: "Proyecto", Heading: "Crear recurso"}
-		}
-		if len(parts) == 3 && parts[2] == "agents" {
-			return panelPage{Template: "agents.html", Title: "Pangolite - Clientes de sistema", Key: "agents", Crumb: "Proyecto", Heading: "Clientes de sistema"}
-		}
-		if len(parts) == 4 && parts[2] == "agents" && parts[3] == "create" {
-			return panelPage{Template: "agent_create.html", Title: "Pangolite - Crear cliente de sistema", Key: "agent_create", Crumb: "Proyecto", Heading: "Crear cliente de sistema"}
-		}
-	}
-	return panelPage{Template: "projects.html", Title: "Pangolite - Proyectos", Key: "projects", Crumb: "Dashboard", Heading: "Operación global"}
-}
-
-func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
-	page := panelPageForPath(r.URL.Path)
+func (s *Server) panelData(r *http.Request, rs requestSession, page panelPage) uiPageData {
 	settings := s.store.LoadAppSettings(s.config)
 	effective := s.store.EffectiveConfig(s.config)
 	network := DetectNetworkInfo(s.config.PublicIP, settings.DashboardDomain)
 	certificate := ResolveCertificateStatus(effective, settings.DashboardDomain, settings.DashboardDomain != "")
 	projects := s.store.ListProjects()
 	stats := s.store.ProjectStats()
-	currentID := s.currentProjectIDFromRequest(r, page)
+	currentID := s.currentProjectIDFromRequest(r)
 	hostname, _ := os.Hostname()
 	data := uiPageData{
 		Title:          page.Title,
@@ -193,17 +152,17 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 }
 
 func (s *Server) projectIDFromRequest(r *http.Request) string {
-	return s.currentProjectIDFromRequest(r, panelPageForPath(r.URL.Path))
+	return s.currentProjectIDFromRequest(r)
 }
 
-func (s *Server) currentProjectIDFromRequest(r *http.Request, page panelPage) string {
+func (s *Server) currentProjectIDFromRequest(r *http.Request) string {
 	if id := projectIDFromPath(r.URL.Path); id != "" {
 		if resolvedID, err := s.store.ResolveProjectID(id); err == nil {
 			return resolvedID
 		}
-		return id
+		return ""
 	}
-	if page.Key != "terminal" {
+	if r.URL.Path != "/terminal" {
 		return ""
 	}
 	if id := strings.TrimSpace(r.URL.Query().Get("projectId")); id != "" {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"html/template"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -40,7 +41,18 @@ func TestProjectIDFromRequestPreservesTerminalContext(t *testing.T) {
 }
 
 func TestPanelPageForSSHConnections(t *testing.T) {
-	page := panelPageForPath("/ssh")
+	var page panelPage
+	found := false
+	for _, route := range panelRouteDefinitions {
+		if route.Pattern == "GET /ssh" {
+			page = route.Page
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("la ruta GET /ssh no está registrada en Go")
+	}
 	if page.Key != "ssh_connections" {
 		t.Fatalf("page.Key = %q, want ssh_connections", page.Key)
 	}
@@ -79,5 +91,116 @@ func TestRenderSSHConnectionsPage(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("render no contiene %q", expected)
 		}
+	}
+}
+
+func TestFrontendDoesNotOwnPanelRouting(t *testing.T) {
+	agentsScript, err := assetsFS.ReadFile("assets/app/agents.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageInit, err := assetsFS.ReadFile("assets/app/page-init.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(agentsScript) + "\n" + string(pageInit)
+	for _, forbidden := range []string{"function route(", "async function route(", "location.pathname"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("el frontend todavía contiene lógica de routing prohibida: %q", forbidden)
+		}
+	}
+	if !strings.Contains(string(pageInit), "serverPageKey()") || !strings.Contains(string(pageInit), "appBoot.pageKey") {
+		t.Fatal("la hidratación debe usar el PageKey emitido por Go")
+	}
+}
+
+func TestPanelRouteDefinitionsIncludeTerminalAndSSH(t *testing.T) {
+	keys := map[string]string{}
+	for _, route := range panelRouteDefinitions {
+		keys[route.Pattern] = route.Page.Key
+	}
+	if keys["GET /ssh"] != "ssh_connections" {
+		t.Fatal("GET /ssh debe estar administrado por Go")
+	}
+	if keys["GET /terminal"] != "terminal" {
+		t.Fatal("GET /terminal debe estar administrado por Go")
+	}
+}
+
+func panelSessionCookie(t *testing.T, store *Store) *http.Cookie {
+	t.Helper()
+	_, temporaryPassword, err := store.BootstrapAdmin("admin", filepath.Join(t.TempDir(), "admin-password.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, ok := store.AuthenticateUser("admin", temporaryPassword)
+	if !ok {
+		t.Fatal("no se pudo autenticar el administrador temporal")
+	}
+	const password = "clave-segura-panel-2026"
+	if err := store.ChangePassword(user.ID, temporaryPassword, password, "admin@example.test", false); err != nil {
+		t.Fatal(err)
+	}
+	user, ok = store.AuthenticateUser("admin", password)
+	if !ok {
+		t.Fatal("no se pudo autenticar el administrador definitivo")
+	}
+	rawID, _, err := store.CreateSession(user.ID, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Cookie{Name: sessionCookieName, Value: rawID, Path: "/"}
+}
+
+func TestPanelRoutesAreResolvedByGo(t *testing.T) {
+	server, store := testServerWithStore(t)
+	cookie := panelSessionCookie(t, store)
+
+	req := httptest.NewRequest(http.MethodGet, "https://panel.example.test/ssh", nil)
+	req.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /ssh = %d, want 200; body=%q", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "data-page-key=\"ssh_connections\"") {
+		t.Fatal("Go no marcó la página ssh_connections en el HTML")
+	}
+}
+
+func TestUnknownPanelRouteReturnsNotFound(t *testing.T) {
+	server, _ := testServerWithStore(t)
+	req := httptest.NewRequest(http.MethodGet, "https://panel.example.test/ruta-inexistente", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("ruta desconocida = %d, want 404", recorder.Code)
+	}
+	if location := recorder.Header().Get("Location"); location != "" {
+		t.Fatalf("una ruta desconocida no debe redirigir, Location=%q", location)
+	}
+}
+
+func TestUnknownProjectRouteReturnsNotFoundInGo(t *testing.T) {
+	server, store := testServerWithStore(t)
+	cookie := panelSessionCookie(t, store)
+	req := httptest.NewRequest(http.MethodGet, "https://panel.example.test/projects/no-existe/resources", nil)
+	req.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("proyecto desconocido = %d, want 404", recorder.Code)
+	}
+}
+
+func TestTerminalRouteRejectsUnknownAgentInGo(t *testing.T) {
+	server, store := testServerWithStore(t)
+	cookie := panelSessionCookie(t, store)
+	req := httptest.NewRequest(http.MethodGet, "https://panel.example.test/terminal?agentId=no-existe&autoconnect=1", nil)
+	req.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("cliente desconocido en terminal = %d, want 404", recorder.Code)
 	}
 }

@@ -13,7 +13,7 @@
   {{if eq .PageKey "terminal"}}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">{{end}}
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
 </head>
-<body>
+<body data-page-key="{{.PageKey}}" data-current-project="{{.CurrentID}}">
 
 <div class="app">
   <button class="global-sidebar-toggle" type="button" id="sidebarToggle" aria-label="Ocultar o mostrar menu" aria-controls="panelSidebar" aria-expanded="true" title="Menu">
@@ -150,6 +150,7 @@
   <script src="/assets/app/agents.js"></script>
   <script src="/assets/app/forms.js"></script>
   <script src="/assets/app/profile.js"></script>
+  <script src="/assets/app/page-init.js"></script>
   {{if eq .PageKey "ssh_connections"}}
   <script src="/assets/app/ssh-connections.js"></script>
   {{end}}

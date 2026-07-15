@@ -530,5 +530,5 @@ internal/app/templates/pages/
 internal/app/assets/app/
 ```
 
-La navegación principal usa rutas normales del servidor (`/projects`, `/projects/{id}/resources`, `/settings`, etc.). No requiere Node, Vite ni bundler; el binario sigue siendo autocontenido mediante `embed.FS`.
+La navegación principal usa rutas explícitas administradas por Go (`/projects`, `/projects/{id}/resources`, `/ssh`, `/terminal`, `/settings`, etc.). El servidor valida autenticación, proyecto y parámetros antes de renderizar; las rutas desconocidas responden `404`. JavaScript únicamente hidrata la vista indicada por el `PageKey` emitido por Go y no funciona como router. No requiere Node, Vite ni bundler; el binario sigue siendo autocontenido mediante `embed.FS`.
 
