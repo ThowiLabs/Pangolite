@@ -17,7 +17,7 @@ async function init(){
     paintNetworkInfo(boot.certificate);
   }
   if(suspensionTemplates.length){refreshTemplateSelects()}else{await reloadSuspensionTemplates()}
-  await route({initial:!!boot});
+  await hydrateCurrentPage({initial:!!boot});
   showStoredNotice();
 }
 async function reloadProjects(){const data=await api('/api/projects');projects=data.projects||[];stats=data.stats||{};paintProjectNav();paintProjectTable();let tr=0,ta=0,active=0;Object.values(stats).forEach(x=>{tr+=x.resources||0;ta+=x.agents||0;active+=x.activeResources||0});setTextIfExists('statProjects',projects.length);setTextIfExists('statResources',tr);setTextIfExists('statAgents',ta);setTextIfExists('statActiveResources',active);syncOnboarding();renderGlobalDashboard();}

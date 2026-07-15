@@ -159,7 +159,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agent/stream-poll", s.agentStreamPoll)
 	s.mux.HandleFunc("GET /api/agent/streams/{id}", s.agentStreamSocket)
 	s.mux.HandleFunc("GET /download/{name}", s.downloadClientAsset)
-	s.mux.HandleFunc("/", s.publicOrIndex)
+	s.registerPanelRoutes()
+	s.mux.HandleFunc("/", s.notFound)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -2123,26 +2124,6 @@ func (s *Server) servePublicResource(w http.ResponseWriter, r *http.Request) boo
 	return false
 }
 
-func (s *Server) publicOrIndex(w http.ResponseWriter, r *http.Request) {
-	if s.servePublicResource(w, r) {
-		return
-	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusNotFound, "ruta no encontrada")
-		return
-	}
-	rs, ok := s.currentSession(r)
-	if !ok {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	if rs.User.ForcePasswordChange {
-		http.Redirect(w, r, "/password", http.StatusFound)
-		return
-	}
-	s.index(w, r, rs)
-}
-
 func (s *Server) servePermanentResourceRedirect(w http.ResponseWriter, r *http.Request, resource Resource) {
 	target := buildResourceRedirectURL(r, resource)
 	if target == "" {
@@ -2706,11 +2687,6 @@ func (s *Server) secureCookie(r *http.Request) bool {
 		return false
 	}
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
-
-func (s *Server) index(w http.ResponseWriter, r *http.Request, rs requestSession) {
-	page := panelPageForPath(r.URL.Path)
-	renderUIPage(w, page.Template, s.panelData(r, rs))
 }
 
 type statusRecorder struct {
