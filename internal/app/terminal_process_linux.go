@@ -43,7 +43,7 @@ func startTerminalProcess(ctx context.Context, opts terminalStartOptions) (*term
 
 	termCmd := linuxShellCommand(ctx, opts.Shell)
 	cmd := exec.CommandContext(ctx, termCmd.Path, termCmd.Args...)
-	cmd.Env = append(os.Environ(), termCmd.Env...)
+	cmd.Env = mergeTerminalEnv(os.Environ(), termCmd.Env)
 	cmd.Dir = termCmd.Dir
 	cmd.Stdin = slave
 	cmd.Stdout = slave
@@ -55,17 +55,18 @@ func startTerminalProcess(ctx context.Context, opts terminalStartOptions) (*term
 		return nil, err
 	}
 	_ = slave.Close()
-	go func() {
-		_ = cmd.Wait()
-		_ = master.Close()
-	}()
-	return &terminalProcess{
+	term := &terminalProcess{
 		rw: master,
 		resize: func(cols, rows int) error {
 			cols, rows = normalizeTerminalSize(cols, rows)
 			return resizePTY(master, cols, rows)
 		},
-	}, nil
+	}
+	go func() {
+		_ = cmd.Wait()
+		_ = term.Close()
+	}()
+	return term, nil
 }
 
 func openLinuxPTY() (*os.File, *os.File, error) {

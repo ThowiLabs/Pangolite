@@ -51,7 +51,7 @@ func (p *pipeTerminalProcess) Close() error {
 func startTerminalProcess(ctx context.Context, opts terminalStartOptions) (*terminalProcess, error) {
 	shell, args := fallbackTerminalShell(opts.Shell)
 	cmd := exec.CommandContext(ctx, shell, args...)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
+	cmd.Env = mergeTerminalEnv(os.Environ(), []string{"TERM=xterm-256color", "COLORTERM=truecolor"})
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

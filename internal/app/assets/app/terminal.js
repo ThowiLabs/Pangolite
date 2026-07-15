@@ -4,9 +4,8 @@
   let ws=null;
   let connectedTarget='';
   let resizeTimer=null;
-  let manualClose=false;
+  let socketSerial=0;
   const encoder=new TextEncoder();
-  const decoder=new TextDecoder();
   const themes={
     black:{background:'#05070a',foreground:'#f8fafc',cursor:'#f8fafc',selectionBackground:'#475569'},
     dark:{background:'#002b36',foreground:'#fdf6e3',cursor:'#eee8d5',selectionBackground:'#ffffff33',black:'#073642',red:'#dc322f',green:'#859900',yellow:'#b58900',blue:'#268bd2',magenta:'#d33682',cyan:'#2aa198',white:'#eee8d5'},
@@ -113,6 +112,22 @@
     }
     return false;
   }
+  function closeSocket(socket,reason){
+    if(!socket)return;
+    const close=()=>{try{socket.close(1000,reason||'cerrada')}catch{}};
+    if(socket.readyState===WebSocket.CONNECTING){
+      socket.addEventListener('open',close,{once:true});
+    }
+    close();
+  }
+  function retireCurrentSocket(reason){
+    const socket=ws;
+    if(!socket)return null;
+    ws=null;
+    socketSerial++;
+    closeSocket(socket,reason);
+    return socket;
+  }
   function sendControl(type,payload){
     if(!ws||ws.readyState!==WebSocket.OPEN)return;
     ws.send(JSON.stringify(Object.assign({pangoliteTerminal:true,type:type},payload||{})));
@@ -145,7 +160,7 @@
     installTerminalContextMenu(box);
     term.attachCustomKeyEventHandler(handleTerminalKey);
     term.onData(data=>sendBytes(data));
-    term.onResize(()=>sendResize());
+    term.onResize(()=>queueResize());
     fitTerminal();
     window.addEventListener('resize',()=>{fitTerminal();queueResize()});
     document.addEventListener('fullscreenchange',()=>{
@@ -204,7 +219,7 @@
   }
   function connectTerminal(){
     if(!ensureTerminal())return;
-    if(ws)disconnectTerminal(false);
+    retireCurrentSocket('reemplazada');
     applyTheme();
     const target=(el('terminalTarget')&&el('terminalTarget').value)||'local';
     const targetOS=currentTargetOS();
@@ -219,7 +234,6 @@
     const path=targetSocketPath(target);
     if(!path){status('Destino inválido',false,true);showReconnectOverlay('Destino inválido','Selecciona un destino válido para la consola.');return}
     connectedTarget=target;
-    manualClose=false;
     if(term){
       term.clear();
       term.writeln('\x1b[90mIniciando conexión de consola...\x1b[0m');
@@ -227,11 +241,13 @@
     status('Conectando...',false,false);
     setButtons('connecting');
     setOverlay('connecting','Conectando consola','Preparando sesión remota. Esto puede tardar unos segundos.',null,true);
+    const serial=++socketSerial;
     const socket=new WebSocket(wsURL(path,buildSizeQuery()));
+    const decoder=new TextDecoder();
     ws=socket;
     socket.binaryType='arraybuffer';
     socket.onopen=()=>{
-      if(ws!==socket)return;
+      if(ws!==socket||serial!==socketSerial){closeSocket(socket,'reemplazada');return}
       status(target==='local'?'Local conectado':'Cliente conectado',true,false);
       setButtons('connected');
       hideOverlay();
@@ -240,41 +256,32 @@
       sendResize();
     };
     socket.onmessage=(event)=>{
-      if(!term)return;
+      if(ws!==socket||serial!==socketSerial||!term)return;
       if(typeof event.data==='string')term.write(event.data);
-      else term.write(decoder.decode(new Uint8Array(event.data)));
+      else term.write(decoder.decode(new Uint8Array(event.data),{stream:true}));
     };
     socket.onerror=()=>{
-      if(ws===socket)status('Error de conexión',false,true);
+      if(ws===socket&&serial===socketSerial)status('Error de conexión',false,true);
     };
     socket.onclose=()=>{
-      const closedByUser=manualClose;
-      if(ws===socket)ws=null;
+      if(ws!==socket||serial!==socketSerial)return;
+      const decoderTail=decoder.decode();
+      if(decoderTail&&term)term.write(decoderTail);
+      ws=null;
       setButtons('idle');
       connectedTarget='';
-      manualClose=false;
-      if(closedByUser){
-        status('Desconectado',false,false);
-        if(term)term.writeln('\r\n\x1b[90mDesconectado por el usuario.\x1b[0m');
-        setOverlay('idle','Aún no conectado','La consola está cerrada. Puedes volver a conectar cuando lo necesites.','Conectar');
-        return;
-      }
       status('Sesión cerrada',false,true);
       if(term)term.writeln('\r\n\x1b[31mSesión cerrada.\x1b[0m');
       showReconnectOverlay('Conexión cerrada','La consola se cerró o el cliente se desconectó. Presiona Reconectar para iniciar otra sesión.');
     };
   }
   function disconnectTerminal(writeMessage=true){
-    if(ws){
-      manualClose=true;
-      try{ws.close(1000,'usuario')}catch{}
-    }else{
-      manualClose=false;
-      setButtons('idle');
-      status('Desconectado',false,false);
-      setOverlay('idle','Aún no conectado','Selecciona un destino y presiona Conectar para abrir una consola.','Conectar');
-    }
-    if(writeMessage&&term)term.writeln('\r\n\x1b[90mDesconectado por el usuario.\x1b[0m');
+    const socket=retireCurrentSocket('usuario');
+    connectedTarget='';
+    setButtons('idle');
+    status('Desconectado',false,false);
+    setOverlay('idle','Aún no conectado','La consola está cerrada. Puedes volver a conectar cuando lo necesites.','Conectar');
+    if(socket&&writeMessage&&term)term.writeln('\r\n\x1b[90mDesconectado por el usuario.\x1b[0m');
   }
   async function copySelection(){
     if(!term)return false;
@@ -296,7 +303,12 @@
     if(!term)return false;
     try{
       const text=await navigator.clipboard.readText();
-      if(text)sendBytes(text);
+      if(!text)return true;
+      if(!isConnected()){
+        status('Conecta la terminal antes de pegar',false,true);
+        return false;
+      }
+      term.paste(text);
       return true;
     }catch(err){
       status('Pega con Ctrl+V o Shift+Insert',false,true);
@@ -313,11 +325,6 @@
       sendEscapeToTerminal();
       return false;
     }
-    if(event.key==='Backspace'&&!event.ctrlKey&&!event.metaKey&&!event.altKey){
-      event.preventDefault();
-      sendBytes('\x7f');
-      return false;
-    }
     if((event.ctrlKey||event.metaKey)&&!event.altKey&&key==='v'){
       return true;
     }
@@ -325,9 +332,6 @@
       event.preventDefault();
       pasteFromClipboard();
       return false;
-    }
-    if((event.ctrlKey||event.metaKey)&&event.shiftKey&&key==='v'){
-      return true;
     }
     if((event.ctrlKey||event.metaKey)&&event.shiftKey&&key==='c'){
       event.preventDefault();

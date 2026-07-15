@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"nhooyr.io/websocket"
 )
@@ -23,8 +24,10 @@ type terminalStartOptions struct {
 }
 
 type terminalProcess struct {
-	rw     io.ReadWriteCloser
-	resize func(cols, rows int) error
+	rw        io.ReadWriteCloser
+	resize    func(cols, rows int) error
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (p *terminalProcess) Read(b []byte) (int, error) {
@@ -42,10 +45,15 @@ func (p *terminalProcess) Write(b []byte) (int, error) {
 }
 
 func (p *terminalProcess) Close() error {
-	if p == nil || p.rw == nil {
+	if p == nil {
 		return nil
 	}
-	return p.rw.Close()
+	p.closeOnce.Do(func() {
+		if p.rw != nil {
+			p.closeErr = p.rw.Close()
+		}
+	})
+	return p.closeErr
 }
 
 func (p *terminalProcess) Resize(cols, rows int) error {
@@ -61,6 +69,13 @@ type terminalControlMessage struct {
 	Cols              int    `json:"cols"`
 	Rows              int    `json:"rows"`
 }
+
+type terminalControlMode uint8
+
+const (
+	terminalControlJSON terminalControlMode = 1 << iota
+	terminalControlFramed
+)
 
 var terminalControlPrefix = []byte("\x00PANGOLITE-TERMINAL-CONTROL ")
 
@@ -89,7 +104,7 @@ func (s *Server) localTerminalSocket(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("terminal local abierta", "user", rs.User.Username, "remote", r.RemoteAddr)
 	}
 	s.recordAudit(r, rs, "terminal.open", "terminal", "local", "", map[string]any{"target": "local"})
-	if err := bridgeWebSocketTerminalProcess(r.Context(), ws, term, true); err != nil && s.log != nil {
+	if err := bridgeWebSocketTerminalProcess(r.Context(), ws, term, terminalControlJSON); err != nil && s.log != nil {
 		s.log.Debug("terminal local cerrada", "user", rs.User.Username, "error", err.Error())
 	}
 }
@@ -199,24 +214,6 @@ func terminalSizeFromRequest(r *http.Request) (int, int) {
 	return cols, rows
 }
 
-func handleTerminalControlPayload(term *terminalProcess, data []byte) bool {
-	if bytes.HasPrefix(data, terminalControlPrefix) {
-		payload := bytes.TrimSpace(bytes.TrimPrefix(data, terminalControlPrefix))
-		if len(payload) > 0 && payload[0] == '{' {
-			if msg, ok := decodeTerminalControlJSON(payload); ok {
-				applyTerminalControl(term, msg)
-				return true
-			}
-		}
-	}
-	msg, ok := decodeTerminalControlJSON(data)
-	if !ok {
-		return false
-	}
-	applyTerminalControl(term, msg)
-	return true
-}
-
 func decodeTerminalControlJSON(data []byte) (terminalControlMessage, bool) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || data[0] != '{' {
@@ -226,13 +223,15 @@ func decodeTerminalControlJSON(data []byte) (terminalControlMessage, bool) {
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return terminalControlMessage{}, false
 	}
-	if !msg.PangoliteTerminal && msg.Type == "" {
+	if !msg.PangoliteTerminal {
 		return terminalControlMessage{}, false
 	}
-	if msg.Type == "" {
+	switch msg.Type {
+	case "resize":
+		return msg, true
+	default:
 		return terminalControlMessage{}, false
 	}
-	return msg, true
 }
 
 func applyTerminalControl(term *terminalProcess, msg terminalControlMessage) {
@@ -269,8 +268,12 @@ func (f *terminalControlFilter) Payloads(term *terminalProcess, data []byte) [][
 	for len(data) > 0 {
 		idx := bytes.Index(data, terminalControlPrefix)
 		if idx < 0 {
-			if terminalControlPrefixFragment(data) {
-				f.buf = append(f.buf[:0], data...)
+			if fragmentLen := terminalControlPrefixFragmentLen(data); fragmentLen > 0 {
+				plainLen := len(data) - fragmentLen
+				if plainLen > 0 {
+					payloads = append(payloads, append([]byte(nil), data[:plainLen]...))
+				}
+				f.buf = append(f.buf[:0], data[plainLen:]...)
 				return payloads
 			}
 			payloads = append(payloads, append([]byte(nil), data...))
@@ -301,26 +304,57 @@ func (f *terminalControlFilter) Payloads(term *terminalProcess, data []byte) [][
 			f.buf = append(f.buf[:0], data...)
 			return payloads
 		}
-		var msg terminalControlMessage
-		if err := json.Unmarshal(data[payloadStart:payloadStart+n], &msg); err == nil {
+		frameEnd := payloadStart + n
+		if msg, ok := decodeTerminalControlJSON(data[payloadStart:frameEnd]); ok {
 			applyTerminalControl(term, msg)
+		} else {
+			payloads = append(payloads, append([]byte(nil), data[:frameEnd]...))
 		}
-		data = data[payloadStart+n:]
+		data = data[frameEnd:]
 	}
 	return payloads
 }
 
-func terminalControlPrefixFragment(data []byte) bool {
+func terminalControlPrefixFragmentLen(data []byte) int {
 	max := len(data)
 	if max > len(terminalControlPrefix)-1 {
 		max = len(terminalControlPrefix) - 1
 	}
 	for n := max; n > 0; n-- {
 		if bytes.Equal(data[len(data)-n:], terminalControlPrefix[:n]) {
-			return true
+			return n
 		}
 	}
-	return false
+	return 0
+}
+
+func mergeTerminalEnv(base, overrides []string) []string {
+	replacements := make(map[string]string, len(overrides))
+	order := make([]string, 0, len(overrides))
+	for _, entry := range overrides {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		if _, exists := replacements[key]; !exists {
+			order = append(order, key)
+		}
+		replacements[key] = entry
+	}
+	out := make([]string, 0, len(base)+len(replacements))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, replaced := replacements[key]; replaced {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	for _, key := range order {
+		out = append(out, replacements[key])
+	}
+	return out
 }
 
 func intFromQuery(r *http.Request, key string, fallback int) int {
@@ -333,6 +367,22 @@ func intFromQuery(r *http.Request, key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func writeTerminalPayload(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }
 
 func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn net.Conn, forwardControl bool) error {
@@ -370,7 +420,7 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 					if forwardControl {
 						encoded := encodeTerminalControlMessage(msg)
 						if len(encoded) > 0 {
-							if _, err := conn.Write(encoded); err != nil {
+							if err := writeTerminalPayload(conn, encoded); err != nil {
 								errc <- err
 								return
 							}
@@ -380,7 +430,7 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 				}
 			}
 			if len(data) > 0 {
-				if _, err := conn.Write(data); err != nil {
+				if err := writeTerminalPayload(conn, data); err != nil {
 					errc <- err
 					return
 				}
@@ -397,7 +447,7 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 	return err
 }
 
-func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, term *terminalProcess, allowControl bool) error {
+func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, term *terminalProcess, controlMode terminalControlMode) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error, 2)
@@ -428,15 +478,18 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 			if typ != websocket.MessageBinary && typ != websocket.MessageText {
 				continue
 			}
-			if allowControl {
-				if handled := handleTerminalControlPayload(term, data); handled {
+			if typ == websocket.MessageText && controlMode&terminalControlJSON != 0 {
+				if msg, ok := decodeTerminalControlJSON(data); ok {
+					applyTerminalControl(term, msg)
 					continue
 				}
+			}
+			if controlMode&terminalControlFramed != 0 {
 				for _, payload := range filter.Payloads(term, data) {
 					if len(payload) == 0 {
 						continue
 					}
-					if _, err := term.Write(payload); err != nil {
+					if err := writeTerminalPayload(term, payload); err != nil {
 						errCh <- err
 						return
 					}
@@ -444,7 +497,7 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 				continue
 			}
 			if len(data) > 0 {
-				if _, err := term.Write(data); err != nil {
+				if err := writeTerminalPayload(term, data); err != nil {
 					errCh <- err
 					return
 				}
