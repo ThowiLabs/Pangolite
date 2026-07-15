@@ -4,11 +4,14 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -33,40 +36,117 @@ type linuxTerminalCommand struct {
 	Env  []string
 }
 
+type linuxChildProcess struct {
+	mu     sync.Mutex
+	pid    int
+	exited bool
+}
+
 func startTerminalProcess(ctx context.Context, opts terminalStartOptions) (*terminalProcess, error) {
 	master, slave, err := openLinuxPTY()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("abrir PTY: %w", err)
 	}
 	cols, rows := normalizeTerminalSize(opts.Cols, opts.Rows)
 	_ = resizePTY(master, cols, rows)
 
-	termCmd := linuxShellCommand(ctx, opts.Shell)
-	cmd := exec.CommandContext(ctx, termCmd.Path, termCmd.Args...)
-	cmd.Env = mergeTerminalEnv(os.Environ(), termCmd.Env)
-	cmd.Dir = termCmd.Dir
-	cmd.Stdin = slave
-	cmd.Stdout = slave
-	cmd.Stderr = slave
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	if err := cmd.Start(); err != nil {
+	termCmd, err := linuxShellCommand(ctx, opts.Shell)
+	if err != nil {
 		_ = slave.Close()
 		_ = master.Close()
 		return nil, err
 	}
+	child, err := forkLinuxTerminal(termCmd, slave)
 	_ = slave.Close()
+	if err != nil {
+		_ = master.Close()
+		return nil, fmt.Errorf("iniciar shell %s: %w", termCmd.Path, err)
+	}
+
 	term := &terminalProcess{
 		rw: master,
 		resize: func(cols, rows int) error {
 			cols, rows = normalizeTerminalSize(cols, rows)
 			return resizePTY(master, cols, rows)
 		},
+		stop: child.stop,
 	}
+	done := make(chan struct{})
 	go func() {
-		_ = cmd.Wait()
-		_ = term.Close()
+		child.wait()
+		_ = master.Close()
+		close(done)
+	}()
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = term.Close()
+		case <-done:
+		}
 	}()
 	return term, nil
+}
+
+// forkLinuxTerminal usa syscall.ForkExec directamente para evitar la comprobación
+// pidfd de os.StartProcess. Algunos Android y kernels antiguos bloquean pidfd_open
+// con SIGSYS en lugar de devolver ENOSYS, lo que cerraría todo pangolite-client.
+func forkLinuxTerminal(termCmd linuxTerminalCommand, slave *os.File) (*linuxChildProcess, error) {
+	if slave == nil {
+		return nil, errors.New("PTY esclava no disponible")
+	}
+	argv := make([]string, 0, len(termCmd.Args)+1)
+	argv = append(argv, termCmd.Path)
+	argv = append(argv, termCmd.Args...)
+	attr := &syscall.ProcAttr{
+		Dir:   termCmd.Dir,
+		Env:   mergeTerminalEnv(os.Environ(), termCmd.Env),
+		Files: []uintptr{slave.Fd(), slave.Fd(), slave.Fd()},
+		Sys: &syscall.SysProcAttr{
+			Setsid:  true,
+			Setctty: true,
+			Ctty:    0,
+		},
+	}
+	pid, err := syscall.ForkExec(termCmd.Path, argv, attr)
+	if err != nil {
+		return nil, err
+	}
+	return &linuxChildProcess{pid: pid}, nil
+}
+
+func (p *linuxChildProcess) stop() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.exited || p.pid <= 0 {
+		return nil
+	}
+	// El shell es líder de una sesión nueva, así que el PID también es su PGID.
+	// Matar el grupo evita dejar procesos iniciados desde la terminal en segundo plano.
+	if err := syscall.Kill(-p.pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+		if fallbackErr := syscall.Kill(p.pid, syscall.SIGKILL); fallbackErr != nil && fallbackErr != syscall.ESRCH {
+			return fallbackErr
+		}
+	}
+	return nil
+}
+
+func (p *linuxChildProcess) wait() {
+	if p == nil || p.pid <= 0 {
+		return
+	}
+	for {
+		_, err := syscall.Wait4(p.pid, nil, 0, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		break
+	}
+	p.mu.Lock()
+	p.exited = true
+	p.mu.Unlock()
 }
 
 func openLinuxPTY() (*os.File, *os.File, error) {
@@ -109,28 +189,71 @@ func ioctl(fd uintptr, req uintptr, arg uintptr) error {
 	return nil
 }
 
-func linuxShellCommand(ctx context.Context, shell string) linuxTerminalCommand {
+func linuxShellCommand(ctx context.Context, shell string) (linuxTerminalCommand, error) {
 	if shell = strings.TrimSpace(shell); shell != "" {
-		return linuxTerminalCommand{Path: shell, Args: interactiveShellArgs(shell), Dir: terminalWorkingDir(), Env: terminalIdentityEnv()}
+		resolved, err := resolveExecutable(shell)
+		if err != nil {
+			return linuxTerminalCommand{}, fmt.Errorf("shell solicitada %q no disponible: %w", shell, err)
+		}
+		return linuxTerminalCommand{Path: resolved, Args: interactiveShellArgs(resolved), Dir: terminalWorkingDir(), Env: terminalIdentityEnv(resolved)}, nil
 	}
-	if os.Geteuid() != 0 && canUsePasswordlessSudo(ctx) {
-		return linuxTerminalCommand{Path: "sudo", Args: []string{"-n", "-i"}, Dir: "/", Env: []string{"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}}
+	if os.Geteuid() != 0 {
+		if sudo, ok := passwordlessSudoPath(ctx); ok {
+			return linuxTerminalCommand{Path: sudo, Args: []string{"-n", "-i"}, Dir: "/", Env: []string{"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}}, nil
+		}
 	}
-	shell = firstExistingShell([]string{os.Getenv("SHELL"), "/bin/bash", "/bin/ash", "/bin/sh"})
-	return linuxTerminalCommand{Path: shell, Args: interactiveShellArgs(shell), Dir: terminalWorkingDir(), Env: terminalIdentityEnv()}
+	resolved := firstExistingShell(defaultLinuxShellCandidates())
+	if resolved == "" {
+		return linuxTerminalCommand{}, errors.New("no se encontró una shell ejecutable; se buscó SHELL, shells Linux y sh mediante PATH")
+	}
+	return linuxTerminalCommand{Path: resolved, Args: interactiveShellArgs(resolved), Dir: terminalWorkingDir(), Env: terminalIdentityEnv(resolved)}, nil
+}
+
+func defaultLinuxShellCandidates() []string {
+	return []string{
+		os.Getenv("SHELL"),
+		"/bin/bash", "/usr/bin/bash",
+		"/bin/zsh", "/usr/bin/zsh",
+		"/bin/ash", "/usr/bin/ash",
+		"/bin/dash", "/usr/bin/dash",
+		"/bin/ksh", "/usr/bin/ksh",
+		"/bin/sh", "/usr/bin/sh",
+		"/system/bin/sh",
+		"/system/xbin/bash",
+		"/vendor/bin/sh",
+		"sh",
+	}
 }
 
 func firstExistingShell(candidates []string) string {
 	for _, candidate := range candidates {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+		resolved, err := resolveExecutable(candidate)
+		if err == nil {
+			return resolved
 		}
 	}
-	return "/bin/sh"
+	return ""
+}
+
+func resolveExecutable(candidate string) (string, error) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return "", errors.New("ruta vacía")
+	}
+	if !strings.ContainsRune(candidate, filepath.Separator) {
+		return exec.LookPath(candidate)
+	}
+	st, err := os.Stat(candidate)
+	if err != nil {
+		return "", err
+	}
+	if st.IsDir() {
+		return "", fmt.Errorf("%s es un directorio", candidate)
+	}
+	if st.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("%s no tiene permiso de ejecución", candidate)
+	}
+	return candidate, nil
 }
 
 func interactiveShellArgs(shell string) []string {
@@ -148,6 +271,9 @@ func terminalWorkingDir() string {
 		if isUsableDir("/root") {
 			return "/root"
 		}
+		if home := strings.TrimSpace(os.Getenv("HOME")); isUsableDir(home) {
+			return home
+		}
 		return "/"
 	}
 	if home, err := os.UserHomeDir(); err == nil && isUsableDir(home) {
@@ -156,12 +282,16 @@ func terminalWorkingDir() string {
 	return "/"
 }
 
-func terminalIdentityEnv() []string {
-	env := []string{"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}
+func terminalIdentityEnv(shell string) []string {
+	env := []string{"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "SHELL=" + shell}
 	if os.Geteuid() == 0 {
 		home := "/root"
 		if !isUsableDir(home) {
-			home = "/"
+			if inherited := strings.TrimSpace(os.Getenv("HOME")); isUsableDir(inherited) {
+				home = inherited
+			} else {
+				home = "/"
+			}
 		}
 		return append(env, "HOME="+home, "USER=root", "LOGNAME=root")
 	}
@@ -169,6 +299,10 @@ func terminalIdentityEnv() []string {
 }
 
 func isUsableDir(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
 	st, err := os.Stat(path)
 	if err != nil || !st.IsDir() {
 		return false
@@ -181,17 +315,60 @@ func isUsableDir(path string) bool {
 	return true
 }
 
-func canUsePasswordlessSudo(ctx context.Context) bool {
-	if _, err := exec.LookPath("sudo"); err != nil {
-		return false
+func passwordlessSudoPath(ctx context.Context) (string, bool) {
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return "", false
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, "sudo", "-n", "true")
-	if err := cmd.Run(); err != nil {
-		return false
+	if err := runLinuxCommandCompat(checkCtx, sudo, []string{sudo, "-n", "true"}); err != nil {
+		return "", false
 	}
-	return true
+	return sudo, true
+}
+
+func runLinuxCommandCompat(ctx context.Context, path string, argv []string) error {
+	devNull, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer devNull.Close()
+	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
+		Env:   os.Environ(),
+		Files: []uintptr{devNull.Fd(), devNull.Fd(), devNull.Fd()},
+	})
+	if err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() {
+		var status syscall.WaitStatus
+		for {
+			_, waitErr := syscall.Wait4(pid, &status, 0, nil)
+			if waitErr == syscall.EINTR {
+				continue
+			}
+			if waitErr != nil {
+				done <- waitErr
+				return
+			}
+			if !status.Exited() || status.ExitStatus() != 0 {
+				done <- fmt.Errorf("proceso terminó con estado %d", status.ExitStatus())
+				return
+			}
+			done <- nil
+			return
+		}
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		<-done
+		return ctx.Err()
+	}
 }
 
 func normalizeTerminalSize(cols, rows int) (int, int) {

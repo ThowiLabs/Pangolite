@@ -100,3 +100,7 @@ internal/app/assets/app/
 
 La navegación principal usa rutas normales del servidor (`/projects`, `/projects/{id}/resources`, `/settings`, etc.). No requiere Node, Vite ni bundler; el binario sigue siendo autocontenido mediante `embed.FS`.
 
+
+## Compatibilidad de terminal Linux y Android
+
+La terminal del cliente resuelve la shell ejecutable desde `SHELL`, rutas Linux comunes, rutas Android y `PATH`. No exige Bash: sistemas con Toybox pueden usar `/system/bin/sh`. Para iniciar la sesión PTY se usa `syscall.ForkExec` directamente, evitando la comprobación de pidfd realizada por `os.StartProcess`, incompatible con algunos kernels Android antiguos que responden con `SIGSYS` al syscall `pidfd_open`.

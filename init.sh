@@ -131,7 +131,7 @@ arch_traefik() {
   case "$(uname -m)" in
     x86_64|amd64) echo "amd64" ;;
     aarch64|arm64) echo "arm64" ;;
-    armv7l|armv7) echo "armv7" ;;
+    armv7l|armv7|armv8l) echo "armv7" ;;
     i386|i686) echo "386" ;;
     *) fail "arquitectura no soportada para Traefik: $(uname -m)" ;;
   esac

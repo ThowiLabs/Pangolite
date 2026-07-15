@@ -158,6 +158,7 @@ El proyecto incluye un workflow manual en `.github/workflows/release.yml`.
 - Si se indica una versión, publica `vX.Y`.
 - Si se deja vacío, toma el último tag `vX.Y` e incrementa el número menor.
 - Genera paquetes `pangolite_linux_amd64.tar.gz`, `pangolite_linux_arm64.tar.gz`, `pangolite_linux_386.tar.gz` y `pangolite_linux_armv7.tar.gz`.
+- Verifica que el paquete y el cliente Linux ARM64 existan y no estén vacíos antes de publicar.
 - Publica `checksums.txt`.
 
 ## Configuración
@@ -450,13 +451,15 @@ Para recursos TCP/UDP, Pangolite agrupa los reinicios de Traefik durante unos se
 
 ## Clientes NAT
 
-Pangolite compila y publica clientes NAT para Linux amd64 y Windows amd64. Al crear o rotar un cliente desde el panel se generan comandos listos para copiar.
+Pangolite compila y publica clientes NAT para Linux amd64, arm64, 386 y armv7, además de Windows amd64. Al crear o rotar un cliente desde el panel se generan comandos listos para copiar.
 
 - Linux: instala en `/opt/pangolite-client` y registra el servicio en systemd u OpenRC.
 - Windows: instala en `C:\ProgramData\Pangolite Client` y registra el servicio `PangoliteClient`.
 - Ambos modos soportan eliminación completa con `--remove`.
 
 El panel muestra estado online/offline, última conexión, sistema operativo, arquitectura, hostname/IP y recursos asociados al cliente.
+
+La terminal remota Linux detecta la shell disponible en lugar de asumir `/bin/sh`. Resuelve `SHELL`, shells Linux comunes, `sh` mediante `PATH` y rutas habituales de Android como `/system/bin/sh`. El proceso de la terminal se inicia mediante una ruta compatible con kernels Linux antiguos para evitar que `pidfd_open` cierre el cliente completo en dispositivos Android heredados.
 
 ## Health checks
 

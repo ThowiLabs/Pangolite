@@ -157,7 +157,7 @@ detect_arch() {
     x86_64|amd64) ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
     i386|i486|i586|i686) ARCH="386" ;;
-    armv7l|armv7) ARCH="armv7" ;;
+    armv7l|armv7|armv8l) ARCH="armv7" ;;
     *) fail "arquitectura no soportada: $(uname -m)" ;;
   esac
   log "Arquitectura detectada: linux/$ARCH"
