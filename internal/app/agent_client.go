@@ -612,7 +612,7 @@ func handleAgentTerminalStream(ctx context.Context, base, configuredServer, fall
 	defer term.Close()
 
 	logger.Info("terminal remota conectada", "stream", job.ID, "os", runtime.GOOS)
-	if err := bridgeWebSocketTerminalProcess(ctx, ws, term, true); err != nil {
+	if err := bridgeWebSocketTerminalProcess(ctx, ws, term, terminalControlFramed); err != nil {
 		logger.Debug("terminal remota cerrada", "stream", job.ID, "error", err.Error())
 	}
 }

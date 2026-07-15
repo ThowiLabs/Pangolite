@@ -171,8 +171,12 @@ func (h *TunnelHub) SubmitStream(ctx context.Context, agentID string, job AgentS
 		return ctx.Err()
 	}
 
-	<-sess.Done
-	return nil
+	select {
+	case <-sess.Done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (h *TunnelHub) AttachStream(streamID, agentID string) (*StreamSession, bool) {
@@ -186,10 +190,11 @@ func (h *TunnelHub) AttachStream(streamID, agentID string) (*StreamSession, bool
 	}
 	select {
 	case <-sess.Attached:
+		return nil, false
 	default:
 		close(sess.Attached)
+		return sess, true
 	}
-	return sess, true
 }
 
 func (h *TunnelHub) CompleteStream(streamID string) {

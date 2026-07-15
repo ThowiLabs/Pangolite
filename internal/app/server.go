@@ -2071,9 +2071,10 @@ func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, ok := s.hub.AttachStream(streamID, agentID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "stream no encontrado o expirado")
+		writeError(w, http.StatusNotFound, "stream no encontrado, expirado o ya adjuntado")
 		return
 	}
+	defer s.hub.CompleteStream(streamID)
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		if s.log != nil {
@@ -2081,7 +2082,6 @@ func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	defer s.hub.CompleteStream(streamID)
 	if err := bridgeWebSocketNetConn(r.Context(), ws, sess.ClientConn); err != nil && s.log != nil {
 		s.log.Debug("stream TCP cerrado", "stream", streamID, "agent", agentID, "error", err.Error())
 	}
