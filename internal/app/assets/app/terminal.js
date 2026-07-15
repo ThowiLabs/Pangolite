@@ -399,6 +399,7 @@
   }
   function initTerminal(){
     if(!el('terminalBox'))return;
+    let requestedTargetAvailable=true;
     const target=el('terminalTarget');
     if(target){
       const params=new URLSearchParams(location.search);
@@ -407,6 +408,7 @@
         const value='agent:'+agentId;
         const option=Array.from(target.options).find(o=>o.value===value&&!o.disabled);
         if(option)target.value=value;
+        else requestedTargetAvailable=false;
       }
       target.addEventListener('change',()=>{if(!ws)showIdleOverlay()});
     }
@@ -426,9 +428,18 @@
       if(currentTargetOS()==='windows'){hideOverlay();if(term)term.focus();return;}
       connectTerminal();
     });
-    ensureTerminal();
+    const terminalReady=ensureTerminal();
     setButtons('idle');
     showIdleOverlay();
+    const params=new URLSearchParams(location.search);
+    if(!requestedTargetAvailable){
+      status('Cliente no disponible',false,true);
+      setOverlay('warning','Cliente no disponible','El cliente solicitado está offline, inactivo o usa un sistema no compatible. Regresa a Conexiones SSH y selecciona otro destino.',null,false);
+      return;
+    }
+    if(terminalReady&&params.get('autoconnect')==='1'){
+      setTimeout(connectTerminal,80);
+    }
   }
   document.addEventListener('DOMContentLoaded',initTerminal);
 })();
