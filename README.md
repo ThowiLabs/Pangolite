@@ -22,6 +22,7 @@ La base actual incluye:
 - CRUD de dominios administrados.
 - Configuracion del dominio publico del dashboard con validacion DNS contra la IP del servidor.
 - Clientes de sistema/agentes para servidores NAT/remotos.
+- Directorio global de Conexiones SSH para abrir la terminal del servidor Pangolite o de cualquier cliente sin navegar primero por su proyecto.
 - Recursos HTTP/HTTPS locales o mediante cliente de sistema.
 - Recursos TCP/UDP directos del host Pangolite.
 - Validación de puerto público contra recursos existentes y contra puertos ocupados en el sistema.

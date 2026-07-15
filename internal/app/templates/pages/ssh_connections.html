@@ -1,0 +1,138 @@
+{{define "page_content"}}
+<section id="view-ssh-connections" class="route-view active ssh-connections-route">
+  <div class="hero ssh-connections-hero animate__animated animate__fadeIn">
+    <div>
+      <div class="ssh-hero-eyebrow"><i class="bi bi-shield-lock"></i> Acceso centralizado</div>
+      <h1>Conexiones SSH</h1>
+      <p>Abre la terminal del servidor Pangolite o de cualquier cliente conectado sin entrar primero a su proyecto. Los clientes muestran su proyecto para identificarlos rápidamente.</p>
+    </div>
+    <div class="ssh-hero-badge"><i class="bi bi-terminal"></i><span>{{availableConnections .ServerOS .Agents}} disponibles</span></div>
+  </div>
+
+  <div class="grid grid-3 mb-3 ssh-summary-grid">
+    <div class="stat metric-card soft-enter">
+      <div class="d-flex align-items-center justify-content-between">
+        <div><div class="stat-label">Destinos</div><div class="stat-value">{{connectionTotal .Agents}}</div><div class="stat-trend">Servidor local y clientes</div></div>
+        <div class="metric-icon"><i class="bi bi-pc-display-horizontal"></i></div>
+      </div>
+    </div>
+    <div class="stat metric-card soft-enter soft-enter-delay-1">
+      <div class="d-flex align-items-center justify-content-between">
+        <div><div class="stat-label">Disponibles ahora</div><div class="stat-value">{{availableConnections .ServerOS .Agents}}</div><div class="stat-trend">Listos para abrir terminal</div></div>
+        <div class="metric-icon"><i class="bi bi-broadcast-pin"></i></div>
+      </div>
+    </div>
+    <div class="stat metric-card soft-enter soft-enter-delay-2">
+      <div class="d-flex align-items-center justify-content-between">
+        <div><div class="stat-label">Clientes registrados</div><div class="stat-value">{{len .Agents}}</div><div class="stat-trend">Distribuidos entre proyectos</div></div>
+        <div class="metric-icon"><i class="bi bi-hdd-network"></i></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card ssh-directory-card soft-enter soft-enter-delay-2">
+    <div class="card-header ssh-directory-header">
+      <div>
+        <div class="card-title">Directorio de conexiones</div>
+        <div class="text-muted small">El servidor Pangolite aparece primero. Busca por cliente, proyecto, host, sistema, IP o ID.</div>
+      </div>
+      <div class="ssh-directory-tools">
+        <label class="ssh-search" for="sshConnectionSearch">
+          <i class="bi bi-search" aria-hidden="true"></i>
+          <input id="sshConnectionSearch" class="form-control" type="search" placeholder="Buscar conexión..." autocomplete="off">
+          <button id="sshConnectionClear" class="ssh-search-clear d-none" type="button" aria-label="Limpiar búsqueda"><i class="bi bi-x-lg"></i></button>
+        </label>
+        <label class="ssh-page-size" for="sshConnectionPageSize">
+          <span>Mostrar</span>
+          <select id="sshConnectionPageSize" class="form-select form-select-sm" aria-label="Conexiones por página">
+            <option value="9" selected>9</option>
+            <option value="18">18</option>
+            <option value="30">30</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <div id="sshConnectionGrid" class="ssh-connection-grid">
+        <article class="ssh-connection-card ssh-connection-local" data-ssh-card data-kind="local" data-online="{{if eq .ServerOS "windows"}}false{{else}}true{{end}}" data-search="pangolite servidor local {{.ServerHostname}} {{.ServerOS}} {{.ServerArch}} {{.Network.PublicIP}} {{.Settings.DashboardDomain}}">
+          <div class="ssh-card-glow" aria-hidden="true"></div>
+          <div class="ssh-card-head">
+            <div class="ssh-device-icon local"><i class="bi bi-server"></i></div>
+            <div class="ssh-card-status {{if eq .ServerOS "windows"}}warning{{else}}on{{end}}">
+              <span class="status-dot {{if ne .ServerOS "windows"}}ok{{end}}"></span>
+              {{if eq .ServerOS "windows"}}Windows no compatible{{else}}Disponible{{end}}
+            </div>
+          </div>
+          <div class="ssh-card-body">
+            <div class="ssh-card-kicker">Servidor principal</div>
+            <h2>Servidor Pangolite</h2>
+            <div class="ssh-card-host">{{if .ServerHostname}}{{.ServerHostname}}{{else}}Host local{{end}}</div>
+            <div class="ssh-card-tags">
+              <span class="ssh-project-tag local"><i class="bi bi-stars"></i> Pangolite</span>
+              <span class="ssh-system-tag"><i class="bi bi-cpu"></i> {{.ServerOS}}/{{.ServerArch}}</span>
+            </div>
+            <dl class="ssh-card-meta">
+              <div><dt>Dominio</dt><dd>{{if .Settings.DashboardDomain}}{{.Settings.DashboardDomain}}{{else}}Sin configurar{{end}}</dd></div>
+              <div><dt>IP pública</dt><dd class="font-mono">{{if .Network.PublicIP}}{{.Network.PublicIP}}{{else}}No detectada{{end}}</dd></div>
+            </dl>
+          </div>
+          <div class="ssh-card-actions">
+            {{if eq .ServerOS "windows"}}
+            <button class="btn btn-primary" type="button" disabled title="La terminal interactiva de Windows todavía no está habilitada"><i class="bi bi-terminal-x"></i> No disponible</button>
+            {{else}}
+            <a class="btn btn-primary" href="/terminal?target=local&autoconnect=1"><i class="bi bi-terminal"></i> Conectar ahora</a>
+            {{end}}
+            <a class="btn btn-outline-secondary" href="/settings"><i class="bi bi-sliders"></i> Ajustes</a>
+          </div>
+        </article>
+
+        {{range .Agents}}
+        <article class="ssh-connection-card {{if not (agentTerminalReady .)}}is-unavailable{{end}}" data-ssh-card data-kind="agent" data-online="{{agentTerminalReady .}}" data-search="{{.Name}} {{.ID}} {{.Hostname}} {{.PrivateIP}} {{.PublicIP}} {{.OS}} {{.Arch}} {{projectName .ProjectID}} {{projectSlug .ProjectID}}">
+          <div class="ssh-card-head">
+            <div class="ssh-device-icon"><i class="bi bi-hdd-network"></i></div>
+            <div class="ssh-card-status {{agentTerminalClass .}}">
+              <span class="status-dot {{if agentTerminalReady .}}ok{{end}}"></span>
+              {{agentTerminalState .}}
+            </div>
+          </div>
+          <div class="ssh-card-body">
+            <div class="ssh-card-kicker">Cliente de sistema</div>
+            <h2>{{.Name}}</h2>
+            <div class="ssh-card-host">{{if .Hostname}}{{.Hostname}}{{else if .PrivateIP}}{{.PrivateIP}}{{else}}Host no reportado{{end}}</div>
+            <div class="ssh-card-tags">
+              <span class="ssh-project-tag"><i class="bi bi-folder2-open"></i> {{projectName .ProjectID}}</span>
+              <span class="ssh-system-tag"><i class="bi bi-cpu"></i> {{agentSystem .}}</span>
+            </div>
+            <dl class="ssh-card-meta">
+              <div><dt>Dirección</dt><dd class="font-mono">{{if .PrivateIP}}{{.PrivateIP}}{{else if .PublicIP}}{{.PublicIP}}{{else}}No reportada{{end}}</dd></div>
+              <div><dt>Última actividad</dt><dd>{{fmtTime .LastSeen}}</dd></div>
+            </dl>
+          </div>
+          <div class="ssh-card-actions">
+            {{if agentTerminalReady .}}
+            <a class="btn btn-primary" href="/terminal?agentId={{.ID}}&projectId={{.ProjectID}}&autoconnect=1"><i class="bi bi-terminal"></i> Conectar ahora</a>
+            {{else}}
+            <button class="btn btn-primary" type="button" disabled title="El cliente debe estar online, habilitado y usar un sistema compatible"><i class="bi bi-terminal-x"></i> No disponible</button>
+            {{end}}
+            <a class="btn btn-outline-secondary" href="/projects/{{.ProjectID}}/agents"><i class="bi bi-folder2-open"></i> Ver proyecto</a>
+          </div>
+        </article>
+        {{end}}
+      </div>
+
+      <div id="sshConnectionEmpty" class="ssh-empty-state d-none">
+        <div class="ssh-empty-icon"><i class="bi bi-search"></i></div>
+        <strong>No encontramos conexiones</strong>
+        <span>Prueba con otro nombre de cliente, proyecto, host, IP o sistema.</span>
+        <button id="sshConnectionEmptyClear" class="btn btn-sm btn-outline-secondary" type="button"><i class="bi bi-arrow-counterclockwise"></i> Limpiar búsqueda</button>
+      </div>
+
+      <div class="ssh-directory-footer">
+        <div id="sshConnectionSummary" class="text-muted small" aria-live="polite"></div>
+        <nav id="sshConnectionPagination" class="ssh-pagination" aria-label="Paginación de conexiones"></nav>
+      </div>
+    </div>
+  </div>
+</section>
+{{end}}

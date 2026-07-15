@@ -90,7 +90,7 @@
     </nav>
 
     <nav class="nav-section nav-global nav-system" aria-label="Herramientas del sistema">
-      <a id="terminalNavLink" class="nav-link {{if eq .PageKey "terminal"}}active{{end}}" href="/terminal{{if .HasProject}}?projectId={{.CurrentID}}{{end}}" data-nav="terminal"><i class="bi bi-terminal"></i><span>Terminal</span></a>
+      <a id="terminalNavLink" class="nav-link {{if or (eq .PageKey "ssh_connections") (eq .PageKey "terminal")}}active{{end}}" href="/ssh" data-nav="ssh-connections"><i class="bi bi-terminal-split"></i><span>Conexiones SSH</span></a>
       <a class="nav-link {{if eq .PageKey "maintenance"}}active{{end}}" href="/maintenance" data-nav="maintenance"><i class="bi bi-shield-check"></i><span>Seguridad</span></a>
       <a class="nav-link {{if eq .PageKey "logs"}}active{{end}}" href="/logs" data-nav="logs"><i class="bi bi-journal-text"></i><span>Logs</span></a>
       <a class="nav-link {{if eq .PageKey "settings"}}active{{end}}" href="/settings" data-nav="settings"><i class="bi bi-sliders"></i><span>Ajustes</span></a>
@@ -150,6 +150,9 @@
   <script src="/assets/app/agents.js"></script>
   <script src="/assets/app/forms.js"></script>
   <script src="/assets/app/profile.js"></script>
+  {{if eq .PageKey "ssh_connections"}}
+  <script src="/assets/app/ssh-connections.js"></script>
+  {{end}}
   {{if eq .PageKey "terminal"}}
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>

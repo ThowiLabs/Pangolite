@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -32,6 +33,9 @@ type uiPageData struct {
 	Domains             []ManagedDomain
 	Settings            AppSettings
 	Network             NetworkInfo
+	ServerHostname      string
+	ServerOS            string
+	ServerArch          string
 	Certificate         CertificateStatus
 	AuditEvents         []AuditEvent
 	Backups             []BackupInfo
@@ -59,6 +63,7 @@ var panelRoutes = map[string]panelPage{
 	"/maintenance": {Template: "maintenance.html", Title: "Pangolite - Seguridad", Key: "maintenance", Crumb: "Seguridad", Heading: "Auditoría y respaldos"},
 	"/settings":    {Template: "settings.html", Title: "Pangolite - Ajustes", Key: "settings", Crumb: "Ajustes", Heading: "Configuración del sistema"},
 	"/perfil":      {Template: "profile.html", Title: "Pangolite - Mi perfil", Key: "profile", Crumb: "Mi cuenta", Heading: "Perfil y seguridad"},
+	"/ssh":         {Template: "ssh_connections.html", Title: "Pangolite - Conexiones SSH", Key: "ssh_connections", Crumb: "Acceso remoto", Heading: "Conexiones SSH"},
 	"/terminal":    {Template: "terminal.html", Title: "Pangolite - Terminal", Key: "terminal", Crumb: "Terminal", Heading: "Consola web"},
 }
 
@@ -100,25 +105,29 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 	projects := s.store.ListProjects()
 	stats := s.store.ProjectStats()
 	currentID := s.currentProjectIDFromRequest(r, page)
+	hostname, _ := os.Hostname()
 	data := uiPageData{
-		Title:         page.Title,
-		Path:          r.URL.Path,
-		PageKey:       page.Key,
-		Crumb:         page.Crumb,
-		PageHeading:   page.Heading,
-		User:          rs.User,
-		Username:      rs.User.Username,
-		CSRFToken:     rs.Session.CSRFToken,
-		Projects:      projects,
-		Stats:         stats,
-		CurrentID:     currentID,
-		Domains:       s.store.ListManagedDomains(),
-		Settings:      settings,
-		Network:       network,
-		Certificate:   certificate,
-		BackupDir:     s.config.BackupDir,
-		LogPath:       s.config.LogPath,
-		MaxLogEntries: defaultMaxLogLines,
+		Title:          page.Title,
+		Path:           r.URL.Path,
+		PageKey:        page.Key,
+		Crumb:          page.Crumb,
+		PageHeading:    page.Heading,
+		User:           rs.User,
+		Username:       rs.User.Username,
+		CSRFToken:      rs.Session.CSRFToken,
+		Projects:       projects,
+		Stats:          stats,
+		CurrentID:      currentID,
+		Domains:        s.store.ListManagedDomains(),
+		Settings:       settings,
+		Network:        network,
+		ServerHostname: strings.TrimSpace(hostname),
+		ServerOS:       runtime.GOOS,
+		ServerArch:     runtime.GOARCH,
+		Certificate:    certificate,
+		BackupDir:      s.config.BackupDir,
+		LogPath:        s.config.LogPath,
+		MaxLogEntries:  defaultMaxLogLines,
 	}
 	if templates, err := ListSuspensionTemplates(s.config.SuspensionTemplateDir); err == nil {
 		data.SuspensionTemplates = templates
@@ -150,7 +159,7 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 			data.TraefikConfig = string(b)
 		}
 	}
-	if page.Key == "terminal" && currentID == "" {
+	if (page.Key == "terminal" && currentID == "") || page.Key == "ssh_connections" {
 		data.Agents = s.store.ListAgents()
 	}
 	data.BootstrapJSON = template.JS(mustJSON(map[string]any{
@@ -174,7 +183,9 @@ func (s *Server) panelData(r *http.Request, rs requestSession) uiPageData {
 		"maxLogEntries":       data.MaxLogEntries,
 		"traefikConfig":       data.TraefikConfig,
 		"suspensionTemplates": data.SuspensionTemplates,
-		"serverOS":            runtime.GOOS,
+		"serverOS":            data.ServerOS,
+		"serverArch":          data.ServerArch,
+		"serverHostname":      data.ServerHostname,
 		"path":                data.Path,
 		"pageKey":             data.PageKey,
 	}))
@@ -228,26 +239,33 @@ func mustJSON(v any) string {
 
 func renderUIPage(w http.ResponseWriter, page string, data uiPageData) {
 	funcs := template.FuncMap{
-		"projectStats":       projectStats,
-		"totalStat":          totalStat,
-		"fmtTime":            fmtTemplateTime,
-		"fmtBytes":           fmtBytes,
-		"resourceEntry":      resourceEntry,
-		"resourceBackend":    resourceBackend,
-		"resourceOrigin":     resourceOrigin,
-		"resourceAgentName":  resourceAgentName(data.Agents),
-		"resourceRowClass":   resourceRowClass,
-		"resourceStatusText": resourceStatusText,
-		"resourceModeLabel":  resourceModeLabel,
-		"agentStateText":     agentStateText,
-		"agentStateClass":    agentStateClass,
-		"agentSystem":        agentSystem,
-		"domainStateText":    domainStateText,
-		"dnsStateText":       dnsStateText,
-		"dnsStateClass":      dnsStateClass,
-		"certText":           certTextTemplate,
-		"certClass":          certClassTemplate,
-		"logLineClass":       logLineClass,
+		"projectStats":         projectStats,
+		"totalStat":            totalStat,
+		"fmtTime":              fmtTemplateTime,
+		"fmtBytes":             fmtBytes,
+		"resourceEntry":        resourceEntry,
+		"resourceBackend":      resourceBackend,
+		"resourceOrigin":       resourceOrigin,
+		"resourceAgentName":    resourceAgentName(data.Agents),
+		"resourceRowClass":     resourceRowClass,
+		"resourceStatusText":   resourceStatusText,
+		"resourceModeLabel":    resourceModeLabel,
+		"agentStateText":       agentStateText,
+		"agentStateClass":      agentStateClass,
+		"agentSystem":          agentSystem,
+		"projectName":          projectName(data.Projects),
+		"projectSlug":          projectSlug(data.Projects),
+		"connectionTotal":      connectionTotal,
+		"availableConnections": availableConnections,
+		"agentTerminalReady":   agentTerminalReady,
+		"agentTerminalState":   agentTerminalState,
+		"agentTerminalClass":   agentTerminalClass,
+		"domainStateText":      domainStateText,
+		"dnsStateText":         dnsStateText,
+		"dnsStateClass":        dnsStateClass,
+		"certText":             certTextTemplate,
+		"certClass":            certClassTemplate,
+		"logLineClass":         logLineClass,
 	}
 	t, err := template.New("ui").Funcs(funcs).ParseFS(templatesFS, "templates/layouts/*.html", "templates/components/*.html", "templates/pages/"+page)
 	if err != nil {
@@ -397,6 +415,73 @@ func agentSystem(a AgentPublic) string {
 		return "-"
 	}
 	return strings.Join(parts, "/")
+}
+
+func projectName(projects []Project) func(string) string {
+	byID := make(map[string]string, len(projects))
+	for _, project := range projects {
+		byID[project.ID] = project.Name
+	}
+	return func(id string) string {
+		if name := strings.TrimSpace(byID[id]); name != "" {
+			return name
+		}
+		return "Proyecto no disponible"
+	}
+}
+
+func projectSlug(projects []Project) func(string) string {
+	byID := make(map[string]string, len(projects))
+	for _, project := range projects {
+		byID[project.ID] = project.Slug
+	}
+	return func(id string) string {
+		return strings.TrimSpace(byID[id])
+	}
+}
+
+func connectionTotal(agents []AgentPublic) int {
+	return len(agents) + 1
+}
+
+func availableConnections(serverOS string, agents []AgentPublic) int {
+	total := 0
+	if !strings.EqualFold(strings.TrimSpace(serverOS), "windows") {
+		total++
+	}
+	for _, agent := range agents {
+		if agentTerminalReady(agent) {
+			total++
+		}
+	}
+	return total
+}
+
+func agentTerminalReady(a AgentPublic) bool {
+	return a.Enabled && a.Online && !strings.EqualFold(strings.TrimSpace(a.OS), "windows")
+}
+
+func agentTerminalState(a AgentPublic) string {
+	if !a.Enabled {
+		return "Inactivo"
+	}
+	if strings.EqualFold(strings.TrimSpace(a.OS), "windows") {
+		return "Windows no compatible"
+	}
+	if a.Online {
+		return "Disponible"
+	}
+	return "Offline"
+}
+
+func agentTerminalClass(a AgentPublic) string {
+	if agentTerminalReady(a) {
+		return "on"
+	}
+	if strings.EqualFold(strings.TrimSpace(a.OS), "windows") {
+		return "warning"
+	}
+	return "off"
 }
 
 func domainStateText(d ManagedDomain) string {
