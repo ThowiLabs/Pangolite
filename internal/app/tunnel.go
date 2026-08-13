@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	AgentPollTimeout        = 25 * time.Second
-	AgentStreamModeTerminal = "terminal"
+	AgentPollTimeout          = 25 * time.Second
+	AgentStreamModeTerminal   = "terminal"
+	MaxAgentHTTPBodyBytes     = int64(16 << 20)
+	MaxAgentHTTPEnvelopeBytes = MaxAgentHTTPBodyBytes*4/3 + (2 << 20)
 )
 
 type AgentJob struct {
@@ -233,6 +235,27 @@ func (h *TunnelHub) streamQueue(agentID string) chan AgentStreamJob {
 		h.streamQueues[agentID] = q
 	}
 	return q
+}
+
+func (h *TunnelHub) RemoveAgent(agentID string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return
+	}
+	h.mu.Lock()
+	delete(h.queues, agentID)
+	delete(h.streamQueues, agentID)
+	for id, sess := range h.streams {
+		if sess.AgentID == agentID {
+			delete(h.streams, id)
+			select {
+			case <-sess.Done:
+			default:
+				close(sess.Done)
+			}
+		}
+	}
+	h.mu.Unlock()
 }
 
 func (h *TunnelHub) deletePending(jobID string) {

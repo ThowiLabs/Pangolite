@@ -12,7 +12,7 @@ CLIENT_PUBLIC_WINDOWS_BIN="$PUBLIC_DIR/pangolite-client-windows-amd64.exe"
 ENV_FILE="$INSTALL_DIR/pangolite.env"
 TRAEFIK_DIR="/etc/traefik"
 TRAEFIK_VERSION="3.7.5"
-GO_VERSION="1.26.4"
+GO_VERSION="1.26.5"
 PANEL_ADDR="0.0.0.0:2424"
 HEALTH_URL="http://127.0.0.1:2424/healthz"
 SERVER_IP=""
@@ -145,7 +145,7 @@ version_ok() {
   minor="${v#*.}"; minor="${minor%%.*}"
   [ -n "$major" ] && [ -n "$minor" ] || return 1
   if [ "$major" -gt 1 ]; then return 0; fi
-  if [ "$major" -eq 1 ] && [ "$minor" -ge 24 ]; then return 0; fi
+  if [ "$major" -eq 1 ] && [ "$minor" -ge 26 ]; then return 0; fi
   return 1
 }
 
@@ -155,7 +155,7 @@ ensure_go() {
     log "Go detectado: $($GO_BIN version)"
     return
   fi
-  log "Go >= 1.24 no esta instalado; descargando Go $GO_VERSION temporalmente"
+  log "Go >= 1.26 no esta instalado; descargando Go $GO_VERSION temporalmente"
   need_cmd curl
   need_cmd tar
   local goarch url tarball
@@ -344,6 +344,11 @@ PANGOLITE_BACKUP_INTERVAL_HOURS=24
 PANGOLITE_BACKUP_RETENTION_DAYS=14
 PANGOLITE_SUSPENSION_TEMPLATE_DIR=$DATA_DIR/templates/suspension
 PANGOLITE_SESSION_DAYS=30
+PANGOLITE_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+PANGOLITE_ADMIN_ACCESS_MODE=learn
+PANGOLITE_AGENT_HTTP_CONCURRENCY=4
+# Recuperacion si cambia tu IP/red: PANGOLITE_ADMIN_ACCESS_MODE=off temporalmente o agrega CIDRs permitidos.
+# PANGOLITE_ADMIN_ALLOWED_CIDRS=203.0.113.10/32
 PANGOLITE_AUTO_TRAEFIK=1
 PANGOLITE_CLIENT_LINUX_AMD64=$CLIENT_PUBLIC_BIN
 PANGOLITE_CLIENT_WINDOWS_AMD64=$CLIENT_PUBLIC_WINDOWS_BIN
@@ -360,6 +365,9 @@ ENV
   set_env_value PANGOLITE_BACKUP_INTERVAL_HOURS "${PANGOLITE_BACKUP_INTERVAL_HOURS:-24}"
   set_env_value PANGOLITE_BACKUP_RETENTION_DAYS "${PANGOLITE_BACKUP_RETENTION_DAYS:-14}"
   set_env_value PANGOLITE_SUSPENSION_TEMPLATE_DIR "$DATA_DIR/templates/suspension"
+  if ! grep -q '^PANGOLITE_TRUSTED_PROXY_CIDRS=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_TRUSTED_PROXY_CIDRS "127.0.0.1/32,::1/128"; fi
+  if ! grep -q '^PANGOLITE_ADMIN_ACCESS_MODE=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_ADMIN_ACCESS_MODE "learn"; fi
+  if ! grep -q '^PANGOLITE_AGENT_HTTP_CONCURRENCY=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_AGENT_HTTP_CONCURRENCY "4"; fi
   if [ -n "$SERVER_IP" ]; then set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"; fi
 }
 

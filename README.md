@@ -173,6 +173,11 @@ PANGOLITE_PUBLIC_IP=<ip-detectada-por-init>
 PANGOLITE_INITIAL_ADMIN_USER=admin
 PANGOLITE_INITIAL_PASSWORD_FILE=/opt/pangolite/data/admin-password.txt
 PANGOLITE_SESSION_DAYS=30
+PANGOLITE_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+PANGOLITE_ADMIN_ACCESS_MODE=learn
+PANGOLITE_AGENT_HTTP_CONCURRENCY=4
+# Opcional: CIDRs administrativos adicionales (IP o red).
+# PANGOLITE_ADMIN_ALLOWED_CIDRS=203.0.113.10/32
 # Opcional: tambien puedes definirlos por env, aunque lo recomendado es hacerlo desde Ajustes.
 # PANGOLITE_DASHBOARD_DOMAIN=panel.midominio.com
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@midominio.com
@@ -310,19 +315,33 @@ go build -buildvcs=false -trimpath -ldflags='-s -w' -o bin/pangolite ./cmd/pango
 go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 ```
 
-`-buildvcs=false` es intencional para que los ZIPs limpios sin `.git` compilen de forma reproducible.
+`-buildvcs=false` evita que el resultado del binario dependa de metadatos VCS durante builds y releases.
 
 ## Seguridad
 
 - No se usa token administrativo global.
-- Las contraseñas se guardan con bcrypt.
-- Las sesiones se guardan hasheadas en SQLite.
-- Las cookies son `HttpOnly` y `SameSite=Lax`.
-- Las operaciones administrativas requieren CSRF.
-- La contraseña temporal se elimina al cambiarla.
-- Los puertos públicos se validan antes de persistir recursos TCP/UDP.
-- Las acciones administrativas críticas quedan registradas en auditoría.
+- Las contraseñas se guardan con bcrypt y las sesiones se guardan hasheadas en SQLite.
+- Las cookies son `HttpOnly`, `SameSite=Lax` y solo confían en `X-Forwarded-Proto` cuando la conexión llega desde un proxy configurado como confiable.
+- Las operaciones administrativas requieren CSRF y las respuestas de autenticación/API usan `Cache-Control: no-store`.
+- El login conserva el bloqueo por usuario y origen (5 fallos durante 10 minutos) y añade un límite por IP de 30 intentos durante 10 minutos antes de ejecutar bcrypt.
+- La recuperación de contraseña tiene límites independientes y solo genera enlaces cuando existe un dominio de dashboard configurado; no se construyen enlaces de recuperación desde un `Host` arbitrario.
+- `PANGOLITE_TRUSTED_PROXY_CIDRS` define qué proxies pueden aportar `X-Forwarded-For`, `X-Real-IP` y `X-Forwarded-Proto`. El valor por defecto solo confía en loopback.
+- `PANGOLITE_ADMIN_ACCESS_MODE=learn` aprende la red del primer login correcto y después rechaza sesiones/login desde otras redes. IPv4 se agrupa en `/24` e IPv6 en `/64` para tolerar cambios normales de dirección dentro de una misma red.
+- `PANGOLITE_ADMIN_ALLOWED_CIDRS` permite agregar IPs o redes administrativas conocidas. `PANGOLITE_ADMIN_ACCESS_MODE=allowlist` desactiva el aprendizaje de nuevas redes; `off` desactiva esta restricción.
+- Si cambias de ISP, VPN o red y quedas fuera, edita `/opt/pangolite/pangolite.env`, agrega temporalmente tu CIDR a `PANGOLITE_ADMIN_ALLOWED_CIDRS` (recomendado) o usa `PANGOLITE_ADMIN_ACCESS_MODE=off`, reinicia Pangolite, entra y vuelve a activar la protección.
+- Los WebSockets administrativos usan validación de origen y ya no desactivan la comprobación automática del paquete WebSocket.
+- El servidor limita cabeceras y conexiones ociosas. El túnel HTTP remoto limita cada cuerpo a 16 MiB y, por defecto, procesa como máximo 4 solicitudes simultáneas para evitar picos de memoria en VPS pequeños. Ajusta `PANGOLITE_AGENT_HTTP_CONCURRENCY` entre 1 y 64 si tu carga lo necesita.
+- Traefik aplica al panel un rate limit de 30 solicitudes/s con ráfaga 60 y un máximo de 64 solicitudes simultáneas. Esto reduce abuso HTTP, pero no sustituye protección DDoS volumétrica del proveedor, firewall o red perimetral.
+- La contraseña temporal se elimina al cambiarla, los puertos públicos se validan antes de persistir recursos TCP/UDP y las acciones administrativas críticas quedan registradas en auditoría.
 - Los respaldos SQLite se crean con `VACUUM INTO` desde el panel de Seguridad.
+
+### Recomendaciones para producción
+
+- Expón públicamente solo los puertos necesarios. Para el panel normal, publica 80/443 por Traefik; evita exponer `2424/tcp` a Internet si no necesitas acceso directo/fallback de agentes.
+- Activa firewall del host/proveedor y limita SSH a redes administrativas conocidas. La aplicación no puede absorber por sí sola un ataque que sature el enlace antes de llegar al proceso.
+- Mantén Go y Traefik actualizados, revisa logs/auditoría y conserva respaldos fuera del host.
+- Prefiere `https://` para `PANGOLITE_SERVER_URL` y para cualquier fallback atravesando redes no confiables. El modo legado `http://IP:2424` mantiene compatibilidad, pero transporta las credenciales del agente sin cifrado TLS y debe limitarse por firewall/red confiable.
+- Si el panel queda accesible a más administradores o redes, el siguiente endurecimiento recomendado es MFA y gestión explícita de redes confiables desde la UI.
 
 ## Diferencia entre cliente de sistema y recurso
 

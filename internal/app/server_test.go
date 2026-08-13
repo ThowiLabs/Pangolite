@@ -396,3 +396,53 @@ func TestHiddenUnavailableLocalResourceReturns404(t *testing.T) {
 		t.Fatalf("404 oculto no debe exponer detalle, body=%q", rr.Body.String())
 	}
 }
+
+func TestClientIPTrustsForwardedOnlyFromConfiguredProxy(t *testing.T) {
+	server, _ := testServerWithStore(t)
+	server.trustedProxyNetworks = parseCIDRs("127.0.0.1/32")
+
+	req := httptest.NewRequest(http.MethodGet, "http://panel.example.com/login", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "198.51.100.10, 127.0.0.1")
+	if got := server.clientIP(req); got != "198.51.100.10" {
+		t.Fatalf("clientIP proxy confiable = %q, want 198.51.100.10", got)
+	}
+
+	req.RemoteAddr = "203.0.113.20:54321"
+	req.Header.Set("X-Forwarded-For", "198.51.100.99")
+	if got := server.clientIP(req); got != "203.0.113.20" {
+		t.Fatalf("clientIP directo no debe confiar XFF: got %q", got)
+	}
+}
+
+func TestAdminAccessLearnModeRemembersNetwork(t *testing.T) {
+	server, store := testServerWithStore(t)
+	server.config.AdminAccessMode = "learn"
+
+	if !server.adminIPAllowed("198.51.100.25") {
+		t.Fatal("primera red debe permitirse en modo learn")
+	}
+	server.rememberAdminIP("198.51.100.25", "admin")
+	trusted := store.ListTrustedAdminNetworks()
+	if len(trusted) != 1 || trusted[0] != "198.51.100.0/24" {
+		t.Fatalf("red aprendida inesperada: %v", trusted)
+	}
+	if !server.adminIPAllowed("198.51.100.99") {
+		t.Fatal("misma /24 debe seguir permitida")
+	}
+	if server.adminIPAllowed("203.0.113.10") {
+		t.Fatal("otra red no debe permitirse tras aprender la primera")
+	}
+}
+
+func TestFixedWindowLimiterBoundsRequests(t *testing.T) {
+	limiter := newFixedWindowLimiter()
+	for i := 0; i < 3; i++ {
+		if _, ok := limiter.Allow("login:ip", 3, time.Minute); !ok {
+			t.Fatalf("solicitud %d debio permitirse", i+1)
+		}
+	}
+	if _, ok := limiter.Allow("login:ip", 3, time.Minute); ok {
+		t.Fatal("cuarta solicitud debio bloquearse")
+	}
+}

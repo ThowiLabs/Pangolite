@@ -641,6 +641,14 @@ http:
     redirect-to-https:
       redirectScheme:
         scheme: https
+    pangolite-panel-rate-limit:
+      rateLimit:
+        average: 30
+        burst: 60
+        period: 1s
+    pangolite-panel-inflight:
+      inFlightReq:
+        amount: 64
 {{- if .PanelEnabled }}
 
   routers:
@@ -652,12 +660,17 @@ http:
         - web
       middlewares:
         - redirect-to-https
+        - pangolite-panel-rate-limit
+        - pangolite-panel-inflight
 
     pangolite-panel:
       rule: {{ printf "%q" .DashboardRule }}
       service: pangolite-panel
       entryPoints:
         - websecure
+      middlewares:
+        - pangolite-panel-rate-limit
+        - pangolite-panel-inflight
       tls:
         certResolver: letsencrypt
         domains:
@@ -670,6 +683,9 @@ http:
       service: pangolite-panel
       entryPoints:
         - web
+      middlewares:
+        - pangolite-panel-rate-limit
+        - pangolite-panel-inflight
 {{- end }}
 
   services:

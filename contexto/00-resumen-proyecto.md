@@ -15,13 +15,17 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 
 ## Reglas importantes de desarrollo
 - No mencionar IA/OpenAI/ChatGPT en código, README, commits ni documentación pública.
-- Mantener commits en español.
-- Entregar ZIP limpio sin `.git` cuando el usuario lo pida.
+- Mantener commits en español y continuar el historial Git existente sin reinicializarlo.
+- Mantener `tareas/` numerada con estados `pendiente-`, `en-proceso-` y `completado-`; solo una tarea puede estar en proceso.
+- Las entregas de trabajo deben incluir el proyecto completo con `.git/`, historial existente, `contexto/` y `tareas/`, salvo instrucción explícita posterior del usuario.
 - Priorizar simplicidad agresiva, seguridad, mantenibilidad, bajo consumo y logs útiles.
 - No agregar Node, Vite, React ni dependencias frontend innecesarias.
 - Evitar volver a meter HTML/CSS/JS gigante dentro de `ui.go` o `server.go`.
 
 ## Estado destacado
+- Hardening de producción aplicado: proxies confiables, rate limit de login/recuperación, redes administrativas confiables, límites HTTP/túnel y protección de concurrencia/rate limit en Traefik.
+- El acceso administrativo usa por defecto modo `learn`: el primer login correcto registra su red y las sesiones posteriores desde otras redes quedan rechazadas salvo CIDR permitido.
+- Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
 - `ui.go` ya no contiene el frontend gigante; ahora renderiza templates.
 - Existen layouts, componentes, páginas y assets en `internal/app/templates/` e `internal/app/assets/app/`.
 - Header, footer, sidebar y botón global son fijos; el scroll es global del navegador.
@@ -35,7 +39,9 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 2. Mejorar widget/listado de proyectos con estado, métricas rápidas y acción primaria clara.
 3. Revisar responsive de tablas, modales y formularios largos en móvil real.
 4. Reforzar mensajes de error operativos para Traefik, puertos, clientes desconectados, SSL y health.
-5. Mantener revisión de seguridad: XSS, CSRF, headers, validación de inputs, sesiones, rate limit y SQL parametrizado.
+5. Migrar `nhooyr.io/websocket` al módulo mantenido `github.com/coder/websocket` en una ventana con acceso a dependencias y suite de pruebas completa.
+6. Evaluar MFA y una UI para administrar/revocar redes administrativas confiables si habrá más operadores.
+7. Autoalojar dependencias frontend actualmente cargadas desde CDN para reducir dependencia externa y permitir una CSP más estricta.
 
 ## Comandos útiles
 ```bash

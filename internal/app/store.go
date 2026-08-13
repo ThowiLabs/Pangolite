@@ -71,6 +71,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		{Version: 7, Name: "mantenimiento unificado por cliente", Apply: s.migrateAgentMaintenance},
 		{Version: 8, Name: "correo de cuenta y recuperacion SMTP", Apply: s.migrateAccountEmailPasswordReset},
 		{Version: 9, Name: "redirecciones permanentes y disponibilidad oculta", Apply: s.migrateHTTPRedirectsAvailability},
+		{Version: 10, Name: "redes administrativas confiables", Apply: s.migrateTrustedAdminNetworks},
 	}
 	latest := migrations[len(migrations)-1].Version
 	currentVersion, err := s.SchemaVersion(ctx)
@@ -477,6 +478,19 @@ func (s *Store) migrateAccountEmailPasswordReset(ctx context.Context) error {
 	return nil
 }
 
+func (s *Store) migrateTrustedAdminNetworks(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS trusted_admin_networks (
+		network TEXT PRIMARY KEY,
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		last_seen_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		return fmt.Errorf("crear redes administrativas confiables: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
@@ -674,6 +688,36 @@ func (s *Store) getSetting(key string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(value), true
+}
+
+func (s *Store) ListTrustedAdminNetworks() []string {
+	rows, err := s.db.Query(`SELECT network FROM trusted_admin_networks ORDER BY created_at ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]string, 0, 4)
+	for rows.Next() {
+		var network string
+		if rows.Scan(&network) == nil && strings.TrimSpace(network) != "" {
+			out = append(out, strings.TrimSpace(network))
+		}
+	}
+	return out
+}
+
+func (s *Store) AddTrustedAdminNetwork(network, username string) error {
+	network = strings.TrimSpace(network)
+	if network == "" {
+		return errors.New("red administrativa requerida")
+	}
+	if _, _, err := net.ParseCIDR(network); err != nil {
+		return errors.New("red administrativa invalida")
+	}
+	now := formatTime(time.Now().UTC())
+	_, err := s.db.Exec(`INSERT INTO trusted_admin_networks(network,created_by,created_at,last_seen_at) VALUES(?,?,?,?)
+		ON CONFLICT(network) DO UPDATE SET last_seen_at = excluded.last_seen_at`, network, NormalizeUsername(username), now, now)
+	return err
 }
 
 func (s *Store) BootstrapAdmin(username, passwordFile string) (created bool, tempPassword string, err error) {
