@@ -270,17 +270,17 @@ func TestTerminalFileTransferIsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{`id="terminalUploadBtn"`, `id="terminalFileInput"`, `id="terminalDropOverlay"`, `id="terminalTransfers"`} {
+	for _, expected := range []string{`id="terminalUploadBtn"`, `id="terminalFileInput"`, `id="terminalDropOverlay"`, `id="terminalTransfers"`, `id="terminalTransferAlerts"`} {
 		if !strings.Contains(string(page), expected) {
 			t.Fatalf("terminal.html no contiene %q", expected)
 		}
 	}
-	for _, expected := range []string{"terminalUploadChunkSize=24*1024", "upload.start", "encodeTerminalUploadChunk", "bufferedAmount>512*1024", "queueTerminalFiles"} {
+	for _, expected := range []string{"terminalUploadChunkSize=24*1024", "upload.start", "encodeTerminalUploadChunk", "bufferedAmount>512*1024", "queueTerminalFiles", "showTerminalUploadAlert", "hideTransferWindow"} {
 		if !strings.Contains(string(script), expected) {
 			t.Fatalf("terminal.js no contiene %q", expected)
 		}
 	}
-	for _, expected := range []string{".terminal-drop-overlay", ".terminal-transfer-bar", ".terminal-transfer.error"} {
+	for _, expected := range []string{".terminal-drop-overlay", ".terminal-transfer-bar", ".terminal-transfer.error", ".terminal-transfers{\n  position:fixed", ".terminal-transfer-alert"} {
 		if !strings.Contains(string(css), expected) {
 			t.Fatalf("panel.css no contiene %q", expected)
 		}
