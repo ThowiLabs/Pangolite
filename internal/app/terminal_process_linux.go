@@ -69,6 +69,9 @@ func startTerminalProcess(ctx context.Context, opts terminalStartOptions) (*term
 			cols, rows = normalizeTerminalSize(cols, rows)
 			return resizePTY(master, cols, rows)
 		},
+		currentDir: func() (string, error) {
+			return linuxTerminalCurrentDir(master, child.pid)
+		},
 		stop: child.stop,
 	}
 	done := make(chan struct{})
@@ -171,6 +174,31 @@ func openLinuxPTY() (*os.File, *os.File, error) {
 		return nil, nil, err
 	}
 	return master, slave, nil
+}
+
+func linuxTerminalCurrentDir(master *os.File, fallbackPID int) (string, error) {
+	pid := fallbackPID
+	if master != nil {
+		var foreground int32
+		if err := ioctl(master.Fd(), uintptr(syscall.TIOCGPGRP), uintptr(unsafe.Pointer(&foreground))); err == nil && foreground > 0 {
+			pid = int(foreground)
+		}
+	}
+	if pid <= 0 {
+		return "", errors.New("proceso de terminal no disponible")
+	}
+	path, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil && pid != fallbackPID && fallbackPID > 0 {
+		path, err = os.Readlink(fmt.Sprintf("/proc/%d/cwd", fallbackPID))
+	}
+	if err != nil {
+		return "", err
+	}
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) || !isUsableDir(path) {
+		return "", errors.New("directorio actual no disponible")
+	}
+	return path, nil
 }
 
 func resizePTY(file *os.File, cols, rows int) error {

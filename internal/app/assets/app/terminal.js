@@ -10,6 +10,11 @@
   let mobileKeyboardFloating=false;
   let mobileLayoutTimer=null;
   const encoder=new TextEncoder();
+  const terminalUploadPrefix=encoder.encode('\x00PANGOLITE-TERMINAL-UPLOAD ');
+  const terminalUploadChunkSize=24*1024;
+  let terminalUploadQueue=[];
+  let terminalUploadRunning=false;
+  const terminalUploadStates=new Map();
   const themes={
     black:{background:'#05070a',foreground:'#f8fafc',cursor:'#f8fafc',selectionBackground:'#475569'},
     dark:{background:'#002b36',foreground:'#fdf6e3',cursor:'#eee8d5',selectionBackground:'#ffffff33',black:'#073642',red:'#dc322f',green:'#859900',yellow:'#b58900',blue:'#268bd2',magenta:'#d33682',cyan:'#2aa198',white:'#eee8d5'},
@@ -32,11 +37,12 @@
     s.appendChild(document.createTextNode(' '+text));
   }
   function setButtons(mode){
-    const connect=el('terminalConnectBtn'), disconnect=el('terminalDisconnectBtn'), target=el('terminalTarget');
+    const connect=el('terminalConnectBtn'), disconnect=el('terminalDisconnectBtn'), target=el('terminalTarget'), upload=el('terminalUploadBtn');
     const busy=mode==='connecting'||mode==='connected';
     if(connect)connect.disabled=busy;
     if(disconnect)disconnect.disabled=!busy;
     if(target)target.disabled=busy;
+    if(upload)upload.disabled=mode!=='connected';
   }
   function setOverlay(kind,title,text,buttonText,loading){
     const overlay=el('terminalOverlay');
@@ -310,8 +316,169 @@
     return socket;
   }
   function sendControl(type,payload){
-    if(!ws||ws.readyState!==WebSocket.OPEN)return;
+    if(!ws||ws.readyState!==WebSocket.OPEN)return false;
     ws.send(JSON.stringify(Object.assign({pangoliteTerminal:true,type:type},payload||{})));
+    return true;
+  }
+  function terminalUploadID(){
+    if(window.crypto&&typeof window.crypto.randomUUID==='function')return 'up_'+window.crypto.randomUUID().replaceAll('-','_');
+    return 'up_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,14);
+  }
+  function formatTerminalBytes(value){
+    let n=Math.max(0,Number(value)||0);
+    const units=['B','KB','MB','GB','TB'];
+    let i=0;
+    while(n>=1024&&i<units.length-1){n/=1024;i++}
+    return (i===0?Math.round(n):n.toFixed(n>=10?1:2))+' '+units[i];
+  }
+  function createTransferRow(file){
+    const box=el('terminalTransfers');
+    if(!box)return null;
+    box.classList.remove('d-none');
+    const row=document.createElement('div');
+    row.className='terminal-transfer';
+    const head=document.createElement('div');head.className='terminal-transfer-head';
+    const name=document.createElement('span');name.className='terminal-transfer-name';name.textContent=file.name;
+    const percent=document.createElement('span');percent.className='terminal-transfer-percent';percent.textContent='0%';
+    head.append(name,percent);
+    const track=document.createElement('div');track.className='terminal-transfer-track';
+    const bar=document.createElement('div');bar.className='terminal-transfer-bar';track.appendChild(bar);
+    const meta=document.createElement('div');meta.className='terminal-transfer-meta';meta.textContent='Preparando · '+formatTerminalBytes(file.size);
+    row.append(head,track,meta);box.prepend(row);
+    requestAnimationFrame(()=>{fitTerminal();queueResize()});
+    return {row,percent,bar,meta};
+  }
+  function paintTransfer(state,doneBytes,statusText,statusClass){
+    if(!state||!state.ui)return;
+    const total=Math.max(0,Number(state.file.size)||0);
+    const done=Math.max(0,Math.min(total,Number(doneBytes)||0));
+    const pct=total===0?100:Math.min(100,Math.round(done*100/total));
+    state.ui.percent.textContent=pct+'%';
+    state.ui.bar.style.width=pct+'%';
+    state.ui.meta.textContent=statusText||formatTerminalBytes(done)+' / '+formatTerminalBytes(total);
+    state.ui.row.classList.toggle('done',statusClass==='done');
+    state.ui.row.classList.toggle('error',statusClass==='error');
+  }
+  function settleUploadWaiter(state,kind,value,error){
+    if(!state)return;
+    const waiter=state[kind+'Waiter'];
+    if(!waiter)return;
+    clearTimeout(waiter.timer);
+    state[kind+'Waiter']=null;
+    if(error)waiter.reject(error);else waiter.resolve(value);
+  }
+  function waitUploadSignal(state,kind,timeoutMs){
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{state[kind+'Waiter']=null;reject(new Error('La terminal no confirmó la transferencia a tiempo'));},timeoutMs||30000);
+      state[kind+'Waiter']={resolve,reject,timer};
+    });
+  }
+  function handleTerminalControlMessage(data){
+    let message;
+    try{message=JSON.parse(data)}catch{return false}
+    if(!message||message.pangoliteTerminal!==true||!String(message.type||'').startsWith('upload.'))return false;
+    const state=terminalUploadStates.get(String(message.uploadId||''));
+    if(!state)return true;
+    if(message.type==='upload.ready'){
+      state.path=message.path||'';
+      paintTransfer(state,0,'Subiendo a '+(state.path||'directorio actual'));
+      settleUploadWaiter(state,'ready',message,false);
+    }else if(message.type==='upload.progress'){
+      state.confirmed=Math.max(state.confirmed||0,Number(message.written)||0);
+    }else if(message.type==='upload.done'){
+      state.path=message.path||state.path||'';
+      paintTransfer(state,state.file.size,'Completado · '+(state.path||state.file.name),'done');
+      settleUploadWaiter(state,'done',message,false);
+    }else if(message.type==='upload.error'){
+      const error=new Error(message.error||'No se pudo subir el archivo');
+      state.error=error;
+      paintTransfer(state,state.confirmed||state.sent||0,error.message,'error');
+      settleUploadWaiter(state,'ready',null,error);
+      settleUploadWaiter(state,'done',null,error);
+    }
+    return true;
+  }
+  function encodeTerminalUploadChunk(uploadId,data){
+    const header=encoder.encode(uploadId+' '+data.byteLength+'\n');
+    const out=new Uint8Array(terminalUploadPrefix.length+header.length+data.byteLength);
+    out.set(terminalUploadPrefix,0);
+    out.set(header,terminalUploadPrefix.length);
+    out.set(data,terminalUploadPrefix.length+header.length);
+    return out;
+  }
+  function sleepTerminal(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+  async function uploadTerminalFile(file){
+    if(!isConnected())throw new Error('Conecta la terminal antes de subir archivos');
+    const id=terminalUploadID();
+    const state={id,file,ui:createTransferRow(file),sent:0,confirmed:0,path:'',error:null};
+    terminalUploadStates.set(id,state);
+    try{
+      const ready=waitUploadSignal(state,'ready',30000);
+      if(!sendControl('upload.start',{uploadId:id,name:file.name,size:file.size}))throw new Error('La terminal se desconectó');
+      await ready;
+      let offset=0;
+      while(offset<file.size){
+        if(state.error)throw state.error;
+        if(!isConnected())throw new Error('La terminal se desconectó durante la subida');
+        while(ws&&ws.bufferedAmount>512*1024){await sleepTerminal(20);if(state.error)throw state.error;if(!isConnected())throw new Error('La terminal se desconectó durante la subida')}
+        const end=Math.min(file.size,offset+terminalUploadChunkSize);
+        const chunk=new Uint8Array(await file.slice(offset,end).arrayBuffer());
+        if(state.error)throw state.error;
+        ws.send(encodeTerminalUploadChunk(id,chunk));
+        offset=end;
+        state.sent=offset;
+        paintTransfer(state,offset,formatTerminalBytes(offset)+' / '+formatTerminalBytes(file.size));
+      }
+      if(state.error)throw state.error;
+      const done=waitUploadSignal(state,'done',60000);
+      if(!sendControl('upload.finish',{uploadId:id}))throw new Error('La terminal se desconectó');
+      await done;
+      setTimeout(()=>{if(state.ui&&state.ui.row)state.ui.row.remove();const box=el('terminalTransfers');if(box&&!box.children.length)box.classList.add('d-none');fitTerminal();queueResize();},8000);
+    }catch(err){
+      if(isConnected())sendControl('upload.cancel',{uploadId:id});
+      paintTransfer(state,state.sent||0,err.message||'Transferencia fallida','error');
+      throw err;
+    }finally{
+      terminalUploadStates.delete(id);
+    }
+  }
+  async function runTerminalUploadQueue(){
+    if(terminalUploadRunning)return;
+    terminalUploadRunning=true;
+    try{
+      while(terminalUploadQueue.length){
+        const file=terminalUploadQueue.shift();
+        try{await uploadTerminalFile(file)}catch(err){if(isConnected())status(connectedTarget==='local'?'Local conectado':'Cliente conectado',true,false);else status('Error al subir archivo',false,true)}
+      }
+    }finally{terminalUploadRunning=false;if(term)term.focus()}
+  }
+  function queueTerminalFiles(files){
+    const list=Array.from(files||[]).filter(file=>file&&typeof file.name==='string');
+    if(!list.length)return;
+    if(!isConnected()){status('Conecta la terminal antes de subir archivos',false,true);return}
+    terminalUploadQueue.push(...list);
+    runTerminalUploadQueue();
+  }
+  function cancelTerminalUploads(message){
+    terminalUploadQueue=[];
+    const error=new Error(message||'Transferencia cancelada');
+    terminalUploadStates.forEach(state=>{
+      settleUploadWaiter(state,'ready',null,error);
+      settleUploadWaiter(state,'done',null,error);
+      paintTransfer(state,state.sent||0,error.message,'error');
+    });
+  }
+  function installTerminalFileTransfer(box){
+    const input=el('terminalFileInput'),button=el('terminalUploadBtn'),overlay=el('terminalDropOverlay');
+    if(button&&input)button.addEventListener('click',()=>{if(isConnected())input.click();else status('Conecta la terminal antes de subir archivos',false,true)});
+    if(input)input.addEventListener('change',()=>{queueTerminalFiles(input.files);input.value=''});
+    if(!box)return;
+    let dragDepth=0;
+    const hasFiles=event=>Array.from((event.dataTransfer&&event.dataTransfer.types)||[]).includes('Files');
+    box.addEventListener('dragenter',event=>{if(!hasFiles(event))return;event.preventDefault();dragDepth++;if(overlay&&isConnected())overlay.classList.add('visible')});
+    box.addEventListener('dragover',event=>{if(!hasFiles(event))return;event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect=isConnected()?'copy':'none'});
+    box.addEventListener('dragleave',event=>{if(!hasFiles(event))return;dragDepth=Math.max(0,dragDepth-1);if(!dragDepth&&overlay)overlay.classList.remove('visible')});
+    box.addEventListener('drop',event=>{if(!hasFiles(event))return;event.preventDefault();dragDepth=0;if(overlay)overlay.classList.remove('visible');queueTerminalFiles(event.dataTransfer&&event.dataTransfer.files)});
   }
   function ensureTerminal(){
     const box=el('terminalBox');
@@ -339,6 +506,7 @@
     }
     term.open(box);
     installTerminalContextMenu(box);
+    installTerminalFileTransfer(box);
     installMobileTerminalKeys();
     term.attachCustomKeyEventHandler(handleTerminalKey);
     term.onData(data=>sendBytes(applyMobileModifiersToInput(data)));
@@ -440,7 +608,7 @@
     };
     socket.onmessage=(event)=>{
       if(ws!==socket||serial!==socketSerial||!term)return;
-      if(typeof event.data==='string')term.write(event.data);
+      if(typeof event.data==='string'){if(!handleTerminalControlMessage(event.data))term.write(event.data);}
       else term.write(decoder.decode(new Uint8Array(event.data),{stream:true}));
     };
     socket.onerror=()=>{
@@ -451,6 +619,7 @@
       const decoderTail=decoder.decode();
       if(decoderTail&&term)term.write(decoderTail);
       ws=null;
+      cancelTerminalUploads('La terminal se desconectó durante la transferencia');
       clearMobileModifiers();
       setButtons('idle');
       connectedTarget='';
@@ -460,6 +629,7 @@
     };
   }
   function disconnectTerminal(writeMessage=true){
+    cancelTerminalUploads('Transferencia cancelada al desconectar la terminal');
     clearMobileModifiers();
     const socket=retireCurrentSocket('usuario');
     connectedTarget='';
