@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 type terminalStartOptions struct {
