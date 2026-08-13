@@ -24,6 +24,8 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 
 ## Estado destacado
 - Hardening de producción aplicado: proxies confiables, rate limit de login/recuperación, redes administrativas confiables, límites HTTP/túnel y protección de concurrencia/rate limit en Traefik.
+- Corregido el corte periódico de SSH/SFTP: se eliminó el timeout global heredado de 20 s y ahora existe un timeout de 30 s solo para el adjunto inicial del agente, nunca para la vida de la sesión. Los streams TCP usan keepalive y concurrencia global acotada.
+- El túnel HTTP de agentes usa `http-stream-v1` en clientes actualizados, con streaming de uploads/downloads y buffers pequeños; agentes anteriores conservan temporalmente el protocolo legado de 16 MiB.
 - El acceso administrativo usa por defecto modo `learn`: el primer login correcto registra su red y las sesiones posteriores desde otras redes quedan rechazadas salvo CIDR permitido.
 - Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
 - `ui.go` ya no contiene el frontend gigante; ahora renderiza templates.

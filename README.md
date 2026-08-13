@@ -176,6 +176,7 @@ PANGOLITE_SESSION_DAYS=30
 PANGOLITE_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 PANGOLITE_ADMIN_ACCESS_MODE=learn
 PANGOLITE_AGENT_HTTP_CONCURRENCY=4
+PANGOLITE_AGENT_STREAM_CONCURRENCY=16
 # Opcional: CIDRs administrativos adicionales (IP o red).
 # PANGOLITE_ADMIN_ALLOWED_CIDRS=203.0.113.10/32
 # Opcional: tambien puedes definirlos por env, aunque lo recomendado es hacerlo desde Ajustes.
@@ -330,7 +331,8 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 - `PANGOLITE_ADMIN_ALLOWED_CIDRS` permite agregar IPs o redes administrativas conocidas. `PANGOLITE_ADMIN_ACCESS_MODE=allowlist` desactiva el aprendizaje de nuevas redes; `off` desactiva esta restricción.
 - Si cambias de ISP, VPN o red y quedas fuera, edita `/opt/pangolite/pangolite.env`, agrega temporalmente tu CIDR a `PANGOLITE_ADMIN_ALLOWED_CIDRS` (recomendado) o usa `PANGOLITE_ADMIN_ACCESS_MODE=off`, reinicia Pangolite, entra y vuelve a activar la protección.
 - Los WebSockets administrativos usan validación de origen y ya no desactivan la comprobación automática del paquete WebSocket.
-- El servidor limita cabeceras y conexiones ociosas. El túnel HTTP remoto limita cada cuerpo a 16 MiB y, por defecto, procesa como máximo 4 solicitudes simultáneas para evitar picos de memoria en VPS pequeños. Ajusta `PANGOLITE_AGENT_HTTP_CONCURRENCY` entre 1 y 64 si tu carga lo necesita.
+- El servidor limita cabeceras y conexiones ociosas. Los clientes actuales anuncian `http-stream-v1`: uploads y downloads HTTP se transmiten por streaming con buffers pequeños y ya no tienen un límite fijo de 16 MiB. El servidor conserva el protocolo legado de 16 MiB solo para agentes antiguos hasta que se actualicen. `PANGOLITE_AGENT_HTTP_CONCURRENCY` limita las solicitudes HTTP remotas simultáneas (4 por defecto).
+- Los recursos TCP/SSH/SFTP no tienen un timeout de duración fijo: los 30 segundos se usan únicamente para esperar que el agente adjunte el WebSocket. Una vez conectado, la sesión dura mientras los extremos sigan vivos. Pangolite aplica keepalive TCP/WebSocket y `TCP_NODELAY` para tolerar NAT/proxies y sesiones ociosas. `PANGOLITE_AGENT_STREAM_CONCURRENCY` limita globalmente los streams TCP remotos (16 por defecto) para proteger VPS pequeños.
 - Traefik aplica al panel un rate limit de 30 solicitudes/s con ráfaga 60 y un máximo de 64 solicitudes simultáneas. Esto reduce abuso HTTP, pero no sustituye protección DDoS volumétrica del proveedor, firewall o red perimetral.
 - La contraseña temporal se elimina al cambiarla, los puertos públicos se validan antes de persistir recursos TCP/UDP y las acciones administrativas críticas quedan registradas en auditoría.
 - Los respaldos SQLite se crean con `VACUUM INTO` desde el panel de Seguridad.
@@ -340,6 +342,7 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 - Expón públicamente solo los puertos necesarios. Para el panel normal, publica 80/443 por Traefik; evita exponer `2424/tcp` a Internet si no necesitas acceso directo/fallback de agentes.
 - Activa firewall del host/proveedor y limita SSH a redes administrativas conocidas. La aplicación no puede absorber por sí sola un ataque que sature el enlace antes de llegar al proceso.
 - Mantén Go y Traefik actualizados, revisa logs/auditoría y conserva respaldos fuera del host.
+- En un VPS cercano a 500 MiB/1 vCPU, conserva inicialmente `PANGOLITE_AGENT_HTTP_CONCURRENCY=4` y `PANGOLITE_AGENT_STREAM_CONCURRENCY=16`; reduce streams a 8 si publicas muchos puertos hostiles o detectas presión sostenida de CPU/RAM.
 - Prefiere `https://` para `PANGOLITE_SERVER_URL` y para cualquier fallback atravesando redes no confiables. El modo legado `http://IP:2424` mantiene compatibilidad, pero transporta las credenciales del agente sin cifrado TLS y debe limitarse por firewall/red confiable.
 - Si el panel queda accesible a más administradores o redes, el siguiente endurecimiento recomendado es MFA y gestión explícita de redes confiables desde la UI.
 

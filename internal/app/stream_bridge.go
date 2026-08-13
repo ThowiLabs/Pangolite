@@ -16,21 +16,29 @@ import (
 )
 
 const (
-	remoteBridgeHost       = "127.0.0.1"
-	remoteTCPDialTimeout   = 20 * time.Second
-	remoteUDPReplyTimeout  = 5 * time.Second
-	remoteUDPPacketMaxSize = 65535
+	remoteBridgeHost         = "127.0.0.1"
+	remoteUDPReplyTimeout    = 5 * time.Second
+	remoteUDPPacketMaxSize   = 65535
+	streamBufferSize         = 32 * 1024
+	streamWebSocketReadLimit = 64 * 1024
+	streamKeepAliveInterval  = 30 * time.Second
+	streamKeepAliveTimeout   = 20 * time.Second
+	streamTCPKeepAlivePeriod = 30 * time.Second
 )
 
 type BridgeManager struct {
-	mu        sync.Mutex
-	hub       *TunnelHub
-	log       *slog.Logger
-	listeners map[string]io.Closer
+	mu          sync.Mutex
+	hub         *TunnelHub
+	log         *slog.Logger
+	listeners   map[string]io.Closer
+	streamSlots chan struct{}
 }
 
-func NewBridgeManager(hub *TunnelHub, logger *slog.Logger) *BridgeManager {
-	return &BridgeManager{hub: hub, log: logger, listeners: map[string]io.Closer{}}
+func NewBridgeManager(hub *TunnelHub, logger *slog.Logger, maxConcurrent int) *BridgeManager {
+	if maxConcurrent < 1 {
+		maxConcurrent = 16
+	}
+	return &BridgeManager{hub: hub, log: logger, listeners: map[string]io.Closer{}, streamSlots: make(chan struct{}, maxConcurrent)}
 }
 
 func (m *BridgeManager) Sync(resources []Resource) error {
@@ -116,7 +124,18 @@ func (m *BridgeManager) acceptTCP(r Resource, ln net.Listener) {
 			}
 			return
 		}
-		go m.handleTCPConn(r, conn)
+		select {
+		case m.streamSlots <- struct{}{}:
+			go func() {
+				defer func() { <-m.streamSlots }()
+				m.handleTCPConn(r, conn)
+			}()
+		default:
+			_ = conn.Close()
+			if m.log != nil {
+				m.log.Warn("limite de streams TCP remotos alcanzado", "resource", r.ID, "agent", r.AgentID, "limit", cap(m.streamSlots))
+			}
+		}
 	}
 }
 
@@ -126,10 +145,9 @@ func (m *BridgeManager) handleTCPConn(r Resource, conn net.Conn) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), remoteTCPDialTimeout)
-	defer cancel()
+	configureTCPStreamConn(conn)
 	job := AgentStreamJob{ID: streamID, ResourceID: r.ID, Mode: ModeTCP, TargetHost: r.BackendHost, TargetPort: r.BackendPort}
-	if err := m.hub.SubmitStream(ctx, r.AgentID, job, conn); err != nil && m.log != nil {
+	if err := m.hub.SubmitStream(context.Background(), r.AgentID, job, conn); err != nil && m.log != nil {
 		m.log.Warn("stream TCP remoto fallo", "resource", r.ID, "agent", r.AgentID, "error", err.Error())
 	}
 }
@@ -171,19 +189,27 @@ func (m *BridgeManager) handleUDPPacket(r Resource, pc net.PacketConn, addr net.
 func bridgeWebSocketNetConn(ctx context.Context, ws *websocket.Conn, conn net.Conn) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errc := make(chan error, 2)
+	ws.SetReadLimit(streamWebSocketReadLimit)
+	errc := make(chan error, 3)
+	report := func(err error) {
+		select {
+		case errc <- err:
+		case <-ctx.Done():
+		}
+	}
+
 	go func() {
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, streamBufferSize)
 		for {
 			n, err := conn.Read(buf)
 			if n > 0 {
 				if werr := ws.Write(ctx, websocket.MessageBinary, buf[:n]); werr != nil {
-					errc <- werr
+					report(werr)
 					return
 				}
 			}
 			if err != nil {
-				errc <- err
+				report(err)
 				return
 			}
 		}
@@ -192,28 +218,73 @@ func bridgeWebSocketNetConn(ctx context.Context, ws *websocket.Conn, conn net.Co
 		for {
 			typ, data, err := ws.Read(ctx)
 			if err != nil {
-				errc <- err
+				report(err)
 				return
 			}
 			if typ != websocket.MessageBinary && typ != websocket.MessageText {
 				continue
 			}
 			if len(data) > 0 {
-				if _, err := conn.Write(data); err != nil {
-					errc <- err
+				if err := writeFull(conn, data); err != nil {
+					report(err)
 					return
 				}
 			}
 		}
 	}()
+	go func() {
+		ticker := time.NewTicker(streamKeepAliveInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(ctx, streamKeepAliveTimeout)
+				err := ws.Ping(pingCtx)
+				pingCancel()
+				if err != nil {
+					report(err)
+					return
+				}
+			}
+		}
+	}()
+
 	err := <-errc
 	cancel()
-	_ = ws.Close(websocket.StatusNormalClosure, "")
 	_ = conn.Close()
-	if errors.Is(err, io.EOF) || websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
+	_ = ws.CloseNow()
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
 		return nil
 	}
 	return err
+}
+
+func writeFull(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func configureTCPStreamConn(conn net.Conn) {
+	tcp, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tcp.SetNoDelay(true)
+	_ = tcp.SetKeepAlive(true)
+	_ = tcp.SetKeepAlivePeriod(streamTCPKeepAlivePeriod)
 }
 
 func runUDPAgentJob(ctx context.Context, job AgentJob) AgentResponse {

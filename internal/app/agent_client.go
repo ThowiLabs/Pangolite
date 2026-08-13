@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -440,7 +441,7 @@ func runStreamJobLoop(ctx context.Context, client *http.Client, endpoints *agent
 		}
 		go func(job AgentStreamJob) {
 			base, fallback := endpoints.Snapshot()
-			handleAgentStream(ctx, base, endpoints.ConfiguredServerURL(), fallback, cfg, job, logger)
+			handleAgentStream(ctx, client, base, endpoints.ConfiguredServerURL(), fallback, cfg, job, logger)
 		}(job)
 	}
 }
@@ -556,23 +557,23 @@ func executeAgentJob(ctx context.Context, client *http.Client, job AgentJob, req
 	return AgentResponse{JobID: job.ID, StatusCode: res.StatusCode, Header: cloneSafeHeader(res.Header), Body: body}
 }
 
-func handleAgentStream(ctx context.Context, base, configuredServer, fallback string, cfg AgentClientConfig, job AgentStreamJob, logger *slog.Logger) {
+func handleAgentStream(ctx context.Context, client *http.Client, base, configuredServer, fallback string, cfg AgentClientConfig, job AgentStreamJob, logger *slog.Logger) {
 	if job.Mode == AgentStreamModeTerminal {
-		handleAgentTerminalStream(ctx, base, configuredServer, fallback, cfg, job, logger)
+		handleAgentTerminalStream(ctx, client, base, configuredServer, fallback, cfg, job, logger)
 		return
 	}
-	if job.Mode != ModeTCP {
+	if job.Mode != ModeTCP && job.Mode != AgentStreamModeHTTP {
 		logger.Warn("stream no soportado", "stream", job.ID, "mode", job.Mode)
 		return
 	}
-	addr := net.JoinHostPort(job.TargetHost, strconv.Itoa(job.TargetPort))
-	dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	backend, err := dialer.DialContext(ctx, "tcp", addr)
+
+	backend, addr, err := dialAgentStreamBackend(ctx, job)
 	if err != nil {
-		logger.Warn("backend TCP no disponible", "stream", job.ID, "target", addr, "error", err.Error())
+		logger.Warn("backend de stream no disponible", "stream", job.ID, "mode", job.Mode, "target", addr, "error", err.Error())
 		return
 	}
 	defer backend.Close()
+
 	wsURL, err := agentWebSocketURL(base, "/api/agent/streams/"+url.PathEscape(job.ID))
 	if err != nil {
 		logger.Warn("url de stream invalida", "stream", job.ID, "error", err.Error())
@@ -580,18 +581,45 @@ func handleAgentStream(ctx context.Context, base, configuredServer, fallback str
 	}
 	header := http.Header{}
 	setAgentAuthHeaderWithEndpoint(header, cfg, configuredServer, fallback)
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header, HTTPClient: client})
 	if err != nil {
 		logger.Warn("websocket de stream fallo", "stream", job.ID, "error", err.Error())
 		return
 	}
-	logger.Info("stream TCP conectado", "stream", job.ID, "target", addr)
+	logger.Info("stream conectado", "stream", job.ID, "mode", job.Mode, "target", addr)
 	if err := bridgeWebSocketNetConn(ctx, ws, backend); err != nil {
-		logger.Debug("stream TCP cerrado", "stream", job.ID, "error", err.Error())
+		logger.Debug("stream cerrado", "stream", job.ID, "mode", job.Mode, "error", err.Error())
 	}
 }
 
-func handleAgentTerminalStream(ctx context.Context, base, configuredServer, fallback string, cfg AgentClientConfig, job AgentStreamJob, logger *slog.Logger) {
+func dialAgentStreamBackend(ctx context.Context, job AgentStreamJob) (net.Conn, string, error) {
+	addr := net.JoinHostPort(job.TargetHost, strconv.Itoa(job.TargetPort))
+	dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: streamTCPKeepAlivePeriod}
+	raw, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, addr, err
+	}
+	configureTCPStreamConn(raw)
+
+	scheme := strings.ToLower(strings.TrimSpace(job.TargetScheme))
+	if job.Mode != AgentStreamModeHTTP || scheme == "" || scheme == "http" {
+		return raw, addr, nil
+	}
+	if scheme != "https" {
+		_ = raw.Close()
+		return nil, addr, fmt.Errorf("scheme de backend no soportado: %s", scheme)
+	}
+	tlsConn := tls.Client(raw, &tls.Config{ServerName: job.TargetHost, MinVersion: tls.VersionTLS12})
+	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+		_ = raw.Close()
+		return nil, addr, err
+	}
+	return tlsConn, addr, nil
+}
+
+func handleAgentTerminalStream(ctx context.Context, client *http.Client, base, configuredServer, fallback string, cfg AgentClientConfig, job AgentStreamJob, logger *slog.Logger) {
 	wsURL, err := agentWebSocketURL(base, "/api/agent/streams/"+url.PathEscape(job.ID))
 	if err != nil {
 		logger.Warn("url de terminal invalida", "stream", job.ID, "error", err.Error())
@@ -599,7 +627,7 @@ func handleAgentTerminalStream(ctx context.Context, base, configuredServer, fall
 	}
 	header := http.Header{}
 	setAgentAuthHeaderWithEndpoint(header, cfg, configuredServer, fallback)
-	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header, HTTPClient: client})
 	if err != nil {
 		logger.Warn("websocket de terminal fallo", "stream", job.ID, "error", err.Error())
 		return
@@ -678,6 +706,7 @@ func setAgentAuthHeaderWithEndpoint(h http.Header, cfg AgentClientConfig, server
 	h.Set("X-Pangolite-Agent", cfg.AgentID)
 	h.Set("User-Agent", "pangolite-client/0.5")
 	h.Set("X-Pangolite-Client-Version", Version)
+	h.Set("X-Pangolite-Capabilities", AgentCapabilityHTTPStreamV1)
 	h.Set("X-Pangolite-Client-OS", runtime.GOOS)
 	h.Set("X-Pangolite-Client-Arch", runtime.GOARCH)
 	if strings.TrimSpace(serverURL) != "" {
