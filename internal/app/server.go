@@ -63,6 +63,9 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	if c.AgentHTTPConcurrency < 1 {
 		c.AgentHTTPConcurrency = 4
 	}
+	if c.AgentStreamConcurrency < 1 {
+		c.AgentStreamConcurrency = 16
+	}
 	effective := store.EffectiveConfig(c)
 	if err := store.SetPrimaryManagedDomain(effective.DashboardDomain, ""); err != nil && logger != nil {
 		logger.Warn("no se pudo registrar dominio principal del panel", "domain", effective.DashboardDomain, "error", err.Error())
@@ -72,7 +75,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	}
 	c = effective
 	hub := NewTunnelHub(64)
-	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), adminAllowedNetworks: parseCIDRs(c.AdminAllowedCIDRs), learnedAdminNetworks: parseCIDRs(strings.Join(store.ListTrustedAdminNetworks(), ",")), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency)}
+	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger, c.AgentStreamConcurrency), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), adminAllowedNetworks: parseCIDRs(c.AdminAllowedCIDRs), learnedAdminNetworks: parseCIDRs(strings.Join(store.ListTrustedAdminNetworks(), ",")), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency)}
 	s.routes()
 	return s
 }
@@ -2025,6 +2028,7 @@ func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchAgentFromRequest(agentID, r)
+	s.hub.UpdateAgentCapabilities(agentID, r.Header.Get("X-Pangolite-Capabilities"))
 	s.writeAgentEndpointHintHeaders(w, r)
 	ctx, cancel := context.WithTimeout(r.Context(), AgentPollTimeout)
 	defer cancel()
@@ -2077,6 +2081,7 @@ func (s *Server) agentStreamPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchAgentFromRequest(agentID, r)
+	s.hub.UpdateAgentCapabilities(agentID, r.Header.Get("X-Pangolite-Capabilities"))
 	s.writeAgentEndpointHintHeaders(w, r)
 	ctx, cancel := context.WithTimeout(r.Context(), AgentPollTimeout)
 	defer cancel()
@@ -2104,12 +2109,10 @@ func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "stream id requerido")
 		return
 	}
-	sess, ok := s.hub.AttachStream(streamID, agentID)
-	if !ok {
+	if !s.hub.CanAttachStream(streamID, agentID) {
 		writeError(w, http.StatusNotFound, "stream no encontrado, expirado o ya adjuntado")
 		return
 	}
-	defer s.hub.CompleteStream(streamID)
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		if s.log != nil {
@@ -2117,8 +2120,14 @@ func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	sess, ok := s.hub.AttachStream(streamID, agentID)
+	if !ok {
+		_ = ws.CloseNow()
+		return
+	}
+	defer s.hub.CompleteStream(streamID)
 	if err := bridgeWebSocketNetConn(r.Context(), ws, sess.ClientConn); err != nil && s.log != nil {
-		s.log.Debug("stream TCP cerrado", "stream", streamID, "agent", agentID, "error", err.Error())
+		s.log.Debug("stream cerrado", "stream", streamID, "agent", agentID, "error", err.Error())
 	}
 }
 
@@ -2487,12 +2496,181 @@ func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource 
 		writeError(w, http.StatusServiceUnavailable, "tunel HTTP ocupado; intenta de nuevo")
 		return
 	}
+	if s.hub.AgentSupports(resource.AgentID, AgentCapabilityHTTPStreamV1) {
+		s.proxyViaAgentStream(w, r, resource)
+		return
+	}
+	s.proxyViaAgentLegacy(w, r, resource)
+}
+
+var errAgentHTTPResponseHeadersTooLarge = errors.New("cabeceras de respuesta del backend demasiado grandes")
+
+const maxAgentHTTPResponseHeaderBytes = 64 << 10
+
+type headerLimitReader struct {
+	r       io.Reader
+	limit   int64
+	seen    int64
+	matched int
+	done    bool
+}
+
+func (h *headerLimitReader) Read(p []byte) (int, error) {
+	if h.done {
+		return h.r.Read(p)
+	}
+	if h.limit <= 0 {
+		h.limit = maxAgentHTTPResponseHeaderBytes
+	}
+	remaining := h.limit - h.seen
+	if remaining <= 0 {
+		return 0, errAgentHTTPResponseHeadersTooLarge
+	}
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := h.r.Read(p)
+	for i := 0; i < n; i++ {
+		h.seen++
+		switch h.matched {
+		case 0:
+			if p[i] == '\r' {
+				h.matched = 1
+			}
+		case 1:
+			if p[i] == '\n' {
+				h.matched = 2
+			} else if p[i] != '\r' {
+				h.matched = 0
+			}
+		case 2:
+			if p[i] == '\r' {
+				h.matched = 3
+			} else {
+				h.matched = 0
+			}
+		case 3:
+			if p[i] == '\n' {
+				h.done = true
+				return n, err
+			}
+			if p[i] == '\r' {
+				h.matched = 1
+			} else {
+				h.matched = 0
+			}
+		}
+	}
+	if err == nil && !h.done && h.seen >= h.limit {
+		// Entrega los bytes ya leidos; la siguiente lectura informa el limite.
+		return n, nil
+	}
+	return n, err
+}
+
+func (s *Server) proxyViaAgentStream(w http.ResponseWriter, r *http.Request, resource Resource) {
+	defer r.Body.Close()
+	jobID, err := randomID()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "no se pudo crear stream HTTP")
+		return
+	}
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	stopCancelClose := context.AfterFunc(r.Context(), func() {
+		_ = right.Close()
+		_ = left.Close()
+	})
+	defer stopCancelClose()
+
+	job := AgentStreamJob{
+		ID:           jobID,
+		ResourceID:   resource.ID,
+		Mode:         AgentStreamModeHTTP,
+		TargetScheme: resourceBackendScheme(resource),
+		TargetHost:   resource.BackendHost,
+		TargetPort:   resource.BackendPort,
+	}
+	if _, err := s.hub.StartStream(r.Context(), resource.AgentID, job, left); err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		s.log.Warn("stream HTTP no pudo adjuntarse", "agent", resource.AgentID, "resource", resource.ID, "error", err.Error())
+		serveUnavailableResource(w, r, resource, http.StatusServiceUnavailable, "agente no disponible o sin respuesta")
+		return
+	}
+
+	publicScheme := publicSchemeForResource(r, resource)
+	publicHost := publicHostForRequest(r)
+	outReq := r.Clone(r.Context())
+	outReq.RequestURI = ""
+	outReq.Header = cloneProxyRequestHeader(r.Header)
+	applyForwardedProxyHeaders(outReq.Header, r, publicScheme, publicHost)
+	if resource.ProtectionMode != ProtectionNone {
+		outReq.Header.Del("Authorization")
+	}
+	// El stream usa una conexion de backend por request; no hay pool que reutilizar.
+	outReq.Close = true
+	outReq.Header.Del("Expect")
+	if publicHost != "" {
+		outReq.Host = publicHost
+	}
+	requestWriteErr := make(chan error, 1)
+	go func() {
+		requestWriteErr <- outReq.Write(right)
+	}()
+
+	// HTTP es full-duplex: el backend puede responder antes de consumir todo el
+	// upload (por ejemplo un 413). Leer la respuesta en paralelo evita que un
+	// request grande quede bloqueado esperando que el backend siga leyendo.
+	reader := bufio.NewReaderSize(&headerLimitReader{r: right, limit: maxAgentHTTPResponseHeaderBytes}, 4*1024)
+	resp, err := http.ReadResponse(reader, outReq)
+	if err != nil {
+		if r.Context().Err() == nil {
+			writeErr := error(nil)
+			select {
+			case writeErr = <-requestWriteErr:
+			default:
+			}
+			if writeErr != nil {
+				s.log.Warn("stream HTTP interrumpido mientras enviaba request", "agent", resource.AgentID, "resource", resource.ID, "write_error", writeErr.Error(), "read_error", err.Error())
+			} else {
+				s.log.Warn("respuesta HTTP streaming invalida", "agent", resource.AgentID, "resource", resource.ID, "error", err.Error())
+			}
+			serveUnavailableResource(w, r, resource, http.StatusBadGateway, "respuesta invalida del backend remoto")
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	// 101 requiere tunel bidireccional del cliente HTTP y se mantiene fuera de
+	// este protocolo v1. Las respuestas normales, uploads y downloads si fluyen
+	// sin un limite de cuerpo fijo.
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		serveUnavailableResource(w, r, resource, http.StatusBadGateway, "upgrade HTTP no soportado por el stream v1")
+		return
+	}
+	respHeader := cloneSafeHeader(resp.Header)
+	rewriteProxyResponseHeaders(respHeader, resource, publicScheme, publicHost)
+	copySafeHeader(w.Header(), respHeader)
+	w.WriteHeader(resp.StatusCode)
+	if r.Method == http.MethodHead {
+		return
+	}
+	buf := make([]byte, streamBufferSize)
+	if _, err := io.CopyBuffer(w, resp.Body, buf); err != nil && r.Context().Err() == nil && s.log != nil {
+		s.log.Debug("respuesta HTTP streaming interrumpida", "agent", resource.AgentID, "resource", resource.ID, "error", err.Error())
+	}
+}
+
+func (s *Server) proxyViaAgentLegacy(w http.ResponseWriter, r *http.Request, resource Resource) {
 	defer r.Body.Close()
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxAgentHTTPBodyBytes))
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request del tunel HTTP demasiado grande")
+			writeError(w, http.StatusRequestEntityTooLarge, "request demasiado grande para un cliente Pangolite antiguo; actualiza el cliente para usar streaming")
 			return
 		}
 		writeError(w, http.StatusBadRequest, "no se pudo leer request del tunel HTTP")

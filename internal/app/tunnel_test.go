@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,5 +83,101 @@ func TestTunnelHubRemoveAgentReleasesQueues(t *testing.T) {
 	hub.RemoveAgent("agent-a")
 	if len(hub.queues) != 0 || len(hub.streamQueues) != 0 {
 		t.Fatalf("colas no liberadas: %d/%d", len(hub.queues), len(hub.streamQueues))
+	}
+}
+
+func TestTunnelHubAttachedStreamOutlivesAttachTimeout(t *testing.T) {
+	hub := NewTunnelHub(2)
+	hub.streamAttachTimeout = 40 * time.Millisecond
+	client, peer := net.Pipe()
+	defer client.Close()
+	defer peer.Close()
+
+	errCh := make(chan error, 1)
+	job := AgentStreamJob{ID: "stream-largo", Mode: ModeTCP}
+	go func() {
+		errCh <- hub.SubmitStream(context.Background(), "agent-1", job, client)
+	}()
+
+	pollCtx, pollCancel := context.WithTimeout(context.Background(), time.Second)
+	defer pollCancel()
+	if _, ok, err := hub.PollStream(pollCtx, "agent-1"); err != nil || !ok {
+		t.Fatalf("no se pudo obtener stream: ok=%v err=%v", ok, err)
+	}
+	if _, ok := hub.AttachStream(job.ID, "agent-1"); !ok {
+		t.Fatal("no se pudo adjuntar stream")
+	}
+
+	time.Sleep(3 * hub.streamAttachTimeout)
+	select {
+	case err := <-errCh:
+		t.Fatalf("el stream termino por el timeout de adjunto: %v", err)
+	default:
+	}
+
+	hub.CompleteStream(job.ID)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("SubmitStream termino con error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SubmitStream no termino despues de completar el stream")
+	}
+}
+
+func TestTunnelHubAttachTimeoutOnlyAppliesBeforeHandshake(t *testing.T) {
+	hub := NewTunnelHub(2)
+	hub.streamAttachTimeout = 30 * time.Millisecond
+	client, peer := net.Pipe()
+	defer client.Close()
+	defer peer.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- hub.SubmitStream(context.Background(), "agent-1", AgentStreamJob{ID: "sin-adjunto", Mode: ModeTCP}, client)
+	}()
+
+	pollCtx, pollCancel := context.WithTimeout(context.Background(), time.Second)
+	defer pollCancel()
+	if _, ok, err := hub.PollStream(pollCtx, "agent-1"); err != nil || !ok {
+		t.Fatalf("no se pudo obtener stream: ok=%v err=%v", ok, err)
+	}
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "timeout esperando conexion") {
+			t.Fatalf("error inesperado: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("el timeout de adjunto no libero el stream")
+	}
+}
+
+func TestTunnelHubAgentCapabilitiesExpire(t *testing.T) {
+	hub := NewTunnelHub(2)
+	hub.UpdateAgentCapabilities("agent-1", "tcp-stream-v1, "+AgentCapabilityHTTPStreamV1)
+	if !hub.AgentSupports("agent-1", AgentCapabilityHTTPStreamV1) {
+		t.Fatal("capacidad HTTP streaming no registrada")
+	}
+
+	hub.mu.Lock()
+	state := hub.capabilities["agent-1"]
+	state.SeenAt = time.Now().Add(-agentCapabilityTTL - time.Second)
+	hub.capabilities["agent-1"] = state
+	hub.mu.Unlock()
+	if hub.AgentSupports("agent-1", AgentCapabilityHTTPStreamV1) {
+		t.Fatal("capacidad expirada siguio activa")
+	}
+}
+
+func TestTunnelHubEmptyCapabilitiesDowngradesAgentImmediately(t *testing.T) {
+	hub := NewTunnelHub(2)
+	hub.UpdateAgentCapabilities("agent-1", AgentCapabilityHTTPStreamV1)
+	if !hub.AgentSupports("agent-1", AgentCapabilityHTTPStreamV1) {
+		t.Fatal("capacidad no registrada")
+	}
+	hub.UpdateAgentCapabilities("agent-1", "")
+	if hub.AgentSupports("agent-1", AgentCapabilityHTTPStreamV1) {
+		t.Fatal("un agente sin cabecera de capacidades conservo un protocolo incompatible")
 	}
 }

@@ -15,54 +15,56 @@ import (
 )
 
 type Config struct {
-	Addr                  string
-	DataPath              string
-	TraefikDir            string
-	DashboardDomain       string
-	LetsEncryptEmail      string
-	PublicIP              string
-	BootstrapTraefik      bool
-	InsecureDev           bool
-	InitialAdminUser      string
-	InitialPasswordFile   string
-	SessionDays           int
-	CookieSecureOverride  string
-	AutoTraefik           bool
-	LogPath               string
-	BackupDir             string
-	SuspensionTemplateDir string
-	BackupIntervalHours   int
-	BackupRetentionDays   int
-	TrustedProxyCIDRs     string
-	AdminAccessMode       string
-	AdminAllowedCIDRs     string
-	AgentHTTPConcurrency  int
+	Addr                   string
+	DataPath               string
+	TraefikDir             string
+	DashboardDomain        string
+	LetsEncryptEmail       string
+	PublicIP               string
+	BootstrapTraefik       bool
+	InsecureDev            bool
+	InitialAdminUser       string
+	InitialPasswordFile    string
+	SessionDays            int
+	CookieSecureOverride   string
+	AutoTraefik            bool
+	LogPath                string
+	BackupDir              string
+	SuspensionTemplateDir  string
+	BackupIntervalHours    int
+	BackupRetentionDays    int
+	TrustedProxyCIDRs      string
+	AdminAccessMode        string
+	AdminAllowedCIDRs      string
+	AgentHTTPConcurrency   int
+	AgentStreamConcurrency int
 }
 
 func LoadConfigFromEnv() Config {
 	return Config{
-		Addr:                  env("PANGOLITE_ADDR", "0.0.0.0:2424"),
-		DataPath:              env("PANGOLITE_DATA", "/opt/pangolite/data/pangolite.db"),
-		TraefikDir:            env("PANGOLITE_TRAEFIK_DIR", "/etc/traefik"),
-		DashboardDomain:       env("PANGOLITE_DASHBOARD_DOMAIN", ""),
-		LetsEncryptEmail:      env("PANGOLITE_LETSENCRYPT_EMAIL", ""),
-		PublicIP:              env("PANGOLITE_PUBLIC_IP", ""),
-		BootstrapTraefik:      os.Getenv("PANGOLITE_BOOTSTRAP_TRAEFIK") == "1",
-		InsecureDev:           os.Getenv("PANGOLITE_INSECURE_DEV") == "1",
-		InitialAdminUser:      env("PANGOLITE_INITIAL_ADMIN_USER", "admin"),
-		InitialPasswordFile:   env("PANGOLITE_INITIAL_PASSWORD_FILE", ""),
-		SessionDays:           envInt("PANGOLITE_SESSION_DAYS", 30),
-		CookieSecureOverride:  strings.TrimSpace(os.Getenv("PANGOLITE_COOKIE_SECURE")),
-		AutoTraefik:           env("PANGOLITE_AUTO_TRAEFIK", "1") != "0",
-		LogPath:               env("PANGOLITE_LOG_FILE", ""),
-		BackupDir:             env("PANGOLITE_BACKUP_DIR", ""),
-		SuspensionTemplateDir: env("PANGOLITE_SUSPENSION_TEMPLATE_DIR", ""),
-		BackupIntervalHours:   envInt("PANGOLITE_BACKUP_INTERVAL_HOURS", 24),
-		BackupRetentionDays:   envInt("PANGOLITE_BACKUP_RETENTION_DAYS", 14),
-		TrustedProxyCIDRs:     env("PANGOLITE_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"),
-		AdminAccessMode:       strings.ToLower(env("PANGOLITE_ADMIN_ACCESS_MODE", "learn")),
-		AdminAllowedCIDRs:     strings.TrimSpace(os.Getenv("PANGOLITE_ADMIN_ALLOWED_CIDRS")),
-		AgentHTTPConcurrency:  envInt("PANGOLITE_AGENT_HTTP_CONCURRENCY", 4),
+		Addr:                   env("PANGOLITE_ADDR", "0.0.0.0:2424"),
+		DataPath:               env("PANGOLITE_DATA", "/opt/pangolite/data/pangolite.db"),
+		TraefikDir:             env("PANGOLITE_TRAEFIK_DIR", "/etc/traefik"),
+		DashboardDomain:        env("PANGOLITE_DASHBOARD_DOMAIN", ""),
+		LetsEncryptEmail:       env("PANGOLITE_LETSENCRYPT_EMAIL", ""),
+		PublicIP:               env("PANGOLITE_PUBLIC_IP", ""),
+		BootstrapTraefik:       os.Getenv("PANGOLITE_BOOTSTRAP_TRAEFIK") == "1",
+		InsecureDev:            os.Getenv("PANGOLITE_INSECURE_DEV") == "1",
+		InitialAdminUser:       env("PANGOLITE_INITIAL_ADMIN_USER", "admin"),
+		InitialPasswordFile:    env("PANGOLITE_INITIAL_PASSWORD_FILE", ""),
+		SessionDays:            envInt("PANGOLITE_SESSION_DAYS", 30),
+		CookieSecureOverride:   strings.TrimSpace(os.Getenv("PANGOLITE_COOKIE_SECURE")),
+		AutoTraefik:            env("PANGOLITE_AUTO_TRAEFIK", "1") != "0",
+		LogPath:                env("PANGOLITE_LOG_FILE", ""),
+		BackupDir:              env("PANGOLITE_BACKUP_DIR", ""),
+		SuspensionTemplateDir:  env("PANGOLITE_SUSPENSION_TEMPLATE_DIR", ""),
+		BackupIntervalHours:    envInt("PANGOLITE_BACKUP_INTERVAL_HOURS", 24),
+		BackupRetentionDays:    envInt("PANGOLITE_BACKUP_RETENTION_DAYS", 14),
+		TrustedProxyCIDRs:      env("PANGOLITE_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"),
+		AdminAccessMode:        strings.ToLower(env("PANGOLITE_ADMIN_ACCESS_MODE", "learn")),
+		AdminAllowedCIDRs:      strings.TrimSpace(os.Getenv("PANGOLITE_ADMIN_ALLOWED_CIDRS")),
+		AgentHTTPConcurrency:   envInt("PANGOLITE_AGENT_HTTP_CONCURRENCY", 4),
+		AgentStreamConcurrency: envInt("PANGOLITE_AGENT_STREAM_CONCURRENCY", 16),
 	}
 }
 
@@ -100,6 +102,9 @@ func (c Config) ValidateForServe() error {
 	}
 	if c.AgentHTTPConcurrency < 1 || c.AgentHTTPConcurrency > 64 {
 		return errors.New("PANGOLITE_AGENT_HTTP_CONCURRENCY debe estar entre 1 y 64")
+	}
+	if c.AgentStreamConcurrency < 1 || c.AgentStreamConcurrency > 256 {
+		return errors.New("PANGOLITE_AGENT_STREAM_CONCURRENCY debe estar entre 1 y 256")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AdminAccessMode)) {
 	case "", "off", "learn", "allowlist":
@@ -198,7 +203,7 @@ func PrintServeConfig(c Config) string {
 	if c.InsecureDev {
 		mode = "desarrollo-inseguro"
 	}
-	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s templates=%s backup_interval_hours=%d backup_retention_days=%d mode=%s session_days=%d public_ip=%s admin_access=%s agent_http_concurrency=%d", c.Addr, c.DataPath, c.LogPath, c.BackupDir, c.SuspensionTemplateDir, c.BackupIntervalHours, c.BackupRetentionDays, mode, c.SessionDays, c.PublicIP, c.AdminAccessMode, c.AgentHTTPConcurrency)
+	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s templates=%s backup_interval_hours=%d backup_retention_days=%d mode=%s session_days=%d public_ip=%s admin_access=%s agent_http_concurrency=%d agent_stream_concurrency=%d", c.Addr, c.DataPath, c.LogPath, c.BackupDir, c.SuspensionTemplateDir, c.BackupIntervalHours, c.BackupRetentionDays, mode, c.SessionDays, c.PublicIP, c.AdminAccessMode, c.AgentHTTPConcurrency, c.AgentStreamConcurrency)
 }
 
 func sessionDuration(c Config) time.Duration {

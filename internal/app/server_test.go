@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -444,5 +446,278 @@ func TestFixedWindowLimiterBoundsRequests(t *testing.T) {
 	}
 	if _, ok := limiter.Allow("login:ip", 3, time.Minute); ok {
 		t.Fatal("cuarta solicitud debio bloquearse")
+	}
+}
+
+type sizedByteReader struct {
+	remaining int64
+	value     byte
+}
+
+func (r *sizedByteReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = r.value
+	}
+	r.remaining -= int64(len(p))
+	return len(p), nil
+}
+
+type countingResponseWriter struct {
+	header http.Header
+	status int
+	bytes  int64
+}
+
+func (w *countingResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *countingResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *countingResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	w.bytes += int64(len(p))
+	return len(p), nil
+}
+
+func runFakeHTTPStreamAgent(ctx context.Context, hub *TunnelHub, agentID string, handle func(AgentStreamJob, *http.Request) *http.Response) error {
+	job, ok, err := hub.PollStream(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return context.Canceled
+	}
+	if job.Mode != AgentStreamModeHTTP {
+		return &unexpectedStreamJobError{job: job}
+	}
+	sess, ok := hub.AttachStream(job.ID, agentID)
+	if !ok {
+		return context.Canceled
+	}
+	defer hub.CompleteStream(job.ID)
+	defer sess.ClientConn.Close()
+
+	req, err := http.ReadRequest(bufio.NewReader(sess.ClientConn))
+	if err != nil {
+		return err
+	}
+	defer req.Body.Close()
+	resp := handle(job, req)
+	if resp == nil {
+		return context.Canceled
+	}
+	resp.Request = req
+	return resp.Write(sess.ClientConn)
+}
+
+type unexpectedStreamJobError struct {
+	job AgentStreamJob
+}
+
+func (e *unexpectedStreamJobError) Error() string {
+	return "stream HTTP inesperado para agente"
+}
+
+func TestPublicAgentHTTPStreamAcceptsUploadLargerThanLegacyLimit(t *testing.T) {
+	server, _ := testServerWithStore(t)
+	agentID := "agent-stream-upload"
+	server.hub.UpdateAgentCapabilities(agentID, AgentCapabilityHTTPStreamV1)
+	resource := Resource{
+		ID:            "resource-upload",
+		Mode:          ModeHTTP,
+		Domain:        "upload.example.com",
+		BackendScheme: "http",
+		BackendHost:   "127.0.0.1",
+		BackendPort:   8080,
+		OriginType:    OriginAgent,
+		AgentID:       agentID,
+		Enabled:       true,
+		TLS:           true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	const extra = int64(2 << 20)
+	bodySize := MaxAgentHTTPBodyBytes + extra
+	go func() {
+		errCh <- runFakeHTTPStreamAgent(ctx, server.hub, agentID, func(job AgentStreamJob, req *http.Request) *http.Response {
+			if job.TargetScheme != "http" || job.TargetHost != "127.0.0.1" || job.TargetPort != 8080 {
+				return nil
+			}
+			if req.Host != "upload.example.com" || req.Header.Get("X-Forwarded-Proto") != "https" {
+				return nil
+			}
+			n, err := io.Copy(io.Discard, req.Body)
+			if err != nil || n != bodySize {
+				return nil
+			}
+			return &http.Response{
+				StatusCode:    http.StatusCreated,
+				Status:        "201 Created",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        http.Header{"Content-Type": []string{"text/plain"}},
+				Body:          io.NopCloser(strings.NewReader("ok")),
+				ContentLength: 2,
+				Close:         true,
+			}
+		})
+	}()
+
+	body := &sizedByteReader{remaining: bodySize, value: 'x'}
+	req := httptest.NewRequest(http.MethodPost, "https://upload.example.com/files", body).WithContext(ctx)
+	req.Host = "upload.example.com"
+	req.ContentLength = bodySize
+	rr := httptest.NewRecorder()
+	server.proxyViaAgent(rr, req, resource)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("el agente streaming no termino el upload")
+	}
+	if rr.Code != http.StatusCreated || rr.Body.String() != "ok" {
+		t.Fatalf("upload streaming inesperado: status=%d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicAgentHTTPStreamDownloadsWithoutBodyLimit(t *testing.T) {
+	server, _ := testServerWithStore(t)
+	agentID := "agent-stream-download"
+	server.hub.UpdateAgentCapabilities(agentID, AgentCapabilityHTTPStreamV1)
+	resource := Resource{
+		ID:            "resource-download",
+		Mode:          ModeHTTP,
+		Domain:        "download.example.com",
+		BackendScheme: "http",
+		BackendHost:   "127.0.0.1",
+		BackendPort:   8080,
+		OriginType:    OriginAgent,
+		AgentID:       agentID,
+		Enabled:       true,
+		TLS:           true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	bodySize := MaxAgentHTTPBodyBytes + int64(2<<20)
+	go func() {
+		errCh <- runFakeHTTPStreamAgent(ctx, server.hub, agentID, func(_ AgentStreamJob, req *http.Request) *http.Response {
+			_, _ = io.Copy(io.Discard, req.Body)
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Status:        "200 OK",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        http.Header{"Content-Type": []string{"application/octet-stream"}},
+				Body:          io.NopCloser(&sizedByteReader{remaining: bodySize, value: 'z'}),
+				ContentLength: bodySize,
+				Close:         true,
+			}
+		})
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "https://download.example.com/archive.bin", nil).WithContext(ctx)
+	req.Host = "download.example.com"
+	cw := &countingResponseWriter{}
+	server.proxyViaAgent(cw, req, resource)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("el agente streaming no termino el download")
+	}
+	if cw.status != http.StatusOK || cw.bytes != bodySize {
+		t.Fatalf("download streaming inesperado: status=%d bytes=%d want=%d", cw.status, cw.bytes, bodySize)
+	}
+}
+
+func TestHeaderLimitReaderRejectsOversizedBackendHeaders(t *testing.T) {
+	payload := strings.Repeat("X", maxAgentHTTPResponseHeaderBytes+1)
+	r := &headerLimitReader{r: strings.NewReader(payload), limit: maxAgentHTTPResponseHeaderBytes}
+	_, err := io.ReadAll(r)
+	if !errors.Is(err, errAgentHTTPResponseHeadersTooLarge) {
+		t.Fatalf("error=%v, want errAgentHTTPResponseHeadersTooLarge", err)
+	}
+}
+
+func TestPublicAgentHTTPStreamAllowsEarlyBackendResponse(t *testing.T) {
+	server, _ := testServerWithStore(t)
+	agentID := "agent-stream-early-response"
+	server.hub.UpdateAgentCapabilities(agentID, AgentCapabilityHTTPStreamV1)
+	resource := Resource{
+		ID:            "resource-early-response",
+		Mode:          ModeHTTP,
+		Domain:        "upload.example.com",
+		BackendScheme: "http",
+		BackendHost:   "127.0.0.1",
+		BackendPort:   8080,
+		OriginType:    OriginAgent,
+		AgentID:       agentID,
+		Enabled:       true,
+		TLS:           true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runFakeHTTPStreamAgent(ctx, server.hub, agentID, func(_ AgentStreamJob, req *http.Request) *http.Response {
+			// Responde sin consumir el upload completo para validar full-duplex.
+			return &http.Response{
+				StatusCode:    http.StatusRequestEntityTooLarge,
+				Status:        "413 Request Entity Too Large",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        http.Header{"Content-Type": []string{"text/plain"}},
+				Body:          io.NopCloser(strings.NewReader("rechazado")),
+				ContentLength: int64(len("rechazado")),
+				Close:         true,
+			}
+		})
+	}()
+
+	bodySize := MaxAgentHTTPBodyBytes + int64(8<<20)
+	body := &sizedByteReader{remaining: bodySize, value: 'x'}
+	req := httptest.NewRequest(http.MethodPost, "https://upload.example.com/files", body).WithContext(ctx)
+	req.Host = "upload.example.com"
+	req.ContentLength = bodySize
+	rr := httptest.NewRecorder()
+	server.proxyViaAgent(rr, req, resource)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("la respuesta temprana del backend quedo bloqueada por el upload")
+	}
+	if rr.Code != http.StatusRequestEntityTooLarge || rr.Body.String() != "rechazado" {
+		t.Fatalf("respuesta temprana inesperada: status=%d body=%q", rr.Code, rr.Body.String())
 	}
 }
