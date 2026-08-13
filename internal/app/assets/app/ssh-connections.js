@@ -126,7 +126,7 @@
     }
     if(clear)clear.addEventListener('click',clearSearch);
     if(emptyClear)emptyClear.addEventListener('click',clearSearch);
-    if(pageSize)pageSize.addEventListener('change',()=>{currentPage=1;render(false)});
+    if(pageSize)pageSize.addEventListener('change',()=>{currentPage=1;render(false);if(typeof closeActionDropdowns==='function')closeActionDropdowns()});
     document.addEventListener('keydown',event=>{
       if(event.key==='/'&&!event.ctrlKey&&!event.metaKey&&!event.altKey&&document.activeElement!==input){
         const tag=(document.activeElement&&document.activeElement.tagName||'').toLowerCase();

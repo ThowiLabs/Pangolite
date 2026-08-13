@@ -12,6 +12,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - Clientes de sistema/NAT conectados al servidor para publicar servicios remotos.
 - Frontend autocontenido con `embed.FS`, templates físicas, layouts, componentes, páginas HTML y assets separados.
 - El panel usa rutas reales del navegador, render inicial desde servidor y JavaScript solo para hidratación, modales, acciones, health, logs y copiado.
+- WebSockets usan el módulo mantenido `github.com/coder/websocket v1.8.15`; no conservar imports nuevos a `nhooyr.io/websocket`.
 
 ## Reglas importantes de desarrollo
 - No mencionar IA/OpenAI/ChatGPT en código, README, commits ni documentación pública.
@@ -22,6 +23,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - No agregar Node, Vite, React ni dependencias frontend innecesarias.
 - Evitar volver a meter HTML/CSS/JS gigante dentro de `ui.go` o `server.go`.
 - En `/terminal`, mantener la barra superior compacta: **Destino** y **Tema de color** viven dentro del widget de ajustes; Subir archivo y Desconectar viven dentro del menú de opciones; Pantalla completa permanece como la única acción principal permanente durante una sesión (Conectar solo aparece cuando hace falta iniciar/reintentar). No volver a exponer controles secundarios como una fila de botones/selects que degrade móvil.
+- En toda la UI administrativa, priorizar una jerarquía compacta de acciones: **acciones primarias** pueden conservar icono + texto; **acciones secundarias/rutinarias** deben preferir botones de solo icono con `aria-label` y `title`; cuando una zona acumule varias acciones contextuales deben agruparse en dropdown/widget de tres puntos o ajustes. Reservar modales para confirmaciones, formularios que requieren atención o ayuda extensa; no usar un diálogo para navegación o una acción inmediata que cabe en un botón/icono. Esta regla aplica especialmente a móvil y no debe revertirse con filas horizontales de botones.
 - Las transferencias de terminal deben ser streaming y de memoria acotada. `download ruta` es una pseudo-orden del navegador/Pangolite, no un binario instalado en el sistema; para directorios debe conservarse la política de ZIP seguro (sin raíces sensibles, symlinks ni archivos especiales, con límites de árbol).
 
 ## Estado destacado

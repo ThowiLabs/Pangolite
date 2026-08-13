@@ -22,7 +22,7 @@
     <div class="card chart-card soft-enter soft-enter-delay-2"><div class="card-header"><div><div class="card-title">Estado global de recursos</div><div class="text-muted small">Activos contra suspendidos/inactivos.</div></div></div><div class="card-body"><canvas id="resourceStatusChart" aria-label="Estado global de recursos" role="img"></canvas><div id="statusChartFallback" class="chart-fallback">Chart.js no está disponible. Revisa conexión al CDN o empaqueta los assets localmente.</div></div></div>
   </div>
   <div class="card mb-3 soft-enter soft-enter-delay-3">
-    <div class="card-header d-flex justify-content-between align-items-center"><div><div class="card-title">Estado operativo</div><div class="text-muted small">Publicación del panel, DNS y datos básicos del servidor.</div></div><a class="btn btn-sm btn-outline-secondary" href="/settings"><i class="bi bi-sliders"></i> Ajustes</a></div>
+    <div class="card-header d-flex justify-content-between align-items-center"><div><div class="card-title">Estado operativo</div><div class="text-muted small">Publicación del panel, DNS y datos básicos del servidor.</div></div><a class="btn btn-sm btn-outline-secondary pl-icon-action" href="/settings" aria-label="Abrir ajustes" title="Ajustes"><i class="bi bi-sliders"></i></a></div>
     <div class="card-body ops-list">
       <div class="ops-row"><div><div class="ops-label">Dominio del panel</div><div class="text-muted small">Entrada administrativa pública</div></div><div id="dashPanelDomain" class="ops-value">{{if .Settings.DashboardDomain}}{{.Settings.DashboardDomain}}{{else}}Sin configurar{{end}}</div></div>
       <div class="ops-row"><div><div class="ops-label">IP pública detectada</div><div class="text-muted small">Referencia usada para validar DNS</div></div><div id="dashPublicIp" class="ops-value font-mono">{{if .Network.PublicIP}}{{.Network.PublicIP}}{{else}}No detectada{{end}}</div></div>
@@ -52,10 +52,10 @@
               <div><strong>{{projectStats $.Stats .ID "activeResources"}}</strong><span>Activos</span></div>
               <div><strong>{{projectStats $.Stats .ID "agents"}}</strong><span>Clientes</span></div>
             </div>
-            <div class="project-card-actions">
-              <a class="btn btn-sm btn-primary" href="/projects/{{.ID}}"><i class="bi bi-command"></i> Resumen</a>
-              <a class="btn btn-sm btn-outline-secondary" href="/projects/{{.ID}}/resources"><i class="bi bi-diagram-3"></i> Recursos</a>
-              <a class="btn btn-sm btn-outline-secondary" href="/projects/{{.ID}}/agents"><i class="bi bi-hdd-network"></i> Clientes</a>
+            <div class="project-card-actions pl-icon-actions" aria-label="Acciones de {{.Name}}">
+              <a class="btn btn-sm btn-primary pl-icon-action" href="/projects/{{.ID}}" aria-label="Abrir resumen de {{.Name}}" title="Resumen"><i class="bi bi-command"></i></a>
+              <a class="btn btn-sm btn-outline-secondary pl-icon-action" href="/projects/{{.ID}}/resources" aria-label="Ver recursos de {{.Name}}" title="Recursos"><i class="bi bi-diagram-3"></i></a>
+              <a class="btn btn-sm btn-outline-secondary pl-icon-action" href="/projects/{{.ID}}/agents" aria-label="Ver clientes de {{.Name}}" title="Clientes"><i class="bi bi-hdd-network"></i></a>
             </div>
           </article>
           {{end}}

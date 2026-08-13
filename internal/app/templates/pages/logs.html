@@ -7,11 +7,11 @@
         <div class="card-title">Diagnostico operativo</div>
         <div id="logsPath" class="log-path">Archivo: {{if .LogPath}}{{.LogPath}}{{else}}no configurado{{end}} · maximo {{.MaxLogEntries}} entradas</div>
       </div>
-      <div class="d-flex gap-2 flex-wrap">
-        <button class="btn btn-outline-secondary" type="button" onclick="loadLogs()"><i class="bi bi-arrow-clockwise"></i> Actualizar</button>
-        <button class="btn btn-outline-secondary" type="button" onclick="copyLogs(this)"><i class="bi bi-clipboard"></i> Copiar</button>
-        <button class="btn btn-outline-secondary" type="button" onclick="downloadLogs()"><i class="bi bi-download"></i> Descargar</button>
-        <button class="btn btn-outline-secondary" type="button" onclick="clearLogsView()"><i class="bi bi-eraser"></i> Limpiar vista</button>
+      <div class="pl-icon-actions logs-toolbar-actions" aria-label="Acciones de logs">
+        <button class="btn btn-outline-secondary pl-icon-action" type="button" onclick="loadLogs()" aria-label="Actualizar logs" title="Actualizar"><i class="bi bi-arrow-clockwise"></i></button>
+        <button class="btn btn-outline-secondary pl-icon-action" type="button" onclick="copyLogs(this)" aria-label="Copiar logs" title="Copiar"><i class="bi bi-clipboard"></i></button>
+        <button class="btn btn-outline-secondary pl-icon-action" type="button" onclick="downloadLogs()" aria-label="Descargar logs" title="Descargar"><i class="bi bi-download"></i></button>
+        <button class="btn btn-outline-secondary pl-icon-action" type="button" onclick="clearLogsView()" aria-label="Limpiar vista de logs" title="Limpiar vista"><i class="bi bi-eraser"></i></button>
       </div>
     </div>
     <div class="card-body">
@@ -22,7 +22,7 @@
         </div>
         <div>
           <label class="form-label" for="logsLevel">Nivel</label>
-          <select id="logsLevel" class="form-select">
+          <select id="logsLevel" class="form-select pl-widget-select" data-widget-icon="bi-funnel">
             <option value="all">Todos</option>
             <option value="error">Errores</option>
             <option value="warn">Advertencias</option>

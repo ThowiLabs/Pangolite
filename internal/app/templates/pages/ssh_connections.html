@@ -42,14 +42,19 @@
           <input id="sshConnectionSearch" class="form-control" type="search" placeholder="Buscar conexión..." autocomplete="off">
           <button id="sshConnectionClear" class="ssh-search-clear d-none" type="button" aria-label="Limpiar búsqueda"><i class="bi bi-x-lg"></i></button>
         </label>
-        <label class="ssh-page-size" for="sshConnectionPageSize">
-          <span>Mostrar</span>
-          <select id="sshConnectionPageSize" class="form-select form-select-sm" aria-label="Conexiones por página">
-            <option value="9" selected>9</option>
-            <option value="18">18</option>
-            <option value="30">30</option>
-          </select>
-        </label>
+        <div class="action-dropdown ssh-view-options" data-action-dropdown>
+          <button class="btn btn-sm btn-outline-secondary action-menu-toggle pl-icon-action" type="button" onclick="toggleActionDropdown(event)" aria-haspopup="dialog" aria-expanded="false" aria-label="Opciones del directorio SSH" title="Opciones de vista"><i class="bi bi-gear"></i></button>
+          <div class="action-menu ssh-view-options-menu" role="group" aria-label="Opciones del directorio SSH">
+            <label class="ssh-page-size" for="sshConnectionPageSize">
+              <span><i class="bi bi-grid-3x3-gap" aria-hidden="true"></i> Conexiones por página</span>
+              <select id="sshConnectionPageSize" class="form-select form-select-sm" aria-label="Conexiones por página">
+                <option value="9" selected>9</option>
+                <option value="18">18</option>
+                <option value="30">30</option>
+              </select>
+            </label>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -79,11 +84,11 @@
           </div>
           <div class="ssh-card-actions">
             {{if eq .ServerOS "windows"}}
-            <button class="btn btn-primary" type="button" disabled title="La terminal interactiva de Windows todavía no está habilitada"><i class="bi bi-terminal-x"></i> No disponible</button>
+            <button class="btn btn-primary pl-icon-action pl-icon-action-lg" type="button" disabled aria-label="Terminal no disponible" title="La terminal interactiva de Windows todavía no está habilitada"><i class="bi bi-terminal-x"></i></button>
             {{else}}
-            <a class="btn btn-primary" href="/terminal?target=local&autoconnect=1"><i class="bi bi-terminal"></i> Conectar ahora</a>
+            <a class="btn btn-primary pl-icon-action pl-icon-action-lg" href="/terminal?target=local&autoconnect=1" aria-label="Conectar al servidor Pangolite" title="Conectar ahora"><i class="bi bi-terminal"></i></a>
             {{end}}
-            <a class="btn btn-outline-secondary" href="/settings"><i class="bi bi-sliders"></i> Ajustes</a>
+            <a class="btn btn-outline-secondary pl-icon-action pl-icon-action-lg" href="/settings" aria-label="Abrir ajustes" title="Ajustes"><i class="bi bi-sliders"></i></a>
           </div>
         </article>
 
@@ -111,11 +116,11 @@
           </div>
           <div class="ssh-card-actions">
             {{if agentTerminalReady .}}
-            <a class="btn btn-primary" href="/terminal?agentId={{.ID}}&projectId={{.ProjectID}}&autoconnect=1"><i class="bi bi-terminal"></i> Conectar ahora</a>
+            <a class="btn btn-primary pl-icon-action pl-icon-action-lg" href="/terminal?agentId={{.ID}}&projectId={{.ProjectID}}&autoconnect=1" aria-label="Conectar a {{.Name}}" title="Conectar ahora"><i class="bi bi-terminal"></i></a>
             {{else}}
-            <button class="btn btn-primary" type="button" disabled title="El cliente debe estar online, habilitado y usar un sistema compatible"><i class="bi bi-terminal-x"></i> No disponible</button>
+            <button class="btn btn-primary pl-icon-action pl-icon-action-lg" type="button" disabled aria-label="Terminal no disponible" title="El cliente debe estar online, habilitado y usar un sistema compatible"><i class="bi bi-terminal-x"></i></button>
             {{end}}
-            <a class="btn btn-outline-secondary" href="/projects/{{.ProjectID}}/agents"><i class="bi bi-folder2-open"></i> Ver proyecto</a>
+            <a class="btn btn-outline-secondary pl-icon-action pl-icon-action-lg" href="/projects/{{.ProjectID}}/agents" aria-label="Abrir proyecto de {{.Name}}" title="Ver proyecto"><i class="bi bi-folder2-open"></i></a>
           </div>
         </article>
         {{end}}

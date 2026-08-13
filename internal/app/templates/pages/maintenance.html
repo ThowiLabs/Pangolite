@@ -6,14 +6,14 @@
       <table class="table"><thead><tr><th>Archivo</th><th>Tamaño</th><th>Fecha</th><th class="text-end">Acciones</th></tr></thead><tbody>
       {{if .Backups}}
         {{range .Backups}}
-        <tr><td class="font-mono">{{.Name}}</td><td>{{fmtBytes .SizeBytes}}</td><td>{{fmtTime .CreatedAt}}</td><td class="text-end"><a class="btn btn-sm btn-outline-secondary" href="/api/backups/{{.Name}}/download"><i class="bi bi-download"></i> Descargar</a></td></tr>
+        <tr><td class="font-mono">{{.Name}}</td><td>{{fmtBytes .SizeBytes}}</td><td>{{fmtTime .CreatedAt}}</td><td class="text-end"><a class="btn btn-sm btn-outline-secondary pl-icon-action" href="/api/backups/{{.Name}}/download" aria-label="Descargar {{.Name}}" title="Descargar"><i class="bi bi-download"></i></a></td></tr>
         {{end}}
       {{else}}
         <tr><td class="empty" colspan="4">Sin respaldos todavía.</td></tr>
       {{end}}
       </tbody></table>
     </div><div class="alert alert-warning mt-3 mb-0"><strong>Restauración segura:</strong> detén Pangolite, copia el respaldo elegido sobre la base activa y reinicia el servicio. Ejemplo: <code>sudo systemctl stop pangolite && sudo cp /opt/pangolite/data/backups/ARCHIVO.db /opt/pangolite/data/pangolite.db && sudo systemctl start pangolite</code>.</div></div></div>
-    <div class="card"><div class="card-header"><div class="toolbar mb-0"><div><div class="card-title">Auditoría</div><div class="text-muted small">Cambios administrativos recientes sin exponer secretos.</div></div><button class="btn btn-outline-secondary" onclick="loadAudit()"><i class="bi bi-arrow-clockwise"></i> Actualizar</button></div></div><div class="card-body"><div id="auditRows" class="table-responsive">
+    <div class="card"><div class="card-header"><div class="toolbar mb-0"><div><div class="card-title">Auditoría</div><div class="text-muted small">Cambios administrativos recientes sin exponer secretos.</div></div><button class="btn btn-outline-secondary pl-icon-action" onclick="loadAudit()" aria-label="Actualizar auditoría" title="Actualizar"><i class="bi bi-arrow-clockwise"></i></button></div></div><div class="card-body"><div id="auditRows" class="table-responsive">
       <table class="table"><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Entidad</th></tr></thead><tbody>
       {{if .AuditEvents}}
         {{range .AuditEvents}}

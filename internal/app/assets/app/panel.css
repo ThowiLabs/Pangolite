@@ -1722,3 +1722,77 @@ body.modal-open{
   .terminal-route .terminal-actions > #terminalTarget{display:none;}
   .terminal-settings-popover #terminalTarget{width:100%;max-width:none;}
 }
+
+/* Lenguaje visual global: acciones secundarias compactas por icono. */
+.pl-icon-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:7px;
+  flex-wrap:wrap;
+}
+.pl-icon-action{
+  width:36px!important;
+  min-width:36px!important;
+  height:36px!important;
+  padding:0!important;
+  display:inline-grid!important;
+  place-items:center!important;
+  justify-content:center!important;
+  gap:0!important;
+  flex:0 0 36px!important;
+}
+.pl-icon-action.pl-icon-action-lg{
+  width:42px!important;
+  min-width:42px!important;
+  height:42px!important;
+  flex-basis:42px!important;
+}
+.pl-icon-action i{margin:0!important;font-size:1rem;line-height:1}
+.pl-icon-action-lg i{font-size:1.08rem}
+.pl-icon-action.btn-loading{overflow:hidden}
+.pl-icon-action .btn-loading-spinner{width:.95rem;height:.95rem;flex:0 0 .95rem}
+
+/* Dashboard/proyectos: el acceso principal conserva texto fuera de las tarjetas; dentro de cada tarjeta mandan iconos. */
+.project-card-actions{
+  justify-content:flex-end;
+}
+.project-card-actions .btn,
+.project-card-actions .pl-icon-action{
+  flex:0 0 36px!important;
+}
+
+/* SSH: búsqueda visible, preferencias secundarias en widget y acciones de tarjeta como iconos. */
+.ssh-view-options{flex:0 0 auto}
+.ssh-view-options-menu{min-width:230px!important;padding:10px!important}
+.ssh-view-options-menu .ssh-page-size{
+  width:100%;
+  display:grid;
+  grid-template-columns:1fr auto;
+  align-items:center;
+  gap:12px;
+  color:#fff;
+  font-weight:700;
+}
+.ssh-view-options-menu .ssh-page-size>span{display:inline-flex;align-items:center;gap:7px}
+.ssh-view-options-menu .ssh-page-size .form-select{width:82px;min-width:82px}
+.ssh-card-actions{
+  display:flex!important;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  min-height:59px;
+}
+.ssh-card-actions .btn{flex:0 0 42px!important}
+.ssh-card-actions .btn:first-child{margin-right:auto}
+
+.logs-toolbar-actions{flex:0 0 auto}
+
+@media(max-width:680px){
+  .pl-icon-actions{justify-content:flex-start}
+  .ssh-directory-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+  .ssh-search{min-width:0}
+  .ssh-view-options{justify-self:end}
+  .ssh-card-actions{flex-direction:row!important;align-items:center!important}
+  .project-card-actions{justify-content:flex-end}
+}

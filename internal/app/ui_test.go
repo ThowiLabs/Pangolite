@@ -316,3 +316,48 @@ func TestTerminalDownloadCommandAndCompactToolbarAreEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactIconActionLanguageIsEmbedded(t *testing.T) {
+	css, err := assetsFS.ReadFile("assets/app/panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ssh, err := templatesFS.ReadFile("templates/pages/ssh_connections.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectsPage, err := templatesFS.ReadFile("templates/pages/projects.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourcesPage, err := templatesFS.ReadFile("templates/pages/resources.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logsPage, err := templatesFS.ReadFile("templates/pages/logs.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, expected := range []string{".pl-icon-action", ".pl-icon-actions", ".ssh-view-options-menu"} {
+		if !strings.Contains(string(css), expected) {
+			t.Fatalf("panel.css no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{`aria-label="Opciones del directorio SSH"`, `pl-icon-action-lg`, `title="Conectar ahora"`} {
+		if !strings.Contains(string(ssh), expected) {
+			t.Fatalf("ssh_connections.html no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{"project-card-actions pl-icon-actions", "pl-icon-action"} {
+		if !strings.Contains(string(projectsPage), expected) {
+			t.Fatalf("projects.html no contiene %q", expected)
+		}
+	}
+	if !strings.Contains(string(resourcesPage), `aria-label="Probar health de recursos"`) {
+		t.Fatal("resources.html no conserva health como acción compacta accesible")
+	}
+	if !strings.Contains(string(logsPage), `aria-label="Descargar logs"`) {
+		t.Fatal("logs.html no contiene la barra compacta de acciones")
+	}
+}
