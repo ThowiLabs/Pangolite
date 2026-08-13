@@ -124,6 +124,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/session", s.sessionInfo)
 	s.mux.HandleFunc("POST /api/password", s.requireAuthAllowForce(s.changePassword))
 	s.mux.HandleFunc("PATCH /api/profile", s.requireAuth(s.updateProfile))
+	s.mux.HandleFunc("PATCH /api/profile/username", s.requireAuth(s.updateUsername))
 	s.mux.HandleFunc("GET /api/password-reset/status", s.passwordResetStatus)
 	s.mux.HandleFunc("POST /api/password-reset/request", s.passwordResetRequest)
 	s.mux.HandleFunc("POST /api/password-reset/confirm", s.passwordResetConfirm)
@@ -350,6 +351,32 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, rs reque
 	s.log.Info("password actualizada", "user", rs.User.Username)
 	s.recordAudit(r, rs, "user.password.change", "user", fmt.Sprint(rs.User.ID), "", map[string]any{"forcePasswordChange": rs.User.ForcePasswordChange})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) updateUsername(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	defer r.Body.Close()
+	var req struct {
+		Username        string `json:"username"`
+		CurrentPassword string `json:"currentPassword"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+	oldUsername := rs.User.Username
+	if err := s.store.UpdateUsername(rs.User.ID, req.Username, req.CurrentPassword); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	user, err := s.store.UserByID(rs.User.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "no se pudo recargar perfil")
+		return
+	}
+	changed := user.Username != oldUsername
+	s.log.Info("nombre de usuario actualizado", "user", user.Username, "changed", changed)
+	s.recordAudit(r, requestSession{Session: rs.Session, User: user, RawID: rs.RawID}, "user.username.update", "user", fmt.Sprint(user.ID), "", map[string]any{"previousUsername": oldUsername, "username": user.Username, "changed": changed})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": publicUser(user)})
 }
 
 func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request, rs requestSession) {
