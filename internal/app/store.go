@@ -2264,6 +2264,34 @@ func (s *Store) UserByEmail(email string) (User, error) {
 	return scanUser(s.db.QueryRow(`SELECT id, username, email, password_hash, force_password_change, created_at, updated_at FROM users WHERE lower(email) = lower(?) AND TRIM(email) <> ''`, email))
 }
 
+func (s *Store) UpdateUsername(userID int64, username, currentPassword string) error {
+	username = NormalizeUsername(username)
+	if err := ValidateUsername(username); err != nil {
+		return err
+	}
+	user, err := s.UserByID(userID)
+	if err != nil {
+		return errors.New("usuario no encontrado")
+	}
+	if username == user.Username {
+		return nil
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil {
+		return errors.New("contraseña actual incorrecta")
+	}
+	var existing int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE lower(username) = lower(?) AND id <> ?`, username, userID).Scan(&existing); err != nil {
+		return fmt.Errorf("validar nombre de usuario: %w", err)
+	}
+	if existing > 0 {
+		return errors.New("ese nombre de usuario ya esta en uso")
+	}
+	if _, err := s.db.Exec(`UPDATE users SET username = ?, updated_at = ? WHERE id = ?`, username, formatTime(time.Now().UTC()), userID); err != nil {
+		return fmt.Errorf("actualizar nombre de usuario: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) UpdateUserEmail(userID int64, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if err := ValidateEmailAddress(email); err != nil {

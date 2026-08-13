@@ -16,6 +16,7 @@ La base actual incluye:
 - SQLite embebido para usuarios, sesiones, proyectos, dominios, clientes de sistema y recursos.
 - Login con usuario `admin` y contraseña temporal.
 - Cambio obligatorio de contraseña en primer acceso.
+- Cambio de nombre de usuario desde Perfil y seguridad, confirmado con la contraseña actual.
 - Sesiones persistentes con cookie segura.
 - CSRF en operaciones administrativas.
 - CRUD de proyectos.

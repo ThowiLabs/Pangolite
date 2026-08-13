@@ -1,17 +1,35 @@
 function setupProfilePage(){
+  const usernameForm=$('profileUsernameForm');
   const emailForm=$('profileEmailForm');
   const passForm=$('profilePasswordForm');
-  if(!emailForm&&!passForm)return;
+  if(!usernameForm&&!emailForm&&!passForm)return;
 
   const boot=appBoot||loadBootstrap()||{};
   const user=boot.user||{};
+  const usernameInput=$('profileUsername');
+  const usernamePassword=$('profileUsernamePassword');
   const emailInput=$('profileEmail');
   const currentInput=$('profileCurrentPassword');
   const nextInput=$('profileNewPassword');
   const confirmInput=$('profileConfirmPassword');
 
+  if(usernameInput)usernameInput.value=user.username||'';
   if(emailInput)emailInput.value=user.email||'';
   paintProfileEmailState(user.email||'');
+
+  if(usernameForm){
+    bindAsyncSubmit(usernameForm,async()=>{
+      const username=(usernameInput&&usernameInput.value||'').trim();
+      const currentPassword=usernamePassword?usernamePassword.value:'';
+      const data=await api('/api/profile/username',{method:'PATCH',body:JSON.stringify({username,currentPassword})});
+      const updatedUser=(data&&data.user)||{};
+      if(appBoot)appBoot.user=updatedUser;
+      if(usernameInput)usernameInput.value=updatedUser.username||username;
+      if(usernamePassword)usernamePassword.value='';
+      if($('userLabel'))$('userLabel').textContent=updatedUser.username||username||'Usuario';
+      msg('Nombre de usuario actualizado');
+    },'Cambiando');
+  }
 
   if(emailForm){
     bindAsyncSubmit(emailForm,async()=>{

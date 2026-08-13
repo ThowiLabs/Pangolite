@@ -583,3 +583,36 @@ func TestPasswordResetTokenConsumesOnce(t *testing.T) {
 		t.Fatal("se esperaba rechazar token reutilizado")
 	}
 }
+
+func TestUpdateUsernameRequiresPasswordAndNormalizes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, temp, err := store.BootstrapAdmin("admin", "")
+	if err != nil || !created {
+		t.Fatalf("bootstrap invalido: created=%v err=%v", created, err)
+	}
+	user, ok := store.AuthenticateUser("admin", temp)
+	if !ok {
+		t.Fatal("admin no autentico")
+	}
+	if err := store.UpdateUsername(user.ID, "Nuevo.Admin", "incorrecta"); err == nil {
+		t.Fatal("se esperaba rechazar contraseña incorrecta")
+	}
+	if err := store.UpdateUsername(user.ID, "Nuevo.Admin", temp); err != nil {
+		t.Fatal(err)
+	}
+	updated, ok := store.AuthenticateUser("nuevo.admin", temp)
+	if !ok {
+		t.Fatal("el usuario nuevo no autentico")
+	}
+	if updated.Username != "nuevo.admin" {
+		t.Fatalf("username inesperado: %q", updated.Username)
+	}
+	if _, ok := store.AuthenticateUser("admin", temp); ok {
+		t.Fatal("el usuario anterior no debe seguir autenticando")
+	}
+}
