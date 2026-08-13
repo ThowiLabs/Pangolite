@@ -14,6 +14,7 @@
   const terminalUploadChunkSize=24*1024;
   let terminalUploadQueue=[];
   let terminalUploadRunning=false;
+  let terminalUploadBatch={total:0,completed:0,failed:0};
   const terminalUploadStates=new Map();
   const themes={
     black:{background:'#05070a',foreground:'#f8fafc',cursor:'#f8fafc',selectionBackground:'#475569'},
@@ -331,12 +332,17 @@
     while(n>=1024&&i<units.length-1){n/=1024;i++}
     return (i===0?Math.round(n):n.toFixed(n>=10?1:2))+' '+units[i];
   }
-  function createTransferRow(file){
+  function createTransferRow(file,batchPosition){
     const box=el('terminalTransfers');
     if(!box)return null;
+    box.replaceChildren();
     box.classList.remove('d-none');
     const row=document.createElement('div');
     row.className='terminal-transfer';
+    const eyebrow=document.createElement('div');eyebrow.className='terminal-transfer-eyebrow';
+    const title=document.createElement('span');title.textContent='Subiendo archivo';
+    const batch=document.createElement('span');batch.className='terminal-transfer-batch';
+    eyebrow.append(title,batch);
     const head=document.createElement('div');head.className='terminal-transfer-head';
     const name=document.createElement('span');name.className='terminal-transfer-name';name.textContent=file.name;
     const percent=document.createElement('span');percent.className='terminal-transfer-percent';percent.textContent='0%';
@@ -344,12 +350,17 @@
     const track=document.createElement('div');track.className='terminal-transfer-track';
     const bar=document.createElement('div');bar.className='terminal-transfer-bar';track.appendChild(bar);
     const meta=document.createElement('div');meta.className='terminal-transfer-meta';meta.textContent='Preparando · '+formatTerminalBytes(file.size);
-    row.append(head,track,meta);box.prepend(row);
-    requestAnimationFrame(()=>{fitTerminal();queueResize()});
-    return {row,percent,bar,meta};
+    row.append(eyebrow,head,track,meta);box.appendChild(row);
+    return {row,percent,bar,meta,batch,batchPosition};
+  }
+  function refreshTransferBatch(state){
+    if(!state||!state.ui||!state.ui.batch)return;
+    const total=Math.max(1,terminalUploadBatch.total||1);
+    state.ui.batch.textContent=total>1?(state.ui.batchPosition+' de '+total):'';
   }
   function paintTransfer(state,doneBytes,statusText,statusClass){
     if(!state||!state.ui)return;
+    refreshTransferBatch(state);
     const total=Math.max(0,Number(state.file.size)||0);
     const done=Math.max(0,Math.min(total,Number(doneBytes)||0));
     const pct=total===0?100:Math.min(100,Math.round(done*100/total));
@@ -358,6 +369,24 @@
     state.ui.meta.textContent=statusText||formatTerminalBytes(done)+' / '+formatTerminalBytes(total);
     state.ui.row.classList.toggle('done',statusClass==='done');
     state.ui.row.classList.toggle('error',statusClass==='error');
+  }
+  function hideTransferWindow(){
+    const box=el('terminalTransfers');
+    if(!box)return;
+    box.replaceChildren();
+    box.classList.add('d-none');
+  }
+  function showTerminalUploadAlert(message,bad=false){
+    const box=el('terminalTransferAlerts');
+    if(!box)return;
+    while(box.children.length>=3)box.firstElementChild.remove();
+    const alert=document.createElement('div');
+    alert.className='terminal-transfer-alert '+(bad?'error':'success');
+    const icon=document.createElement('i');icon.className='bi '+(bad?'bi-exclamation-triangle':'bi-check-circle');
+    const text=document.createElement('span');text.textContent=message;
+    alert.append(icon,text);box.appendChild(alert);
+    requestAnimationFrame(()=>alert.classList.add('visible'));
+    setTimeout(()=>{alert.classList.remove('visible');setTimeout(()=>alert.remove(),220)},3200);
   }
   function settleUploadWaiter(state,kind,value,error){
     if(!state)return;
@@ -410,7 +439,8 @@
   async function uploadTerminalFile(file){
     if(!isConnected())throw new Error('Conecta la terminal antes de subir archivos');
     const id=terminalUploadID();
-    const state={id,file,ui:createTransferRow(file),sent:0,confirmed:0,path:'',error:null};
+    const batchPosition=terminalUploadBatch.completed+terminalUploadBatch.failed+1;
+    const state={id,file,ui:createTransferRow(file,batchPosition),sent:0,confirmed:0,path:'',error:null};
     terminalUploadStates.set(id,state);
     try{
       const ready=waitUploadSignal(state,'ready',30000);
@@ -433,7 +463,7 @@
       const done=waitUploadSignal(state,'done',60000);
       if(!sendControl('upload.finish',{uploadId:id}))throw new Error('La terminal se desconectó');
       await done;
-      setTimeout(()=>{if(state.ui&&state.ui.row)state.ui.row.remove();const box=el('terminalTransfers');if(box&&!box.children.length)box.classList.add('d-none');fitTerminal();queueResize();},8000);
+      showTerminalUploadAlert('Subido: '+file.name+(state.path?' · '+state.path:''));
     }catch(err){
       if(isConnected())sendControl('upload.cancel',{uploadId:id});
       paintTransfer(state,state.sent||0,err.message||'Transferencia fallida','error');
@@ -448,19 +478,37 @@
     try{
       while(terminalUploadQueue.length){
         const file=terminalUploadQueue.shift();
-        try{await uploadTerminalFile(file)}catch(err){if(isConnected())status(connectedTarget==='local'?'Local conectado':'Cliente conectado',true,false);else status('Error al subir archivo',false,true)}
+        try{
+          await uploadTerminalFile(file);
+          terminalUploadBatch.completed++;
+        }catch(err){
+          terminalUploadBatch.failed++;
+          showTerminalUploadAlert('Error al subir '+file.name+': '+(err&&err.message?err.message:'transferencia fallida'),true);
+          if(isConnected())status(connectedTarget==='local'?'Local conectado':'Cliente conectado',true,false);else status('Error al subir archivo',false,true);
+        }
       }
-    }finally{terminalUploadRunning=false;if(term)term.focus()}
+    }finally{
+      hideTransferWindow();
+      if(terminalUploadBatch.total>1){
+        const ok=terminalUploadBatch.completed,failed=terminalUploadBatch.failed;
+        showTerminalUploadAlert(failed?('Lote terminado: '+ok+' subidos, '+failed+' con error'):('Lote terminado: '+ok+' archivos subidos'),failed>0);
+      }
+      terminalUploadBatch={total:0,completed:0,failed:0};
+      terminalUploadRunning=false;
+      if(term)term.focus();
+    }
   }
   function queueTerminalFiles(files){
     const list=Array.from(files||[]).filter(file=>file&&typeof file.name==='string');
     if(!list.length)return;
     if(!isConnected()){status('Conecta la terminal antes de subir archivos',false,true);return}
+    terminalUploadBatch.total+=list.length;
     terminalUploadQueue.push(...list);
     runTerminalUploadQueue();
   }
   function cancelTerminalUploads(message){
     terminalUploadQueue=[];
+    terminalUploadBatch.total=terminalUploadBatch.completed+terminalUploadBatch.failed+terminalUploadStates.size;
     const error=new Error(message||'Transferencia cancelada');
     terminalUploadStates.forEach(state=>{
       settleUploadWaiter(state,'ready',null,error);
