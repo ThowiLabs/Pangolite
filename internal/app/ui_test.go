@@ -286,3 +286,33 @@ func TestTerminalFileTransferIsEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalDownloadCommandAndCompactToolbarAreEmbedded(t *testing.T) {
+	page, err := templatesFS.ReadFile("templates/pages/terminal.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := assetsFS.ReadFile("assets/app/terminal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assetsFS.ReadFile("assets/app/panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`id="terminalSettingsBtn"`, `id="terminalSettingsPopover"`, `id="terminalTheme"`, `id="terminalOptionsBtn"`, `id="terminalUploadBtn"`, `id="terminalDisconnectBtn"`, `id="terminalFullscreenBtn"`} {
+		if !strings.Contains(string(page), expected) {
+			t.Fatalf("terminal.html no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{"parseTerminalDownloadCommand", "download.request", "/api/terminal/downloads", "createTerminalDownloadFromOffer", "terminalDownloadStates", "installTerminalSettings"} {
+		if !strings.Contains(string(script), expected) {
+			t.Fatalf("terminal.js no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{".terminal-settings-popover", ".terminal-options-menu", ".terminal-icon-btn"} {
+		if !strings.Contains(string(css), expected) {
+			t.Fatalf("panel.css no contiene %q", expected)
+		}
+	}
+}

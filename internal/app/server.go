@@ -49,6 +49,10 @@ type Server struct {
 	learnedAdminNetworks []*net.IPNet
 	agentHTTPSlots       chan struct{}
 
+	terminalDownloadsMu   sync.Mutex
+	terminalDownloads     map[string]terminalDownloadTicket
+	terminalDownloadSlots chan struct{}
+
 	traefikRestartMu    sync.Mutex
 	traefikRestartTimer *time.Timer
 }
@@ -75,7 +79,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	}
 	c = effective
 	hub := NewTunnelHub(64)
-	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger, c.AgentStreamConcurrency), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), adminAllowedNetworks: parseCIDRs(c.AdminAllowedCIDRs), learnedAdminNetworks: parseCIDRs(strings.Join(store.ListTrustedAdminNetworks(), ",")), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency)}
+	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger, c.AgentStreamConcurrency), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), adminAllowedNetworks: parseCIDRs(c.AdminAllowedCIDRs), learnedAdminNetworks: parseCIDRs(strings.Join(store.ListTrustedAdminNetworks(), ",")), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency), terminalDownloads: map[string]terminalDownloadTicket{}, terminalDownloadSlots: make(chan struct{}, 2)}
 	s.routes()
 	return s
 }
@@ -161,6 +165,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agents/{id}", s.requireAuth(s.getAgentDetail))
 	s.mux.HandleFunc("GET /api/terminal/local", s.localTerminalSocket)
 	s.mux.HandleFunc("GET /api/terminal/agents/{id}", s.agentTerminalSocket)
+	s.mux.HandleFunc("POST /api/terminal/downloads", s.requireAuth(s.createTerminalDownloadTicket))
+	s.mux.HandleFunc("GET /api/terminal/downloads/{token}", s.requireAuth(s.downloadTerminalTicket))
 	s.mux.HandleFunc("POST /api/agents", s.requireAuth(s.createAgent))
 	s.mux.HandleFunc("DELETE /api/agents/{id}", s.requireAuth(s.deleteAgent))
 	s.mux.HandleFunc("POST /api/agents/{id}/token", s.requireAuth(s.rotateAgentToken))

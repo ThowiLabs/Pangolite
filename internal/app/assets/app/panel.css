@@ -1630,3 +1630,95 @@ body.modal-open{
 @media(max-width:960px){
   .terminal-route .terminal-actions #terminalUploadBtn{grid-column:auto;}
 }
+
+/* Terminal: controles secundarios compactos y ajustes desacoplados del layout. */
+.terminal-settings-widget,
+.terminal-options-dropdown{
+  position:relative;
+  flex:0 0 auto;
+}
+.terminal-route .terminal-icon-btn{
+  width:36px;
+  min-width:36px;
+  height:34px;
+  padding:0;
+  display:inline-grid;
+  place-items:center;
+}
+.terminal-settings-popover{
+  position:fixed;
+  z-index:1250;
+  display:none;
+  gap:10px;
+  padding:12px;
+  border:1px solid var(--pg-border);
+  border-radius:14px;
+  background:rgba(10,10,16,.98);
+  color:var(--pg-text);
+  box-shadow:0 22px 64px rgba(0,0,0,.48);
+  backdrop-filter:blur(16px);
+}
+.terminal-settings-popover.open{display:grid;}
+.terminal-settings-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding-bottom:8px;
+  border-bottom:1px solid var(--pg-border);
+  color:#fff;
+  font-weight:800;
+}
+.terminal-settings-head span{display:flex;align-items:center;gap:7px;}
+.terminal-settings-head small{color:var(--pg-muted);font-size:11px;font-weight:650;}
+.terminal-settings-popover .form-label{margin:0;color:var(--pg-muted);font-weight:700;}
+.terminal-settings-popover .form-select{width:100%;max-width:none!important;min-width:0!important;}
+.terminal-options-menu{min-width:210px;}
+.terminal-options-menu .action-menu-item{white-space:nowrap;}
+
+@media(max-width:960px){
+  .terminal-route .terminal-actions{
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    flex-wrap:wrap;
+    gap:7px;
+  }
+  .terminal-route .terminal-actions #terminalTarget{
+    flex:1 1 100%;
+    width:100%;
+    max-width:none;
+  }
+  .terminal-route .terminal-actions #terminalConnectBtn,
+  .terminal-route .terminal-actions #terminalFullscreenBtn{
+    width:auto;
+    max-width:none;
+    flex:1 1 auto;
+  }
+  .terminal-route .terminal-actions .terminal-settings-widget,
+  .terminal-route .terminal-actions .terminal-options-dropdown{
+    width:auto;
+    flex:0 0 auto;
+  }
+  .terminal-route .terminal-actions .terminal-icon-btn{
+    width:38px!important;
+    min-width:38px;
+    height:38px;
+  }
+}
+@media(max-width:430px){
+  .terminal-route .terminal-actions #terminalConnectBtn,
+  .terminal-route .terminal-actions #terminalFullscreenBtn{
+    flex:1 1 calc(50% - 46px);
+  }
+  .terminal-route .terminal-actions .btn span{display:inline;}
+}
+.terminal-settings-hint{display:flex;align-items:flex-start;gap:8px;padding:9px 10px;border:1px solid rgba(96,165,250,.18);border-radius:10px;background:rgba(59,130,246,.08);color:var(--pg-muted);font-size:11px;line-height:1.35;}
+.terminal-settings-hint i{margin-top:1px;color:#93c5fd;}
+.terminal-settings-hint code{color:#dbeafe;white-space:nowrap;}
+.terminal-route .terminal-actions > #terminalTarget{display:none;}
+.terminal-settings-popover #terminalTarget{display:block;}
+@media(max-width:960px){
+  .terminal-route .terminal-actions > #terminalTarget{display:none;}
+  .terminal-settings-popover #terminalTarget{width:100%;max-width:none;}
+}

@@ -83,7 +83,9 @@ type terminalControlMessage struct {
 	Cols              int    `json:"cols,omitempty"`
 	Rows              int    `json:"rows,omitempty"`
 	UploadID          string `json:"uploadId,omitempty"`
+	DownloadID        string `json:"downloadId,omitempty"`
 	Name              string `json:"name,omitempty"`
+	Kind              string `json:"kind,omitempty"`
 	Path              string `json:"path,omitempty"`
 	Error             string `json:"error,omitempty"`
 	Size              int64  `json:"size,omitempty"`
@@ -180,8 +182,9 @@ func (s *Server) agentTerminalSocket(w http.ResponseWriter, r *http.Request) {
 		errCh <- s.hub.SubmitStream(ctx, agentID, job, left)
 	}()
 	uploadAllowed := s.hub.AgentSupports(agentID, AgentCapabilityTerminalUploadV1)
+	downloadAllowed := s.hub.AgentSupports(agentID, AgentCapabilityTerminalDownloadV1)
 	go func() {
-		errCh <- bridgeWebSocketRemoteTerminal(ctx, ws, right, uploadAllowed)
+		errCh <- bridgeWebSocketRemoteTerminal(ctx, ws, right, uploadAllowed, downloadAllowed)
 	}()
 	if s.log != nil {
 		s.log.Info("terminal remota solicitada", "user", rs.User.Username, "agent", agentID, "name", agent.Name)
@@ -250,7 +253,7 @@ func decodeTerminalControlJSON(data []byte) (terminalControlMessage, bool) {
 		return terminalControlMessage{}, false
 	}
 	switch msg.Type {
-	case "resize", "upload.start", "upload.finish", "upload.cancel", "upload.ready", "upload.progress", "upload.done", "upload.error":
+	case "resize", "upload.start", "upload.finish", "upload.cancel", "upload.ready", "upload.progress", "upload.done", "upload.error", "download.request", "download.offer", "download.error":
 		return msg, true
 	default:
 		return terminalControlMessage{}, false
@@ -412,7 +415,7 @@ func writeTerminalPayload(w io.Writer, data []byte) error {
 	return nil
 }
 
-func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn net.Conn, uploadAllowed bool) error {
+func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn net.Conn, uploadAllowed, downloadAllowed bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
@@ -475,6 +478,18 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 								errc <- err
 								return
 							}
+						}
+						continue
+					}
+					if msg.Type == "download.request" && !downloadAllowed {
+						payload, marshalErr := jsonTerminalControlMessage(terminalControlMessage{Type: "download.error", DownloadID: msg.DownloadID, Error: "actualiza pangolite-client para habilitar descargas desde la terminal"})
+						if marshalErr != nil {
+							errc <- marshalErr
+							return
+						}
+						if err := ws.Write(ctx, websocket.MessageText, payload); err != nil {
+							errc <- err
+							return
 						}
 						continue
 					}
@@ -545,6 +560,10 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 		var inputFilter terminalInputFilter
 		writeInput := func(data []byte) error {
 			payloads, err := inputFilter.Payloads(data, controlMode&terminalControlFramed != 0, func(msg terminalControlMessage) bool {
+				if msg.Type == "download.request" {
+					_ = notify(prepareTerminalDownloadOffer(term, msg))
+					return true
+				}
 				uploads.HandleControl(msg)
 				return true
 			}, uploads.HandleChunk)
@@ -571,7 +590,11 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 			}
 			if typ == websocket.MessageText && controlMode&terminalControlJSON != 0 {
 				if msg, ok := decodeTerminalControlJSON(data); ok {
-					uploads.HandleControl(msg)
+					if msg.Type == "download.request" {
+						_ = notify(prepareTerminalDownloadOffer(term, msg))
+					} else {
+						uploads.HandleControl(msg)
+					}
 					continue
 				}
 			}

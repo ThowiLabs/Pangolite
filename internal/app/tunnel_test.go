@@ -189,3 +189,11 @@ func TestTunnelHubEmptyCapabilitiesDowngradesAgentImmediately(t *testing.T) {
 		t.Fatal("un agente sin cabecera de capacidades conservo un protocolo incompatible")
 	}
 }
+
+func TestTunnelHubTracksTerminalDownloadCapability(t *testing.T) {
+	hub := NewTunnelHub(2)
+	hub.UpdateAgentCapabilities("agent-terminal", AgentCapabilityTerminalDownloadV1)
+	if !hub.AgentSupports("agent-terminal", AgentCapabilityTerminalDownloadV1) {
+		t.Fatal("capacidad de descarga por terminal no registrada")
+	}
+}
