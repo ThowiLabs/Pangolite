@@ -20,6 +20,10 @@ const (
 	clientEnvPath    = "/opt/pangolite-client/pangolite-client.env"
 )
 
+func ensureClientPrivileges(args []string, needed bool, stdout io.Writer) (bool, error) {
+	return false, nil
+}
+
 func installClient(stdout io.Writer, cfg app.AgentClientConfig) error {
 	if os.Geteuid() != 0 {
 		return errors.New("ejecuta --install como root")
@@ -27,6 +31,13 @@ func installClient(stdout io.Writer, cfg app.AgentClientConfig) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
+	}
+	hadInstall := unixClientInstallExists()
+	if err := removeUnixServiceArtifacts(); err != nil {
+		return err
+	}
+	if hadInstall {
+		fmt.Fprintln(stdout, "Instalacion anterior detectada; reemplazando pangolite-client...")
 	}
 	if err := os.MkdirAll(clientInstallDir, 0o700); err != nil {
 		return err
@@ -59,11 +70,40 @@ func removeClient(stdout io.Writer) error {
 	if os.Geteuid() != 0 {
 		return errors.New("ejecuta --remove como root")
 	}
-	if hasCommand("systemctl") {
-		_ = exec.Command("systemctl", "disable", "--now", "pangolite-client").Run()
-		_ = os.Remove("/etc/systemd/system/pangolite-client.service")
-		_ = exec.Command("systemctl", "daemon-reload").Run()
-		_ = exec.Command("systemctl", "reset-failed", "pangolite-client").Run()
+	if err := removeUnixServiceArtifacts(); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(clientInstallDir); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, "Cliente eliminado del sistema")
+	return nil
+}
+
+func unixClientInstallExists() bool {
+	for _, path := range []string{clientInstallDir, "/etc/systemd/system/pangolite-client.service", "/etc/init.d/pangolite-client"} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	if hasCommand("systemctl") && isSystemd() {
+		out, err := exec.Command("systemctl", "show", "pangolite-client", "--property=LoadState", "--value").Output()
+		if err == nil && strings.TrimSpace(string(out)) != "not-found" && strings.TrimSpace(string(out)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func removeUnixServiceArtifacts() error {
+	if hasCommand("systemctl") && isSystemd() {
+		out, err := exec.Command("systemctl", "show", "pangolite-client", "--property=LoadState", "--value").Output()
+		loaded := err == nil && strings.TrimSpace(string(out)) != "" && strings.TrimSpace(string(out)) != "not-found"
+		if loaded {
+			if out, err := exec.Command("systemctl", "disable", "--now", "pangolite-client").CombinedOutput(); err != nil {
+				return fmt.Errorf("detener servicio systemd anterior: %s", strings.TrimSpace(string(out)))
+			}
+		}
 	}
 	if hasCommand("rc-service") {
 		_ = exec.Command("rc-service", "pangolite-client", "stop").Run()
@@ -72,10 +112,13 @@ func removeClient(stdout io.Writer) error {
 		_ = exec.Command("rc-update", "del", "pangolite-client", "default").Run()
 	}
 	_ = os.Remove("/etc/init.d/pangolite-client")
-	if err := os.RemoveAll(clientInstallDir); err != nil {
-		return err
+	_ = os.Remove("/etc/systemd/system/pangolite-client.service")
+	if hasCommand("systemctl") && isSystemd() {
+		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+			return fmt.Errorf("systemctl daemon-reload: %s", strings.TrimSpace(string(out)))
+		}
+		_ = exec.Command("systemctl", "reset-failed", "pangolite-client").Run()
 	}
-	fmt.Fprintln(stdout, "Cliente eliminado del sistema")
 	return nil
 }
 
@@ -166,12 +209,18 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, dst)
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func hasCommand(name string) bool {

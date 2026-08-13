@@ -29,6 +29,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - La terminal web en Android táctil incluye una barra auxiliar tipo Termux con Esc/Ctrl/Alt/Tab, navegación ANSI, símbolos frecuentes y control del teclado virtual; los modificadores son de un solo uso y no duplican la ruta normal de entrada de xterm.js.
 - El nombre de usuario del administrador puede cambiarse desde Perfil y seguridad; se normaliza en minúsculas, valida unicidad y exige la contraseña actual antes de modificar la identidad de login.
 - La terminal local/remota permite subir archivos por drag & drop o selector móvil al directorio actual del PTY, usando chunks pequeños, una ventana de progreso flotante que no redimensiona xterm, avisos temporales para lotes, temporales limpiables y publicación sin sobrescritura.
+- `pangolite-client --install` reemplaza instalaciones anteriores de forma idempotente en systemd/OpenRC/Windows; en Windows el propio CLI solicita elevación UAC para instalar o eliminar el servicio cuando no fue iniciado como administrador.
 - El acceso administrativo usa por defecto modo `learn`: el primer login correcto registra su red y las sesiones posteriores desde otras redes quedan rechazadas salvo CIDR permitido.
 - Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
 - `ui.go` ya no contiene el frontend gigante; ahora renderiza templates.

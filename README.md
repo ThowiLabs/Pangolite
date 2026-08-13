@@ -413,11 +413,15 @@ curl -fsSL https://panel.midominio.com/download/pangolite-client-linux-amd64 -o 
   && sudo /tmp/pangolite-client --install --server-url https://panel.midominio.com --agent-id ID --token TOKEN
 ```
 
-El cliente detecta systemd u OpenRC, se copia a `/opt/pangolite-client/`, guarda sus credenciales en un archivo privado y arranca como servicio. Para eliminarlo completamente del servidor remoto:
+El cliente detecta systemd u OpenRC, se copia a `/opt/pangolite-client/`, guarda sus credenciales en un archivo privado y arranca como servicio. `--install` es idempotente: si encuentra una instalación anterior, detiene y retira el servicio previo, reemplaza binario/configuración y vuelve a registrarlo con el init detectado. Esto permite ejecutar de nuevo el comando generado por el panel para actualizar el cliente sin limpiar manualmente una instalación anterior.
+
+Para eliminarlo completamente del servidor remoto:
 
 ```bash
 sudo /opt/pangolite-client/pangolite-client --remove
 ```
+
+En Windows, `pangolite-client.exe --install ...` y `pangolite-client.exe --remove` comprueban si el proceso está elevado. Si no lo está, el propio CLI solicita UAC, relanza la misma operación con privilegios administrativos y espera su resultado. La instalación usa el Service Control Manager de Windows para detener/eliminar una instancia previa y crear de nuevo `PangoliteClient`; no depende de interpretar la salida de `sc.exe`. El servicio queda además con recuperación automática escalonada (5 s, 15 s y 30 s) ante fallos.
 
 Capacidades iniciales del cliente NAT:
 
