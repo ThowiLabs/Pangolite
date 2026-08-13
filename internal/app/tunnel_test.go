@@ -71,3 +71,16 @@ func TestTunnelHubSubmitStreamStopsWhenContextCancelsAfterAttach(t *testing.T) {
 		t.Fatal("SubmitStream quedo bloqueado despues de cancelar el contexto")
 	}
 }
+
+func TestTunnelHubRemoveAgentReleasesQueues(t *testing.T) {
+	hub := NewTunnelHub(4)
+	_ = hub.queue("agent-a")
+	_ = hub.streamQueue("agent-a")
+	if len(hub.queues) != 1 || len(hub.streamQueues) != 1 {
+		t.Fatalf("colas iniciales inesperadas: %d/%d", len(hub.queues), len(hub.streamQueues))
+	}
+	hub.RemoveAgent("agent-a")
+	if len(hub.queues) != 0 || len(hub.streamQueues) != 0 {
+		t.Fatalf("colas no liberadas: %d/%d", len(hub.queues), len(hub.streamQueues))
+	}
+}

@@ -74,8 +74,8 @@ func newAgentHTTPClient() *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 90 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
-		MaxIdleConns:          32,
-		MaxIdleConnsPerHost:   8,
+		MaxIdleConns:          8,
+		MaxIdleConnsPerHost:   4,
 	}}
 }
 
@@ -464,7 +464,7 @@ func pollAgentJob(ctx context.Context, client *http.Client, base, configuredServ
 		return AgentJob{}, false, discoveryFromHeaders(res.Header), fmt.Errorf("estado %s: %s", res.Status, strings.TrimSpace(string(b)))
 	}
 	var job AgentJob
-	if err := json.NewDecoder(res.Body).Decode(&job); err != nil {
+	if err := json.NewDecoder(io.LimitReader(res.Body, MaxAgentHTTPEnvelopeBytes+1)).Decode(&job); err != nil {
 		return AgentJob{}, false, AgentDiscovery{}, err
 	}
 	if job.ID == "" {
@@ -546,9 +546,12 @@ func executeAgentJob(ctx context.Context, client *http.Client, job AgentJob, req
 		return AgentResponse{JobID: job.ID, StatusCode: http.StatusBadGateway, Error: err.Error()}
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body)
+	body, err := io.ReadAll(io.LimitReader(res.Body, MaxAgentHTTPBodyBytes+1))
 	if err != nil {
 		return AgentResponse{JobID: job.ID, StatusCode: http.StatusBadGateway, Error: err.Error()}
+	}
+	if int64(len(body)) > MaxAgentHTTPBodyBytes {
+		return AgentResponse{JobID: job.ID, StatusCode: http.StatusBadGateway, Error: "respuesta del backend supera el limite del tunel HTTP"}
 	}
 	return AgentResponse{JobID: job.ID, StatusCode: res.StatusCode, Header: cloneSafeHeader(res.Header), Body: body}
 }

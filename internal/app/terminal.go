@@ -90,7 +90,7 @@ func (s *Server) localTerminalSocket(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		if s.log != nil {
 			s.log.Warn("websocket de terminal local rechazado", "error", err.Error())
@@ -138,7 +138,7 @@ func (s *Server) agentTerminalSocket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "cliente de sistema offline; espera a que vuelva a conectarse")
 		return
 	}
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		if s.log != nil {
 			s.log.Warn("websocket de terminal remota rechazado", "agent", agentID, "error", err.Error())

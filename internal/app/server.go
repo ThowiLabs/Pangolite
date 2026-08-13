@@ -41,6 +41,13 @@ type Server struct {
 
 	loginMu       sync.Mutex
 	loginAttempts map[string]loginAttempt
+	abuseLimiter  *fixedWindowLimiter
+
+	trustedProxyNetworks []*net.IPNet
+	adminAllowedNetworks []*net.IPNet
+	adminNetworksMu      sync.RWMutex
+	learnedAdminNetworks []*net.IPNet
+	agentHTTPSlots       chan struct{}
 
 	traefikRestartMu    sync.Mutex
 	traefikRestartTimer *time.Timer
@@ -53,6 +60,9 @@ type requestSession struct {
 }
 
 func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
+	if c.AgentHTTPConcurrency < 1 {
+		c.AgentHTTPConcurrency = 4
+	}
 	effective := store.EffectiveConfig(c)
 	if err := store.SetPrimaryManagedDomain(effective.DashboardDomain, ""); err != nil && logger != nil {
 		logger.Warn("no se pudo registrar dominio principal del panel", "domain", effective.DashboardDomain, "error", err.Error())
@@ -62,7 +72,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	}
 	c = effective
 	hub := NewTunnelHub(64)
-	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}}
+	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), adminAllowedNetworks: parseCIDRs(c.AdminAllowedCIDRs), learnedAdminNetworks: parseCIDRs(strings.Join(store.ListTrustedAdminNetworks(), ",")), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency)}
 	s.routes()
 	return s
 }
@@ -77,7 +87,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Warn("no se pudieron preparar puentes de clientes NAT", "error", err.Error())
 	}
 	defer s.bridges.Close()
-	srv := &http.Server{Addr: s.config.Addr, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: s.config.Addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	errc := make(chan error, 1)
 	go func() {
 		s.log.Info("panel iniciado", "addr", s.config.Addr)
@@ -210,19 +220,31 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		req.Username = r.Form.Get("username")
 		req.Password = r.Form.Get("password")
 	}
+	clientIP := s.clientIP(r)
+	if retryAt, allowed := s.abuseLimiter.Allow("login-ip:"+clientIP, 30, 10*time.Minute); !allowed {
+		s.log.Warn("login limitado por origen", "remote", clientIP, "retry_at", retryAt.Format(time.RFC3339))
+		writeError(w, http.StatusTooManyRequests, "demasiados intentos de acceso desde este origen; intenta mas tarde")
+		return
+	}
+	if !s.adminIPAllowed(clientIP) {
+		s.log.Warn("login rechazado desde red administrativa no confiable", "user", NormalizeUsername(req.Username), "remote", clientIP)
+		writeError(w, http.StatusForbidden, "acceso administrativo no permitido desde esta red")
+		return
+	}
 	if retryAt, blocked := s.loginBlocked(req.Username, r); blocked {
-		s.log.Warn("login bloqueado temporalmente", "user", NormalizeUsername(req.Username), "remote", clientIPForRateLimit(r), "retry_at", retryAt.Format(time.RFC3339))
+		s.log.Warn("login bloqueado temporalmente", "user", NormalizeUsername(req.Username), "remote", s.clientIP(r), "retry_at", retryAt.Format(time.RFC3339))
 		writeError(w, http.StatusTooManyRequests, "demasiados intentos fallidos; espera unos minutos antes de intentar otra vez")
 		return
 	}
 	user, ok := s.store.AuthenticateUser(req.Username, req.Password)
 	if !ok {
 		s.recordLoginFailure(req.Username, r)
-		s.log.Warn("login fallido", "user", NormalizeUsername(req.Username), "remote", clientIPForRateLimit(r))
+		s.log.Warn("login fallido", "user", NormalizeUsername(req.Username), "remote", s.clientIP(r))
 		writeError(w, http.StatusUnauthorized, "usuario o contraseña invalidos")
 		return
 	}
 	s.recordLoginSuccess(req.Username, r)
+	s.rememberAdminIP(clientIP, user.Username)
 	rawID, sess, err := s.store.CreateSession(user.ID, sessionDuration(s.config))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "no se pudo crear sesion")
@@ -234,7 +256,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginKey(username string, r *http.Request) string {
-	return NormalizeUsername(username) + "|" + clientIPForRateLimit(r)
+	return NormalizeUsername(username) + "|" + s.clientIP(r)
 }
 
 func (s *Server) loginBlocked(username string, r *http.Request) (time.Time, bool) {
@@ -263,7 +285,10 @@ func (s *Server) recordLoginFailure(username string, r *http.Request) {
 	now := time.Now().UTC()
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
-	attempt := s.loginAttempts[key]
+	attempt, exists := s.loginAttempts[key]
+	if !exists && len(s.loginAttempts) >= 8192 {
+		return
+	}
 	if attempt.LockedUntil.Before(now) {
 		attempt.LockedUntil = time.Time{}
 	}
@@ -349,14 +374,15 @@ func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request, rs reques
 
 func (s *Server) passwordResetStatus(w http.ResponseWriter, _ *http.Request) {
 	settings := s.store.LoadAppSettings(s.config)
-	enabled := settings.SMTPReady()
+	effective := s.store.EffectiveConfig(s.config)
+	enabled := settings.SMTPReady() && strings.TrimSpace(effective.DashboardDomain) != ""
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
 }
 
 func (s *Server) passwordResetRequest(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	settings := s.store.LoadAppSettings(s.config)
-	if !settings.SMTPReady() {
+	if !settings.SMTPReady() || strings.TrimSpace(s.store.EffectiveConfig(s.config).DashboardDomain) == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Si la cuenta existe y la recuperacion esta habilitada, enviaremos instrucciones."})
 		return
 	}
@@ -376,17 +402,24 @@ func (s *Server) passwordResetRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	clientIP := s.clientIP(r)
+	if retryAt, allowed := s.abuseLimiter.Allow("password-reset-ip:"+clientIP, 8, 15*time.Minute); !allowed {
+		s.log.Warn("recuperacion limitada por origen", "remote", clientIP, "retry_at", retryAt.Format(time.RFC3339))
+		writeError(w, http.StatusTooManyRequests, "demasiadas solicitudes de recuperacion; intenta mas tarde")
+		return
+	}
 	resetKey := "reset:" + email
 	if retryAt, blocked := s.loginBlocked(resetKey, r); blocked {
-		s.log.Warn("recuperacion bloqueada temporalmente", "email", email, "remote", clientIPForRateLimit(r), "retry_at", retryAt.Format(time.RFC3339))
+		s.log.Warn("recuperacion bloqueada temporalmente", "email", email, "remote", s.clientIP(r), "retry_at", retryAt.Format(time.RFC3339))
 		writeError(w, http.StatusTooManyRequests, "demasiadas solicitudes de recuperacion; espera unos minutos antes de intentar otra vez")
 		return
 	}
 	s.recordLoginFailure(resetKey, r)
 	if user, err := s.store.UserByEmail(email); err == nil {
 		token, err := s.store.CreatePasswordResetToken(user.ID, 20*time.Minute)
-		if err == nil {
-			link := strings.TrimRight(s.publicPanelBaseURL(r), "/") + "/reset?token=" + url.QueryEscape(token)
+		baseURL := strings.TrimRight(s.publicPanelBaseURL(r), "/")
+		if err == nil && baseURL != "" {
+			link := baseURL + "/reset?token=" + url.QueryEscape(token)
 			body := "Solicitaste restablecer la contraseña de Pangolite.\n\nAbre este enlace para definir una nueva contraseña:\n" + link + "\n\nEl enlace vence en 20 minutos. Si no solicitaste este cambio, ignora este mensaje."
 			if mailErr := sendSMTPMail(settings, mailMessage{ToEmail: user.Email, Subject: "Restablecer contraseña de Pangolite", Text: body}); mailErr != nil {
 				s.log.Warn("no se pudo enviar recuperacion de contraseña", "user", user.Username, "error", mailErr.Error())
@@ -408,6 +441,12 @@ func (s *Server) passwordResetConfirm(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
+	clientIP := s.clientIP(r)
+	if retryAt, allowed := s.abuseLimiter.Allow("password-reset-confirm-ip:"+clientIP, 12, 15*time.Minute); !allowed {
+		s.log.Warn("confirmacion de recuperacion limitada", "remote", clientIP, "retry_at", retryAt.Format(time.RFC3339))
+		writeError(w, http.StatusTooManyRequests, "demasiados intentos de recuperacion; intenta mas tarde")
+		return
+	}
 	user, err := s.store.ConsumePasswordResetToken(req.Token, req.NewPassword)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -418,20 +457,13 @@ func (s *Server) passwordResetConfirm(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) publicPanelBaseURL(r *http.Request) string {
+func (s *Server) publicPanelBaseURL(_ *http.Request) string {
 	effective := s.store.EffectiveConfig(s.config)
-	if strings.TrimSpace(effective.DashboardDomain) != "" {
-		return "https://" + strings.TrimSpace(effective.DashboardDomain)
+	domain := strings.TrimSpace(effective.DashboardDomain)
+	if domain == "" {
+		return ""
 	}
-	scheme := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
-	if scheme == "" {
-		scheme = "http"
-	}
-	host := strings.TrimSpace(r.Host)
-	if host == "" {
-		host = s.config.Addr
-	}
-	return scheme + "://" + host
+	return "https://" + domain
 }
 
 func (s *Server) traefikConfig(w http.ResponseWriter, _ *http.Request) {
@@ -1425,6 +1457,7 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request, rs requestS
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.hub.RemoveAgent(id)
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("cliente NAT eliminado", "id", id, "name", agent.Name, "resources", len(deletedResources), "user", rs.User.Username, "traefik", traefikResult.Message)
 	s.recordAudit(r, rs, "agent.delete", "agent", id, agent.ProjectID, map[string]any{"name": agent.Name, "deletedResources": len(deletedResources), "traefik": traefikResult.Message})
@@ -2020,6 +2053,7 @@ func (s *Server) agentJobResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, MaxAgentHTTPEnvelopeBytes)
 	var resp AgentResponse
 	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
@@ -2076,7 +2110,7 @@ func (s *Server) agentStreamSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.hub.CompleteStream(streamID)
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		if s.log != nil {
 			s.log.Warn("websocket de stream rechazado", "stream", streamID, "error", err.Error())
@@ -2446,10 +2480,22 @@ func quoteForwardedValue(value string) string {
 }
 
 func (s *Server) proxyViaAgent(w http.ResponseWriter, r *http.Request, resource Resource) {
+	select {
+	case s.agentHTTPSlots <- struct{}{}:
+		defer func() { <-s.agentHTTPSlots }()
+	default:
+		writeError(w, http.StatusServiceUnavailable, "tunel HTTP ocupado; intenta de nuevo")
+		return
+	}
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxAgentHTTPBodyBytes))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "no se pudo leer request del tunel HTTP")
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request del tunel HTTP demasiado grande")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "no se pudo leer request del tunel HTTP")
 		return
 	}
 	jobID, err := randomID()
@@ -2643,6 +2689,9 @@ func (s *Server) authorizePanelRequest(w http.ResponseWriter, r *http.Request, a
 }
 
 func (s *Server) currentSession(r *http.Request) (requestSession, bool) {
+	if !s.adminIPAllowed(s.clientIP(r)) {
+		return requestSession{}, false
+	}
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return requestSession{}, false
@@ -2686,7 +2735,11 @@ func (s *Server) secureCookie(r *http.Request) bool {
 	case "0", "false", "no", "off":
 		return false
 	}
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	if r.TLS != nil {
+		return true
+	}
+	peer := remoteIP(r)
+	return ipInNetworks(peer, s.trustedProxyNetworks) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 type statusRecorder struct {
@@ -2745,7 +2798,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			rec.status = http.StatusOK
 		}
 		if r.URL.Path != "/healthz" && r.URL.Path != "/api/v1/traefik-config" && r.URL.Path != "/api/agent/poll" && !strings.HasPrefix(r.URL.Path, "/assets/") {
-			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "host", r.Host, "status", rec.status, "duration", time.Since(start).String())
+			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "host", r.Host, "remote", s.clientIP(r), "status", rec.status, "duration", time.Since(start).String())
 		}
 	})
 }
@@ -2757,6 +2810,9 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' https://cdn.jsdelivr.net data:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/login" || r.URL.Path == "/password" || r.URL.Path == "/reset" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
