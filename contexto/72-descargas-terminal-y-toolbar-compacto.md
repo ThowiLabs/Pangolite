@@ -32,7 +32,7 @@ Los tickets viven solo en memoria, están ligados al `user_id`, vencen a los dos
 
 # Librerías usadas
 - Standard library Go: `archive/zip`, `compress/flate`, `filepath`, `io`, `mime`, `net/http`, `bufio`.
-- WebSocket ya existente (`nhooyr.io/websocket`) para el stream remoto.
+- WebSocket mantenido (`github.com/coder/websocket`) para el stream remoto.
 - JavaScript/CSS nativos y componentes existentes del panel.
 - No se agregaron dependencias.
 

@@ -47,7 +47,6 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 2. Mejorar widget/listado de proyectos con estado, métricas rápidas y acción primaria clara.
 3. Revisar responsive de tablas, modales y formularios largos en móvil real.
 4. Reforzar mensajes de error operativos para Traefik, puertos, clientes desconectados, SSL y health.
-5. Migrar `nhooyr.io/websocket` al módulo mantenido `github.com/coder/websocket` en una ventana con acceso a dependencias y suite de pruebas completa.
 6. Evaluar MFA y una UI para administrar/revocar redes administrativas confiables si habrá más operadores.
 7. Autoalojar dependencias frontend actualmente cargadas desde CDN para reducir dependencia externa y permitir una CSP más estricta.
 
