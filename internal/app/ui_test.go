@@ -204,3 +204,55 @@ func TestTerminalRouteRejectsUnknownAgentInGo(t *testing.T) {
 		t.Fatalf("cliente desconocido en terminal = %d, want 404", recorder.Code)
 	}
 }
+
+func TestTerminalAndroidShortcutAccessoryIsEmbedded(t *testing.T) {
+	page, err := templatesFS.ReadFile("templates/pages/terminal.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := assetsFS.ReadFile("assets/app/terminal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assetsFS.ReadFile("assets/app/panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, expected := range []string{
+		`id="terminalMobileKeys"`,
+		`data-terminal-mobile-key="escape"`,
+		`data-terminal-mobile-modifier="ctrl"`,
+		`data-terminal-mobile-modifier="alt"`,
+		`data-terminal-mobile-key="keyboard"`,
+		`data-terminal-mobile-key="up"`,
+		`data-terminal-mobile-key="left"`,
+		`data-terminal-mobile-key="pagedown"`,
+	} {
+		if !strings.Contains(string(page), expected) {
+			t.Fatalf("la terminal Android no contiene %q", expected)
+		}
+	}
+
+	for _, expected := range []string{
+		"isAndroidTouchDevice()",
+		"applyMobileModifiersToInput(data)",
+		"mobileKeySequence(key)",
+		"window.visualViewport",
+		"xterm-helper-textarea",
+	} {
+		if !strings.Contains(string(script), expected) {
+			t.Fatalf("terminal.js no contiene %q", expected)
+		}
+	}
+
+	for _, expected := range []string{
+		".terminal-mobile-keys.is-enabled",
+		".terminal-mobile-keys.keyboard-open",
+		".terminal-body-wrap.mobile-keys-floating",
+	} {
+		if !strings.Contains(string(css), expected) {
+			t.Fatalf("panel.css no contiene %q", expected)
+		}
+	}
+}

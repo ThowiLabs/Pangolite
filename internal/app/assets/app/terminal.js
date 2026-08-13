@@ -5,6 +5,10 @@
   let connectedTarget='';
   let resizeTimer=null;
   let socketSerial=0;
+  let mobileKeysEnabled=false;
+  let mobileModifiers={ctrl:false,alt:false};
+  let mobileKeyboardFloating=false;
+  let mobileLayoutTimer=null;
   const encoder=new TextEncoder();
   const themes={
     black:{background:'#05070a',foreground:'#f8fafc',cursor:'#f8fafc',selectionBackground:'#475569'},
@@ -112,6 +116,183 @@
     }
     return false;
   }
+  function isAndroidTouchDevice(){
+    return /Android/i.test(String(navigator.userAgent||''))&&(Number(navigator.maxTouchPoints)||0)>0;
+  }
+  function terminalTextarea(){
+    const box=el('terminalBox');
+    return box&&box.querySelector('.xterm-helper-textarea');
+  }
+  function updateMobileModifierButtons(){
+    const bar=el('terminalMobileKeys');
+    if(!bar)return;
+    for(const name of ['ctrl','alt']){
+      const button=bar.querySelector('[data-terminal-mobile-modifier="'+name+'"]');
+      if(!button)continue;
+      const active=!!mobileModifiers[name];
+      button.classList.toggle('active',active);
+      button.setAttribute('aria-pressed',String(active));
+    }
+  }
+  function clearMobileModifiers(){
+    if(!mobileModifiers.ctrl&&!mobileModifiers.alt)return;
+    mobileModifiers={ctrl:false,alt:false};
+    updateMobileModifierButtons();
+  }
+  function toggleMobileModifier(name){
+    if(name!=='ctrl'&&name!=='alt')return;
+    mobileModifiers[name]=!mobileModifiers[name];
+    updateMobileModifierButtons();
+    if(term)term.focus();
+  }
+  function controlCharacter(value){
+    const chars=Array.from(String(value||''));
+    if(chars.length!==1)return value;
+    const ch=chars[0];
+    const code=ch.charCodeAt(0);
+    if((code>=65&&code<=90)||(code>=97&&code<=122))return String.fromCharCode(code&31);
+    const controls={
+      '@':'\x00',' ':'\x00','2':'\x00',
+      '[':'\x1b','3':'\x1b',
+      '\\':'\x1c','4':'\x1c',
+      ']':'\x1d','5':'\x1d',
+      '^':'\x1e','6':'\x1e',
+      '_':'\x1f','-':'\x1f','7':'\x1f',
+      '?':'\x7f','8':'\x7f'
+    };
+    return Object.prototype.hasOwnProperty.call(controls,ch)?controls[ch]:value;
+  }
+  function applyMobileModifiersToInput(data){
+    if(!mobileKeysEnabled||(!mobileModifiers.ctrl&&!mobileModifiers.alt))return data;
+    let output=String(data||'');
+    if(mobileModifiers.ctrl)output=controlCharacter(output);
+    if(mobileModifiers.alt)output='\x1b'+output;
+    clearMobileModifiers();
+    return output;
+  }
+  function mobileModifierCode(){
+    if(mobileModifiers.ctrl&&mobileModifiers.alt)return 7;
+    if(mobileModifiers.ctrl)return 5;
+    if(mobileModifiers.alt)return 3;
+    return 0;
+  }
+  function mobileKeySequence(key){
+    const modifier=mobileModifierCode();
+    const navigation={up:'A',down:'B',right:'C',left:'D',home:'H',end:'F'};
+    let sequence='';
+    if(navigation[key])sequence=modifier?'\x1b[1;'+modifier+navigation[key]:'\x1b['+navigation[key];
+    else if(key==='pageup')sequence=modifier?'\x1b[5;'+modifier+'~':'\x1b[5~';
+    else if(key==='pagedown')sequence=modifier?'\x1b[6;'+modifier+'~':'\x1b[6~';
+    else if(key==='escape')sequence='\x1b';
+    else if(key==='tab')sequence='\t';
+    if(sequence&&mobileModifiers.alt&&(key==='escape'||key==='tab'))sequence='\x1b'+sequence;
+    if(sequence)clearMobileModifiers();
+    return sequence;
+  }
+  function toggleMobileKeyboard(){
+    const textarea=terminalTextarea();
+    if(!textarea||!term)return;
+    if(document.activeElement===textarea){
+      textarea.blur();
+      clearMobileModifiers();
+    }else{
+      term.focus();
+    }
+    queueMobileKeyboardLayout();
+  }
+  function handleMobileTerminalButton(button){
+    if(!button)return;
+    const modifier=button.dataset.terminalMobileModifier;
+    if(modifier){
+      if(!isConnected()){status('Conecta la terminal para usar los atajos',false,true);clearMobileModifiers();return}
+      toggleMobileModifier(modifier);
+      return;
+    }
+    const key=button.dataset.terminalMobileKey||'';
+    if(key==='keyboard'){toggleMobileKeyboard();return}
+    if(!isConnected()){
+      status('Conecta la terminal para usar los atajos',false,true);
+      clearMobileModifiers();
+      return;
+    }
+    if(Object.prototype.hasOwnProperty.call(button.dataset,'terminalMobileText')){
+      sendBytes(applyMobileModifiersToInput(button.dataset.terminalMobileText||''));
+    }else{
+      const sequence=mobileKeySequence(key);
+      if(sequence)sendBytes(sequence);
+    }
+    if(term)term.focus();
+  }
+  function syncMobileKeyboardLayout(){
+    const bar=el('terminalMobileKeys');
+    if(!bar||!mobileKeysEnabled)return;
+    const textarea=terminalTextarea();
+    const focused=!!(textarea&&document.activeElement===textarea);
+    const keyboardButton=bar.querySelector('[data-terminal-mobile-key="keyboard"]');
+    if(keyboardButton)keyboardButton.setAttribute('aria-pressed',String(focused));
+    const body=bar.parentElement;
+    const shouldFloat=focused&&window.innerWidth<=960;
+    bar.classList.toggle('keyboard-open',shouldFloat);
+    if(shouldFloat){
+      const vv=window.visualViewport;
+      const layoutHeight=document.documentElement.clientHeight||window.innerHeight;
+      const viewportBottom=vv?vv.offsetTop+vv.height:layoutHeight;
+      const keyboardOffset=Math.max(0,layoutHeight-viewportBottom);
+      const box=el('terminalBox');
+      const rect=box?box.getBoundingClientRect():{left:6,width:window.innerWidth-12};
+      const left=Math.max(6,Math.min(rect.left,window.innerWidth-6));
+      const width=Math.max(0,Math.min(rect.width,window.innerWidth-left-6));
+      bar.style.setProperty('--terminal-mobile-keyboard-offset',keyboardOffset+'px');
+      bar.style.left=left+'px';
+      bar.style.width=width+'px';
+      if(body){
+        body.classList.add('mobile-keys-floating');
+        body.style.setProperty('--terminal-mobile-keys-reserved',(bar.offsetHeight+8)+'px');
+      }
+    }else{
+      bar.style.removeProperty('--terminal-mobile-keyboard-offset');
+      bar.style.removeProperty('left');
+      bar.style.removeProperty('width');
+      if(body){
+        body.classList.remove('mobile-keys-floating');
+        body.style.removeProperty('--terminal-mobile-keys-reserved');
+      }
+    }
+    if(mobileKeyboardFloating!==shouldFloat){
+      mobileKeyboardFloating=shouldFloat;
+      setTimeout(()=>{fitTerminal();queueResize()},20);
+    }
+  }
+  function queueMobileKeyboardLayout(){
+    clearTimeout(mobileLayoutTimer);
+    mobileLayoutTimer=setTimeout(syncMobileKeyboardLayout,30);
+  }
+  function installMobileTerminalKeys(){
+    const bar=el('terminalMobileKeys');
+    if(!bar||!isAndroidTouchDevice())return;
+    mobileKeysEnabled=true;
+    bar.classList.add('is-enabled');
+    bar.setAttribute('aria-hidden','false');
+    bar.addEventListener('click',event=>{
+      const button=event.target.closest('button[data-terminal-mobile-key],button[data-terminal-mobile-modifier],button[data-terminal-mobile-text]');
+      if(!button||!bar.contains(button))return;
+      event.preventDefault();
+      handleMobileTerminalButton(button);
+    });
+    const textarea=terminalTextarea();
+    if(textarea){
+      textarea.addEventListener('focus',queueMobileKeyboardLayout);
+      textarea.addEventListener('blur',queueMobileKeyboardLayout);
+    }
+    if(window.visualViewport){
+      window.visualViewport.addEventListener('resize',queueMobileKeyboardLayout);
+      window.visualViewport.addEventListener('scroll',queueMobileKeyboardLayout);
+    }
+    window.addEventListener('orientationchange',queueMobileKeyboardLayout);
+    window.addEventListener('resize',queueMobileKeyboardLayout);
+    updateMobileModifierButtons();
+    queueMobileKeyboardLayout();
+  }
   function closeSocket(socket,reason){
     if(!socket)return;
     const close=()=>{try{socket.close(1000,reason||'cerrada')}catch{}};
@@ -158,8 +339,9 @@
     }
     term.open(box);
     installTerminalContextMenu(box);
+    installMobileTerminalKeys();
     term.attachCustomKeyEventHandler(handleTerminalKey);
-    term.onData(data=>sendBytes(data));
+    term.onData(data=>sendBytes(applyMobileModifiersToInput(data)));
     term.onResize(()=>queueResize());
     fitTerminal();
     window.addEventListener('resize',()=>{fitTerminal();queueResize()});
@@ -219,6 +401,7 @@
   }
   function connectTerminal(){
     if(!ensureTerminal())return;
+    clearMobileModifiers();
     retireCurrentSocket('reemplazada');
     applyTheme();
     const target=(el('terminalTarget')&&el('terminalTarget').value)||'local';
@@ -268,6 +451,7 @@
       const decoderTail=decoder.decode();
       if(decoderTail&&term)term.write(decoderTail);
       ws=null;
+      clearMobileModifiers();
       setButtons('idle');
       connectedTarget='';
       status('Sesión cerrada',false,true);
@@ -276,6 +460,7 @@
     };
   }
   function disconnectTerminal(writeMessage=true){
+    clearMobileModifiers();
     const socket=retireCurrentSocket('usuario');
     connectedTarget='';
     setButtons('idle');
@@ -304,6 +489,7 @@
     try{
       const text=await navigator.clipboard.readText();
       if(!text)return true;
+      clearMobileModifiers();
       if(!isConnected()){
         status('Conecta la terminal antes de pegar',false,true);
         return false;

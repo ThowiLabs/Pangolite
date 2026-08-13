@@ -483,6 +483,8 @@ El panel muestra estado online/offline, última conexión, sistema operativo, ar
 
 La terminal remota Linux detecta la shell disponible en lugar de asumir `/bin/sh`. Resuelve `SHELL`, shells Linux comunes, `sh` mediante `PATH` y rutas habituales de Android como `/system/bin/sh`. El proceso de la terminal se inicia mediante una ruta compatible con kernels Linux antiguos para evitar que `pidfd_open` cierre el cliente completo en dispositivos Android heredados.
 
+En Android táctil, la consola web muestra una barra auxiliar inspirada en Termux encima del teclado virtual con `ESC`, `CTRL`, `ALT`, `TAB`, `HOME`, `END`, flechas, `PGUP`/`PGDN`, símbolos frecuentes y un botón para mostrar u ocultar el teclado. `CTRL` y `ALT` funcionan como modificadores de un solo uso para la siguiente tecla o carácter, lo que permite enviar combinaciones como `Ctrl+C`, `Ctrl+D`, `Alt+X` o `Ctrl+←` sin teclado físico.
+
 ## Health checks
 
 La vista de recursos incluye una acción para probar disponibilidad básica de recursos HTTP/TCP y confirmar si el cliente NAT requerido está conectado.
