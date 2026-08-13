@@ -24,6 +24,7 @@ La base actual incluye:
 - Configuracion del dominio publico del dashboard con validacion DNS contra la IP del servidor.
 - Clientes de sistema/agentes para servidores NAT/remotos.
 - Directorio global de Conexiones SSH para abrir la terminal del servidor Pangolite o de cualquier cliente sin navegar primero por su proyecto.
+- Transferencia de archivos desde la terminal local o remota mediante arrastrar y soltar o selector de archivos, con streaming y progreso.
 - Recursos HTTP/HTTPS locales o mediante cliente de sistema.
 - Recursos TCP/UDP directos del host Pangolite.
 - Validación de puerto público contra recursos existentes y contra puertos ocupados en el sistema.
@@ -485,6 +486,9 @@ El panel muestra estado online/offline, última conexión, sistema operativo, ar
 La terminal remota Linux detecta la shell disponible en lugar de asumir `/bin/sh`. Resuelve `SHELL`, shells Linux comunes, `sh` mediante `PATH` y rutas habituales de Android como `/system/bin/sh`. El proceso de la terminal se inicia mediante una ruta compatible con kernels Linux antiguos para evitar que `pidfd_open` cierre el cliente completo en dispositivos Android heredados.
 
 En Android táctil, la consola web muestra una barra auxiliar inspirada en Termux encima del teclado virtual con `ESC`, `CTRL`, `ALT`, `TAB`, `HOME`, `END`, flechas, `PGUP`/`PGDN`, símbolos frecuentes y un botón para mostrar u ocultar el teclado. `CTRL` y `ALT` funcionan como modificadores de un solo uso para la siguiente tecla o carácter, lo que permite enviar combinaciones como `Ctrl+C`, `Ctrl+D`, `Alt+X` o `Ctrl+←` sin teclado físico.
+
+La terminal también permite subir archivos al directorio actual del shell. En escritorio se pueden arrastrar uno o varios archivos sobre la consola; en Android y escritorio existe además el botón **Subir archivo**. La transferencia usa bloques pequeños por el WebSocket ya autenticado de la terminal, muestra progreso y no carga el archivo completo en memoria. El cliente remoto resuelve el directorio actual del PTY en Linux, por lo que después de `cd /ruta/destino` la subida se guarda en esa ruta. Los nombres se saneán, las subidas incompletas permanecen como temporales ocultos y se eliminan al cancelar/cerrar la sesión, y un archivo existente nunca se sobrescribe: se genera un nombre como `archivo (1).zip`.
+En terminales remotas la función se negocia mediante la capacidad `terminal-upload-v1`. Un servidor nuevo no envía frames de archivo a clientes antiguos: muestra un error solicitando actualizar `pangolite-client`, de modo que la compatibilidad no convierte los bytes de una subida en entrada accidental del shell.
 
 ## Health checks
 

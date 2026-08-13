@@ -153,6 +153,14 @@ func TestTunnelHubAttachTimeoutOnlyAppliesBeforeHandshake(t *testing.T) {
 	}
 }
 
+func TestTunnelHubTracksTerminalUploadCapability(t *testing.T) {
+	hub := NewTunnelHub(2)
+	hub.UpdateAgentCapabilities("agent-terminal", AgentCapabilityHTTPStreamV1+","+AgentCapabilityTerminalUploadV1)
+	if !hub.AgentSupports("agent-terminal", AgentCapabilityTerminalUploadV1) {
+		t.Fatal("capacidad de subida por terminal no registrada")
+	}
+}
+
 func TestTunnelHubAgentCapabilitiesExpire(t *testing.T) {
 	hub := NewTunnelHub(2)
 	hub.UpdateAgentCapabilities("agent-1", "tcp-stream-v1, "+AgentCapabilityHTTPStreamV1)

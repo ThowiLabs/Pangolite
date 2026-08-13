@@ -632,6 +632,7 @@ func handleAgentTerminalStream(ctx context.Context, client *http.Client, base, c
 		logger.Warn("websocket de terminal fallo", "stream", job.ID, "error", err.Error())
 		return
 	}
+	ws.SetReadLimit(128 << 10)
 
 	term, err := startTerminalProcess(ctx, terminalStartOptions{Shell: job.Shell, Cols: job.Cols, Rows: job.Rows})
 	if err != nil {
@@ -706,7 +707,7 @@ func setAgentAuthHeaderWithEndpoint(h http.Header, cfg AgentClientConfig, server
 	h.Set("X-Pangolite-Agent", cfg.AgentID)
 	h.Set("User-Agent", "pangolite-client/0.5")
 	h.Set("X-Pangolite-Client-Version", Version)
-	h.Set("X-Pangolite-Capabilities", AgentCapabilityHTTPStreamV1)
+	h.Set("X-Pangolite-Capabilities", strings.Join([]string{AgentCapabilityHTTPStreamV1, AgentCapabilityTerminalUploadV1}, ","))
 	h.Set("X-Pangolite-Client-OS", runtime.GOOS)
 	h.Set("X-Pangolite-Client-Arch", runtime.GOARCH)
 	if strings.TrimSpace(serverURL) != "" {

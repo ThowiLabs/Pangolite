@@ -256,3 +256,33 @@ func TestTerminalAndroidShortcutAccessoryIsEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalFileTransferIsEmbedded(t *testing.T) {
+	page, err := templatesFS.ReadFile("templates/pages/terminal.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := assetsFS.ReadFile("assets/app/terminal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assetsFS.ReadFile("assets/app/panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`id="terminalUploadBtn"`, `id="terminalFileInput"`, `id="terminalDropOverlay"`, `id="terminalTransfers"`} {
+		if !strings.Contains(string(page), expected) {
+			t.Fatalf("terminal.html no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{"terminalUploadChunkSize=24*1024", "upload.start", "encodeTerminalUploadChunk", "bufferedAmount>512*1024", "queueTerminalFiles"} {
+		if !strings.Contains(string(script), expected) {
+			t.Fatalf("terminal.js no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{".terminal-drop-overlay", ".terminal-transfer-bar", ".terminal-transfer.error"} {
+		if !strings.Contains(string(css), expected) {
+			t.Fatalf("panel.css no contiene %q", expected)
+		}
+	}
+}

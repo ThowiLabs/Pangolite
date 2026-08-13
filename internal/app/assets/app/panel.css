@@ -1544,3 +1544,44 @@ body.modal-open{
 @media(max-width:860px){.ssh-connections-hero,.ssh-directory-header{align-items:stretch;flex-direction:column}.ssh-hero-badge{align-self:flex-start}.ssh-directory-tools{width:100%;justify-content:stretch}.ssh-search{width:100%}}
 @media(max-width:680px){.ssh-summary-grid{grid-template-columns:1fr!important}.ssh-connection-grid{grid-template-columns:1fr}.ssh-directory-tools{align-items:stretch;flex-direction:column}.ssh-page-size{justify-content:space-between}.ssh-page-size .form-select{width:96px}.ssh-directory-footer{align-items:stretch;flex-direction:column}.ssh-pagination{justify-content:flex-start}}
 @media(max-width:430px){.ssh-card-actions{grid-template-columns:1fr}.ssh-card-status{max-width:64%}.terminal-directory-back span{display:none}}
+
+/* Transferencias directas desde la terminal. */
+.terminal-drop-overlay{
+  position:absolute;
+  inset:.45rem;
+  z-index:7;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  border:2px dashed rgba(96,165,250,.72);
+  border-radius:14px;
+  background:rgba(2,6,23,.88);
+  backdrop-filter:blur(6px);
+  pointer-events:none;
+}
+.terminal-drop-overlay.visible{display:flex;}
+.terminal-drop-overlay>div{display:grid;justify-items:center;gap:.35rem;text-align:center;color:#e2e8f0;padding:1rem;}
+.terminal-drop-overlay i{font-size:2rem;color:#93c5fd;}
+.terminal-drop-overlay strong{font-size:1rem;}
+.terminal-drop-overlay span{font-size:.82rem;color:#94a3b8;}
+.terminal-transfers{flex:0 0 auto;display:grid;gap:6px;max-height:132px;overflow:auto;}
+.terminal-transfer{
+  display:grid;
+  gap:5px;
+  padding:8px 10px;
+  border:1px solid rgba(148,163,184,.18);
+  border-radius:12px;
+  background:rgba(15,23,42,.72);
+}
+.terminal-transfer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;font-size:.8rem;}
+.terminal-transfer-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#e2e8f0;font-weight:700;}
+.terminal-transfer-percent{flex:0 0 auto;color:#93c5fd;font-variant-numeric:tabular-nums;}
+.terminal-transfer-track{height:5px;border-radius:999px;background:rgba(148,163,184,.18);overflow:hidden;}
+.terminal-transfer-bar{height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#22c55e);transition:width .12s linear;}
+.terminal-transfer-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#94a3b8;font-size:.72rem;}
+.terminal-transfer.done .terminal-transfer-percent{color:#86efac;}
+.terminal-transfer.error .terminal-transfer-percent,.terminal-transfer.error .terminal-transfer-meta{color:#fca5a5;}
+.terminal-transfer.error .terminal-transfer-bar{background:#ef4444;}
+@media(max-width:960px){
+  .terminal-route .terminal-actions #terminalUploadBtn{grid-column:auto;}
+}

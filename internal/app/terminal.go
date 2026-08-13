@@ -24,11 +24,12 @@ type terminalStartOptions struct {
 }
 
 type terminalProcess struct {
-	rw        io.ReadWriteCloser
-	resize    func(cols, rows int) error
-	stop      func() error
-	closeOnce sync.Once
-	closeErr  error
+	rw         io.ReadWriteCloser
+	resize     func(cols, rows int) error
+	currentDir func() (string, error)
+	stop       func() error
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 func (p *terminalProcess) Read(b []byte) (int, error) {
@@ -69,11 +70,24 @@ func (p *terminalProcess) Resize(cols, rows int) error {
 	return p.resize(cols, rows)
 }
 
+func (p *terminalProcess) CurrentDir() (string, error) {
+	if p == nil || p.currentDir == nil {
+		return "", errors.New("directorio actual no disponible para esta terminal")
+	}
+	return p.currentDir()
+}
+
 type terminalControlMessage struct {
 	PangoliteTerminal bool   `json:"pangoliteTerminal,omitempty"`
 	Type              string `json:"type"`
-	Cols              int    `json:"cols"`
-	Rows              int    `json:"rows"`
+	Cols              int    `json:"cols,omitempty"`
+	Rows              int    `json:"rows,omitempty"`
+	UploadID          string `json:"uploadId,omitempty"`
+	Name              string `json:"name,omitempty"`
+	Path              string `json:"path,omitempty"`
+	Error             string `json:"error,omitempty"`
+	Size              int64  `json:"size,omitempty"`
+	Written           int64  `json:"written,omitempty"`
 }
 
 type terminalControlMode uint8
@@ -98,6 +112,7 @@ func (s *Server) localTerminalSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "")
+	ws.SetReadLimit(128 << 10)
 
 	cols, rows := terminalSizeFromRequest(r)
 	term, err := startTerminalProcess(r.Context(), terminalStartOptions{Cols: cols, Rows: rows})
@@ -146,6 +161,7 @@ func (s *Server) agentTerminalSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "")
+	ws.SetReadLimit(128 << 10)
 
 	left, right := net.Pipe()
 	defer left.Close()
@@ -163,8 +179,9 @@ func (s *Server) agentTerminalSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		errCh <- s.hub.SubmitStream(ctx, agentID, job, left)
 	}()
+	uploadAllowed := s.hub.AgentSupports(agentID, AgentCapabilityTerminalUploadV1)
 	go func() {
-		errCh <- bridgeWebSocketRemoteTerminal(ctx, ws, right, true)
+		errCh <- bridgeWebSocketRemoteTerminal(ctx, ws, right, uploadAllowed)
 	}()
 	if s.log != nil {
 		s.log.Info("terminal remota solicitada", "user", rs.User.Username, "agent", agentID, "name", agent.Name)
@@ -233,7 +250,7 @@ func decodeTerminalControlJSON(data []byte) (terminalControlMessage, bool) {
 		return terminalControlMessage{}, false
 	}
 	switch msg.Type {
-	case "resize":
+	case "resize", "upload.start", "upload.finish", "upload.cancel", "upload.ready", "upload.progress", "upload.done", "upload.error":
 		return msg, true
 	default:
 		return terminalControlMessage{}, false
@@ -266,6 +283,13 @@ type terminalControlFilter struct {
 }
 
 func (f *terminalControlFilter) Payloads(term *terminalProcess, data []byte) [][]byte {
+	return f.Process(data, func(msg terminalControlMessage) bool {
+		applyTerminalControl(term, msg)
+		return true
+	})
+}
+
+func (f *terminalControlFilter) Process(data []byte, onControl func(terminalControlMessage) bool) [][]byte {
 	if len(f.buf) > 0 {
 		data = append(append([]byte(nil), f.buf...), data...)
 		f.buf = nil
@@ -289,9 +313,6 @@ func (f *terminalControlFilter) Payloads(term *terminalProcess, data []byte) [][
 			payloads = append(payloads, append([]byte(nil), data[:idx]...))
 			data = data[idx:]
 		}
-		if !bytes.HasPrefix(data, terminalControlPrefix) {
-			continue
-		}
 		afterPrefix := data[len(terminalControlPrefix):]
 		nl := bytes.IndexByte(afterPrefix, '\n')
 		if nl < 0 {
@@ -311,11 +332,11 @@ func (f *terminalControlFilter) Payloads(term *terminalProcess, data []byte) [][
 			return payloads
 		}
 		frameEnd := payloadStart + n
-		if msg, ok := decodeTerminalControlJSON(data[payloadStart:frameEnd]); ok {
-			applyTerminalControl(term, msg)
-		} else {
-			payloads = append(payloads, append([]byte(nil), data[:frameEnd]...))
+		if msg, ok := decodeTerminalControlJSON(data[payloadStart:frameEnd]); ok && (onControl == nil || onControl(msg)) {
+			data = data[frameEnd:]
+			continue
 		}
+		payloads = append(payloads, append([]byte(nil), data[:frameEnd]...))
 		data = data[frameEnd:]
 	}
 	return payloads
@@ -391,18 +412,38 @@ func writeTerminalPayload(w io.Writer, data []byte) error {
 	return nil
 }
 
-func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn net.Conn, forwardControl bool) error {
+func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn net.Conn, uploadAllowed bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
 	go func() {
 		buf := make([]byte, 32*1024)
+		var filter terminalControlFilter
 		for {
 			n, err := conn.Read(buf)
 			if n > 0 {
-				if werr := ws.Write(ctx, websocket.MessageBinary, buf[:n]); werr != nil {
-					errc <- werr
+				var controlErr error
+				payloads := filter.Process(buf[:n], func(msg terminalControlMessage) bool {
+					payload, marshalErr := jsonTerminalControlMessage(msg)
+					if marshalErr != nil {
+						controlErr = marshalErr
+						return true
+					}
+					controlErr = ws.Write(ctx, websocket.MessageText, payload)
+					return true
+				})
+				if controlErr != nil {
+					errc <- controlErr
 					return
+				}
+				for _, payload := range payloads {
+					if len(payload) == 0 {
+						continue
+					}
+					if werr := ws.Write(ctx, websocket.MessageBinary, payload); werr != nil {
+						errc <- werr
+						return
+					}
 				}
 			}
 			if err != nil {
@@ -423,17 +464,32 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 			}
 			if typ == websocket.MessageText {
 				if msg, ok := decodeTerminalControlJSON(data); ok {
-					if forwardControl {
-						encoded := encodeTerminalControlMessage(msg)
-						if len(encoded) > 0 {
-							if err := writeTerminalPayload(conn, encoded); err != nil {
+					if strings.HasPrefix(msg.Type, "upload.") && !uploadAllowed {
+						if msg.Type == "upload.start" {
+							payload, marshalErr := jsonTerminalControlMessage(terminalControlMessage{Type: "upload.error", UploadID: msg.UploadID, Error: "actualiza pangolite-client para habilitar transferencias de archivos"})
+							if marshalErr != nil {
+								errc <- marshalErr
+								return
+							}
+							if err := ws.Write(ctx, websocket.MessageText, payload); err != nil {
 								errc <- err
 								return
 							}
 						}
+						continue
+					}
+					encoded := encodeTerminalControlMessage(msg)
+					if len(encoded) > 0 {
+						if err := writeTerminalPayload(conn, encoded); err != nil {
+							errc <- err
+							return
+						}
 					}
 					continue
 				}
+			}
+			if typ == websocket.MessageBinary && !uploadAllowed && bytes.HasPrefix(data, terminalUploadFramePrefix) {
+				continue
 			}
 			if len(data) > 0 {
 				if err := writeTerminalPayload(conn, data); err != nil {
@@ -457,6 +513,18 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error, 2)
+	notify := func(msg terminalControlMessage) error {
+		payload, err := jsonTerminalControlMessage(msg)
+		if err != nil {
+			return err
+		}
+		if controlMode&terminalControlFramed != 0 {
+			return ws.Write(ctx, websocket.MessageBinary, encodeTerminalControlPayload(payload))
+		}
+		return ws.Write(ctx, websocket.MessageText, payload)
+	}
+	uploads := newTerminalUploadManager(term, notify)
+	defer uploads.Close()
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
@@ -474,7 +542,24 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 		}
 	}()
 	go func() {
-		var filter terminalControlFilter
+		var inputFilter terminalInputFilter
+		writeInput := func(data []byte) error {
+			payloads, err := inputFilter.Payloads(data, controlMode&terminalControlFramed != 0, func(msg terminalControlMessage) bool {
+				uploads.HandleControl(msg)
+				return true
+			}, uploads.HandleChunk)
+			if err != nil {
+				return err
+			}
+			for _, payload := range payloads {
+				if len(payload) > 0 {
+					if err := writeTerminalPayload(term, payload); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}
 		for {
 			typ, data, err := ws.Read(ctx)
 			if err != nil {
@@ -486,24 +571,12 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 			}
 			if typ == websocket.MessageText && controlMode&terminalControlJSON != 0 {
 				if msg, ok := decodeTerminalControlJSON(data); ok {
-					applyTerminalControl(term, msg)
+					uploads.HandleControl(msg)
 					continue
 				}
 			}
-			if controlMode&terminalControlFramed != 0 {
-				for _, payload := range filter.Payloads(term, data) {
-					if len(payload) == 0 {
-						continue
-					}
-					if err := writeTerminalPayload(term, payload); err != nil {
-						errCh <- err
-						return
-					}
-				}
-				continue
-			}
 			if len(data) > 0 {
-				if err := writeTerminalPayload(term, data); err != nil {
+				if err := writeInput(data); err != nil {
 					errCh <- err
 					return
 				}

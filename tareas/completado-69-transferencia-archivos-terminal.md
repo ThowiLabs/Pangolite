@@ -1,7 +1,7 @@
 # Tarea 69 — Transferencia de archivos desde terminal
 
 ## Estado
-pendiente
+completado
 
 ## Objetivo
 Permitir subir archivos al directorio actual de una terminal local o remota mediante arrastrar y soltar o selector de archivos, con progreso y uso de memoria acotado.
@@ -15,3 +15,4 @@ Permitir subir archivos al directorio actual de una terminal local o remota medi
 - Añadir selector de archivos usable en Android.
 - Limpiar archivos parciales al cancelar o cerrar la sesión.
 - Añadir pruebas del framing, rutas y ciclo de vida de uploads.
+- Negociar soporte con clientes remotos para no romper agentes anteriores.
