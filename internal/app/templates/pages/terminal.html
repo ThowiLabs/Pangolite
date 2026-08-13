@@ -7,26 +7,40 @@
         <span id="terminalStatus" class="terminal-status off"><span class="status-dot"></span> Desconectado</span>
       </div>
       <div class="terminal-actions">
-        <select id="terminalTarget" class="form-select form-select-sm" aria-label="Destino de terminal">
-          <option value="local">Servidor local</option>
-          {{if .Agents}}
-          <optgroup label="Clientes de sistema">
-            {{range .Agents}}
-            <option value="agent:{{.ID}}" {{if not .Online}}disabled{{end}}>{{.Name}} · {{if .Online}}online{{else}}offline{{end}} · {{agentSystem .}}</option>
-            {{end}}
-          </optgroup>
-          {{end}}
-        </select>
-        <select id="terminalTheme" class="form-select form-select-sm" aria-label="Tema de terminal">
-          <option value="black">Negro</option>
-          <option value="dark">Solarized oscuro</option>
-          <option value="light">Solarized claro</option>
-        </select>
         <button class="btn btn-sm btn-primary" id="terminalConnectBtn" type="button"><i class="bi bi-plug"></i> <span>Conectar</span></button>
-        <button class="btn btn-sm btn-outline-secondary" id="terminalUploadBtn" type="button" disabled><i class="bi bi-upload"></i> <span>Subir archivo</span></button>
-        <input id="terminalFileInput" type="file" multiple hidden>
-        <button class="btn btn-sm btn-outline-secondary" id="terminalDisconnectBtn" type="button" disabled><i class="bi bi-x-circle"></i> <span>Desconectar</span></button>
         <button class="btn btn-sm btn-outline-secondary" id="terminalFullscreenBtn" type="button" aria-pressed="false"><i class="bi bi-fullscreen"></i> <span>Pantalla completa</span></button>
+        <div class="terminal-settings-widget" id="terminalSettingsWidget">
+          <button class="btn btn-sm btn-outline-secondary terminal-icon-btn" id="terminalSettingsBtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="terminalSettingsPopover" aria-label="Ajustes de terminal"><i class="bi bi-gear"></i></button>
+          <div class="terminal-settings-popover" id="terminalSettingsPopover" role="dialog" aria-label="Ajustes de terminal" aria-hidden="true">
+            <div class="terminal-settings-head"><span><i class="bi bi-sliders"></i> Ajustes</span><small>Solo esta terminal</small></div>
+            <label class="form-label small" for="terminalTarget">Destino</label>
+            <select id="terminalTarget" class="form-select form-select-sm" aria-label="Destino de terminal">
+              <option value="local">Servidor local</option>
+              {{if .Agents}}
+              <optgroup label="Clientes de sistema">
+                {{range .Agents}}
+                <option value="agent:{{.ID}}" {{if not .Online}}disabled{{end}}>{{.Name}} · {{if .Online}}online{{else}}offline{{end}} · {{agentSystem .}}</option>
+                {{end}}
+              </optgroup>
+              {{end}}
+            </select>
+            <label class="form-label small" for="terminalTheme">Tema de color</label>
+            <select id="terminalTheme" class="form-select form-select-sm" aria-label="Tema de terminal">
+              <option value="black">Negro</option>
+              <option value="dark">Solarized oscuro</option>
+              <option value="light">Solarized claro</option>
+            </select>
+            <div class="terminal-settings-hint"><i class="bi bi-download"></i><span>Escribe <code>download ruta</code> para descargar un archivo o crear un ZIP seguro de un directorio.</span></div>
+          </div>
+        </div>
+        <div class="action-dropdown terminal-options-dropdown" data-action-dropdown>
+          <button class="btn btn-sm btn-outline-secondary action-menu-toggle terminal-icon-btn" id="terminalOptionsBtn" type="button" onclick="toggleActionDropdown(event)" aria-haspopup="menu" aria-expanded="false" aria-label="Opciones de terminal"><i class="bi bi-three-dots-vertical"></i></button>
+          <div class="action-menu terminal-options-menu" role="menu">
+            <button class="action-menu-item" id="terminalUploadBtn" type="button" role="menuitem" disabled><i class="bi bi-upload"></i><span>Subir archivo</span></button>
+            <button class="action-menu-item danger" id="terminalDisconnectBtn" type="button" role="menuitem" disabled><i class="bi bi-x-circle"></i><span>Desconectar</span></button>
+          </div>
+        </div>
+        <input id="terminalFileInput" type="file" multiple hidden>
       </div>
     </div>
     <div class="card-body terminal-body-wrap">

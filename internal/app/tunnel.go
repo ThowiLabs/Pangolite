@@ -11,15 +11,17 @@ import (
 )
 
 const (
-	AgentPollTimeout                = 25 * time.Second
-	AgentStreamAttachTimeout        = 30 * time.Second
-	AgentStreamModeTerminal         = "terminal"
-	AgentStreamModeHTTP             = "http"
-	AgentCapabilityHTTPStreamV1     = "http-stream-v1"
-	AgentCapabilityTerminalUploadV1 = "terminal-upload-v1"
-	agentCapabilityTTL              = 5 * time.Minute
-	MaxAgentHTTPBodyBytes           = int64(16 << 20)
-	MaxAgentHTTPEnvelopeBytes       = MaxAgentHTTPBodyBytes*4/3 + (2 << 20)
+	AgentPollTimeout                  = 25 * time.Second
+	AgentStreamAttachTimeout          = 30 * time.Second
+	AgentStreamModeTerminal           = "terminal"
+	AgentStreamModeTerminalDownload   = "terminal-download"
+	AgentStreamModeHTTP               = "http"
+	AgentCapabilityHTTPStreamV1       = "http-stream-v1"
+	AgentCapabilityTerminalUploadV1   = "terminal-upload-v1"
+	AgentCapabilityTerminalDownloadV1 = "terminal-download-v1"
+	agentCapabilityTTL                = 5 * time.Minute
+	MaxAgentHTTPBodyBytes             = int64(16 << 20)
+	MaxAgentHTTPEnvelopeBytes         = MaxAgentHTTPBodyBytes*4/3 + (2 << 20)
 )
 
 type AgentJob struct {
@@ -56,6 +58,7 @@ type AgentStreamJob struct {
 	Shell        string `json:"shell,omitempty"`
 	Cols         int    `json:"cols,omitempty"`
 	Rows         int    `json:"rows,omitempty"`
+	Path         string `json:"path,omitempty"`
 }
 
 type StreamSession struct {

@@ -16,6 +16,9 @@
   let terminalUploadRunning=false;
   let terminalUploadBatch={total:0,completed:0,failed:0};
   const terminalUploadStates=new Map();
+  const terminalDownloadStates=new Map();
+  let terminalCommandBuffer='';
+  let terminalCommandTracking=true;
   const themes={
     black:{background:'#05070a',foreground:'#f8fafc',cursor:'#f8fafc',selectionBackground:'#475569'},
     dark:{background:'#002b36',foreground:'#fdf6e3',cursor:'#eee8d5',selectionBackground:'#ffffff33',black:'#073642',red:'#dc322f',green:'#859900',yellow:'#b58900',blue:'#268bd2',magenta:'#d33682',cyan:'#2aa198',white:'#eee8d5'},
@@ -38,12 +41,13 @@
     s.appendChild(document.createTextNode(' '+text));
   }
   function setButtons(mode){
-    const connect=el('terminalConnectBtn'), disconnect=el('terminalDisconnectBtn'), target=el('terminalTarget'), upload=el('terminalUploadBtn');
+    const connect=el('terminalConnectBtn'), disconnect=el('terminalDisconnectBtn'), target=el('terminalTarget'), upload=el('terminalUploadBtn'), options=el('terminalOptionsBtn');
     const busy=mode==='connecting'||mode==='connected';
-    if(connect)connect.disabled=busy;
+    if(connect){connect.disabled=busy;connect.classList.toggle('d-none',mode==='connected')}
     if(disconnect)disconnect.disabled=!busy;
     if(target)target.disabled=busy;
     if(upload)upload.disabled=mode!=='connected';
+    if(options)options.disabled=mode==='idle';
   }
   function setOverlay(kind,title,text,buttonText,loading){
     const overlay=el('terminalOverlay');
@@ -222,6 +226,7 @@
       clearMobileModifiers();
       return;
     }
+    invalidateTerminalCommandTracking();
     if(Object.prototype.hasOwnProperty.call(button.dataset,'terminalMobileText')){
       sendBytes(applyMobileModifiersToInput(button.dataset.terminalMobileText||''));
     }else{
@@ -402,10 +407,123 @@
       state[kind+'Waiter']={resolve,reject,timer};
     });
   }
+  function terminalDownloadID(){
+    if(window.crypto&&typeof window.crypto.randomUUID==='function')return 'down_'+window.crypto.randomUUID().replaceAll('-','_');
+    return 'down_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,14);
+  }
+  function terminalUsesAlternateBuffer(){
+    try{return !!(term&&term.buffer&&term.buffer.active&&term.buffer.active.type==='alternate')}catch{return false}
+  }
+  function parseTerminalDownloadCommand(line){
+    const match=/^\s*download(?:\s+(.*))?\s*$/.exec(String(line||''));
+    if(!match)return {matched:false};
+    let path=String(match[1]||'').trim();
+    if(!path)return {matched:true,error:'Uso: download archivo.ext o download directorio'};
+    if((path.startsWith('"')&&path.endsWith('"'))||(path.startsWith("'")&&path.endsWith("'")))path=path.slice(1,-1);
+    path=path.replace(/\\ /g,' ').trim();
+    if(!path)return {matched:true,error:'Indica el archivo o directorio a descargar'};
+    return {matched:true,path:path};
+  }
+  function resetTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandTracking=true}
+  function invalidateTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandTracking=false}
+  function requestTerminalDownload(path){
+    if(!isConnected()){showTerminalUploadAlert('Conecta la terminal antes de descargar',true);return}
+    const id=terminalDownloadID();
+    const state={id,path,target:connectedTarget,timer:null};
+    state.timer=setTimeout(()=>{
+      if(!terminalDownloadStates.has(id))return;
+      terminalDownloadStates.delete(id);
+      showTerminalUploadAlert('La terminal tardó demasiado en preparar la descarga',true);
+    },60000);
+    terminalDownloadStates.set(id,state);
+    showTerminalUploadAlert('Preparando descarga: '+path);
+    if(!sendControl('download.request',{downloadId:id,path:path})){
+      clearTimeout(state.timer);terminalDownloadStates.delete(id);
+      showTerminalUploadAlert('La terminal se desconectó antes de preparar la descarga',true);
+    }
+  }
+  async function createTerminalDownloadFromOffer(message,state){
+    const payload={target:state.target,path:message.path||'',name:message.name||'',kind:message.kind||'',size:Number(message.size)||0};
+    let result;
+    if(typeof api==='function'){
+      result=await api('/api/terminal/downloads',{method:'POST',body:JSON.stringify(payload)});
+    }else{
+      const headers={'Content-Type':'application/json'};
+      try{if(typeof csrf==='string'&&csrf)headers['X-CSRF-Token']=csrf}catch{}
+      const response=await fetch('/api/terminal/downloads',{method:'POST',headers,body:JSON.stringify(payload)});
+      const text=await response.text();
+      try{result=text?JSON.parse(text):{}}catch{result={}}
+      if(!response.ok)throw new Error(result.error||'No se pudo preparar la descarga');
+    }
+    if(!result||!result.url)throw new Error('Pangolite no devolvió una URL de descarga');
+    const anchor=document.createElement('a');
+    anchor.href=result.url;
+    anchor.rel='noopener';
+    anchor.style.display='none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    setTimeout(()=>anchor.remove(),1000);
+    showTerminalUploadAlert((message.kind==='directory'?'ZIP preparado: ':'Descarga iniciada: ')+(message.name||state.path));
+  }
+  function cancelTerminalDownloads(message){
+    terminalDownloadStates.forEach(state=>{clearTimeout(state.timer)});
+    if(terminalDownloadStates.size&&message)showTerminalUploadAlert(message,true);
+    terminalDownloadStates.clear();
+    resetTerminalCommandTracking();
+  }
+  function handleTerminalInputData(data){
+    data=String(data||'');
+    if(!data)return;
+    let output='';
+    const downloads=[];
+    for(const ch of data){
+      if(ch==='\r'||ch==='\n'){
+        const parsed=terminalCommandTracking&&!terminalUsesAlternateBuffer()?parseTerminalDownloadCommand(terminalCommandBuffer):{matched:false};
+        if(parsed.matched){
+          output+='\x15';
+          if(parsed.error)showTerminalUploadAlert(parsed.error,true);else downloads.push(parsed.path);
+        }else{
+          output+=ch;
+        }
+        resetTerminalCommandTracking();
+        continue;
+      }
+      output+=ch;
+      if(!terminalCommandTracking)continue;
+      if(ch==='\x7f'||ch==='\b'){
+        terminalCommandBuffer=terminalCommandBuffer.slice(0,-1);
+      }else if(ch==='\x15'||ch==='\x03'){
+        terminalCommandBuffer='';
+      }else if(ch==='\x1b'||(ch<' '&&ch!=='\t')){
+        invalidateTerminalCommandTracking();
+      }else{
+        terminalCommandBuffer+=ch;
+        if(terminalCommandBuffer.length>4096)invalidateTerminalCommandTracking();
+      }
+    }
+    if(output)sendBytes(output);
+    downloads.forEach(path=>requestTerminalDownload(path));
+  }
   function handleTerminalControlMessage(data){
     let message;
     try{message=JSON.parse(data)}catch{return false}
-    if(!message||message.pangoliteTerminal!==true||!String(message.type||'').startsWith('upload.'))return false;
+    if(!message||message.pangoliteTerminal!==true)return false;
+    const type=String(message.type||'');
+    if(type.startsWith('download.')){
+      const state=terminalDownloadStates.get(String(message.downloadId||''));
+      if(!state)return true;
+      if(type==='download.offer'){
+        clearTimeout(state.timer);
+        terminalDownloadStates.delete(state.id);
+        createTerminalDownloadFromOffer(message,state).catch(err=>showTerminalUploadAlert(err&&err.message?err.message:'No se pudo iniciar la descarga',true));
+      }else if(type==='download.error'){
+        clearTimeout(state.timer);
+        terminalDownloadStates.delete(state.id);
+        showTerminalUploadAlert(message.error||'No se pudo preparar la descarga',true);
+      }
+      return true;
+    }
+    if(!type.startsWith('upload.'))return false;
     const state=terminalUploadStates.get(String(message.uploadId||''));
     if(!state)return true;
     if(message.type==='upload.ready'){
@@ -557,7 +675,7 @@
     installTerminalFileTransfer(box);
     installMobileTerminalKeys();
     term.attachCustomKeyEventHandler(handleTerminalKey);
-    term.onData(data=>sendBytes(applyMobileModifiersToInput(data)));
+    term.onData(data=>handleTerminalInputData(applyMobileModifiersToInput(data)));
     term.onResize(()=>queueResize());
     fitTerminal();
     window.addEventListener('resize',()=>{fitTerminal();queueResize()});
@@ -618,6 +736,7 @@
   function connectTerminal(){
     if(!ensureTerminal())return;
     clearMobileModifiers();
+    resetTerminalCommandTracking();
     retireCurrentSocket('reemplazada');
     applyTheme();
     const target=(el('terminalTarget')&&el('terminalTarget').value)||'local';
@@ -668,6 +787,7 @@
       if(decoderTail&&term)term.write(decoderTail);
       ws=null;
       cancelTerminalUploads('La terminal se desconectó durante la transferencia');
+      cancelTerminalDownloads('La terminal se desconectó mientras preparaba una descarga');
       clearMobileModifiers();
       setButtons('idle');
       connectedTarget='';
@@ -678,6 +798,7 @@
   }
   function disconnectTerminal(writeMessage=true){
     cancelTerminalUploads('Transferencia cancelada al desconectar la terminal');
+    cancelTerminalDownloads('Descarga cancelada al desconectar la terminal');
     clearMobileModifiers();
     const socket=retireCurrentSocket('usuario');
     connectedTarget='';
@@ -801,6 +922,45 @@
     updateFullscreenButton();
     setTimeout(()=>{fitTerminal();sendResize();if(term)term.focus()},100);
   }
+  function positionTerminalSettings(){
+    const button=el('terminalSettingsBtn'),popover=el('terminalSettingsPopover');
+    if(!button||!popover||!popover.classList.contains('open'))return;
+    const rect=button.getBoundingClientRect();
+    const width=Math.min(280,window.innerWidth-16);
+    popover.style.width=width+'px';
+    popover.style.visibility='hidden';
+    let left=Math.max(8,Math.min(rect.right-width,window.innerWidth-width-8));
+    let top=rect.bottom+8;
+    const height=popover.offsetHeight||130;
+    if(top+height>window.innerHeight-8)top=Math.max(8,rect.top-height-8);
+    popover.style.left=left+'px';
+    popover.style.top=top+'px';
+    popover.style.visibility='';
+  }
+  function closeTerminalSettings(){
+    const button=el('terminalSettingsBtn'),popover=el('terminalSettingsPopover');
+    if(!popover)return;
+    popover.classList.remove('open');popover.setAttribute('aria-hidden','true');
+    if(button)button.setAttribute('aria-expanded','false');
+  }
+  function toggleTerminalSettings(event){
+    if(event){event.preventDefault();event.stopPropagation()}
+    const button=el('terminalSettingsBtn'),popover=el('terminalSettingsPopover');
+    if(!button||!popover)return;
+    const open=!popover.classList.contains('open');
+    closeTerminalSettings();
+    try{if(typeof closeActionDropdowns==='function')closeActionDropdowns()}catch{}
+    if(open){popover.classList.add('open');popover.setAttribute('aria-hidden','false');button.setAttribute('aria-expanded','true');positionTerminalSettings()}
+  }
+  function installTerminalSettings(){
+    const widget=el('terminalSettingsWidget'),button=el('terminalSettingsBtn'),popover=el('terminalSettingsPopover');
+    if(!widget||!button||!popover)return;
+    button.addEventListener('click',toggleTerminalSettings);
+    document.addEventListener('click',event=>{if(!widget.contains(event.target))closeTerminalSettings()});
+    document.addEventListener('keydown',event=>{if(event.key==='Escape'&&popover.classList.contains('open')){event.stopPropagation();closeTerminalSettings()}});
+    window.addEventListener('resize',()=>{if(popover.classList.contains('open'))positionTerminalSettings()});
+    window.addEventListener('scroll',()=>closeTerminalSettings(),true);
+  }
   function initTerminal(){
     if(!el('terminalBox'))return;
     let requestedTargetAvailable=true;
@@ -821,6 +981,7 @@
       theme.value=localStorage.getItem('pangolite.terminal.theme')||'black';
       theme.addEventListener('change',applyTheme);
     }
+    installTerminalSettings();
     const connect=el('terminalConnectBtn');
     const disconnect=el('terminalDisconnectBtn');
     const fullscreen=el('terminalFullscreenBtn');

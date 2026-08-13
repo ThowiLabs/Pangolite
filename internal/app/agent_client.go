@@ -562,6 +562,10 @@ func handleAgentStream(ctx context.Context, client *http.Client, base, configure
 		handleAgentTerminalStream(ctx, client, base, configuredServer, fallback, cfg, job, logger)
 		return
 	}
+	if job.Mode == AgentStreamModeTerminalDownload {
+		handleAgentTerminalDownloadStream(ctx, client, base, configuredServer, fallback, cfg, job, logger)
+		return
+	}
 	if job.Mode != ModeTCP && job.Mode != AgentStreamModeHTTP {
 		logger.Warn("stream no soportado", "stream", job.ID, "mode", job.Mode)
 		return
@@ -707,7 +711,7 @@ func setAgentAuthHeaderWithEndpoint(h http.Header, cfg AgentClientConfig, server
 	h.Set("X-Pangolite-Agent", cfg.AgentID)
 	h.Set("User-Agent", "pangolite-client/0.5")
 	h.Set("X-Pangolite-Client-Version", Version)
-	h.Set("X-Pangolite-Capabilities", strings.Join([]string{AgentCapabilityHTTPStreamV1, AgentCapabilityTerminalUploadV1}, ","))
+	h.Set("X-Pangolite-Capabilities", strings.Join([]string{AgentCapabilityHTTPStreamV1, AgentCapabilityTerminalUploadV1, AgentCapabilityTerminalDownloadV1}, ","))
 	h.Set("X-Pangolite-Client-OS", runtime.GOOS)
 	h.Set("X-Pangolite-Client-Arch", runtime.GOARCH)
 	if strings.TrimSpace(serverURL) != "" {

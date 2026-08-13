@@ -248,6 +248,10 @@ func linkTerminalUploadWithoutOverwrite(tempPath, dir, name string) (string, err
 }
 
 func validTerminalUploadID(id string) bool {
+	return validTerminalTransferID(id)
+}
+
+func validTerminalTransferID(id string) bool {
 	if len(id) < 8 || len(id) > 96 {
 		return false
 	}

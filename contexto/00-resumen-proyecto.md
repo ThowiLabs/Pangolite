@@ -21,6 +21,8 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - Priorizar simplicidad agresiva, seguridad, mantenibilidad, bajo consumo y logs útiles.
 - No agregar Node, Vite, React ni dependencias frontend innecesarias.
 - Evitar volver a meter HTML/CSS/JS gigante dentro de `ui.go` o `server.go`.
+- En `/terminal`, mantener la barra superior compacta: **Destino** y **Tema de color** viven dentro del widget de ajustes; Subir archivo y Desconectar viven dentro del menú de opciones; Pantalla completa permanece como la única acción principal permanente durante una sesión (Conectar solo aparece cuando hace falta iniciar/reintentar). No volver a exponer controles secundarios como una fila de botones/selects que degrade móvil.
+- Las transferencias de terminal deben ser streaming y de memoria acotada. `download ruta` es una pseudo-orden del navegador/Pangolite, no un binario instalado en el sistema; para directorios debe conservarse la política de ZIP seguro (sin raíces sensibles, symlinks ni archivos especiales, con límites de árbol).
 
 ## Estado destacado
 - Hardening de producción aplicado: proxies confiables, rate limit de login/recuperación, redes administrativas confiables, límites HTTP/túnel y protección de concurrencia/rate limit en Traefik.
@@ -28,7 +30,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - El túnel HTTP de agentes usa `http-stream-v1` en clientes actualizados, con streaming de uploads/downloads y buffers pequeños; agentes anteriores conservan temporalmente el protocolo legado de 16 MiB.
 - La terminal web en Android táctil incluye una barra auxiliar tipo Termux con Esc/Ctrl/Alt/Tab, navegación ANSI, símbolos frecuentes y control del teclado virtual; los modificadores son de un solo uso y no duplican la ruta normal de entrada de xterm.js.
 - El nombre de usuario del administrador puede cambiarse desde Perfil y seguridad; se normaliza en minúsculas, valida unicidad y exige la contraseña actual antes de modificar la identidad de login.
-- La terminal local/remota permite subir archivos por drag & drop o selector móvil al directorio actual del PTY, usando chunks pequeños, una ventana de progreso flotante que no redimensiona xterm, avisos temporales para lotes, temporales limpiables y publicación sin sobrescritura.
+- La terminal local/remota permite subir archivos por drag & drop o selector móvil al directorio actual del PTY, usando chunks pequeños, una ventana de progreso flotante que no redimensiona xterm, avisos temporales para lotes, temporales limpiables y publicación sin sobrescritura. También permite `download ruta`: archivos por streaming HTTP al navegador y directorios como ZIP seguro, sin cargar el contenido completo en RAM; clientes remotos negocian `terminal-download-v1`.
 - `pangolite-client --install` reemplaza instalaciones anteriores de forma idempotente en systemd/OpenRC/Windows; en Windows el propio CLI solicita elevación UAC para instalar o eliminar el servicio cuando no fue iniciado como administrador.
 - El acceso administrativo usa por defecto modo `learn`: el primer login correcto registra su red y las sesiones posteriores desde otras redes quedan rechazadas salvo CIDR permitido.
 - Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
