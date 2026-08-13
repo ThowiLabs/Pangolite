@@ -53,13 +53,24 @@ func run(args []string, stdout io.Writer) error {
 	if service {
 		return runService(stdout)
 	}
-	if remove {
-		return removeClient(stdout)
-	}
 	if install {
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
+	}
+	if install || remove {
+		handled, err := ensureClientPrivileges(args, true, stdout)
+		if err != nil {
+			return err
+		}
+		if handled {
+			return nil
+		}
+	}
+	if remove {
+		return removeClient(stdout)
+	}
+	if install {
 		return installClient(stdout, cfg)
 	}
 	if err := cfg.Validate(); err != nil {
