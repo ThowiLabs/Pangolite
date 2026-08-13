@@ -29,16 +29,20 @@ const actionLoadingStates=new WeakMap();
 function setActionLoading(target,label='Procesando'){
   const el=target&&target.closest?target.closest('button,a'):target;
   if(!el||actionLoadingStates.has(el))return()=>{};
-  actionLoadingStates.set(el,{html:el.innerHTML,disabled:el.disabled,aria:el.getAttribute('aria-busy')});
+  actionLoadingStates.set(el,{html:el.innerHTML,disabled:el.disabled,aria:el.getAttribute('aria-busy'),label:el.getAttribute('aria-label'),title:el.getAttribute('title')});
   if('disabled' in el)el.disabled=true;
   el.setAttribute('aria-busy','true');
   el.classList.add('btn-loading');
-  el.innerHTML='<span class="btn-loading-spinner" aria-hidden="true"></span><span>'+esc(label||'Procesando')+'</span>';
+  const compact=el.classList.contains('pl-icon-action');
+  el.innerHTML=compact?'<span class="btn-loading-spinner" aria-hidden="true"></span>':'<span class="btn-loading-spinner" aria-hidden="true"></span><span>'+esc(label||'Procesando')+'</span>';
+  if(compact){el.setAttribute('aria-label',label||'Procesando');el.setAttribute('title',label||'Procesando')}
   return()=>{
     const st=actionLoadingStates.get(el);if(!st)return;
     el.innerHTML=st.html;
     if('disabled' in el)el.disabled=!!st.disabled;
     if(st.aria===null)el.removeAttribute('aria-busy');else el.setAttribute('aria-busy',st.aria);
+    if(st.label===null)el.removeAttribute('aria-label');else el.setAttribute('aria-label',st.label);
+    if(st.title===null)el.removeAttribute('title');else el.setAttribute('title',st.title);
     el.classList.remove('btn-loading');
     actionLoadingStates.delete(el);
   }
@@ -87,7 +91,7 @@ function commandBlockNode(title,cmd){const id=rememberCopy(cmd);const node=tplNo
 function commandBlock(title,cmd){return commandBlockNode(title,cmd).outerHTML}
 function secretBlockNode(label,value){const id=rememberCopy(value);const node=tplNode('tpl-secret-row');setSlot(node,'label',label);setSlot(node,'value',String(value||''));appendSlot(node,'button',copyButtonNode(id));return node}
 function secretBlock(label,value){return secretBlockNode(label,value).outerHTML}
-function copyFeedback(btn,ok=true){if(!btn)return;const original=btn.dataset.copyOriginal||btn.textContent||'Copiar';btn.dataset.copyOriginal=original;btn.disabled=true;setButtonContent(btn,ok?'bi-check2':'bi-exclamation-triangle',ok?'Copiado':'Error');setTimeout(()=>{setButtonContent(btn,'bi-clipboard',btn.dataset.copyOriginal);btn.disabled=false},1300)}
+function copyFeedback(btn,ok=true){if(!btn)return;const originalHTML=btn.dataset.copyOriginalHtml||btn.innerHTML;btn.dataset.copyOriginalHtml=originalHTML;const originalLabel=btn.getAttribute('aria-label');const compact=btn.classList.contains('pl-icon-action');btn.disabled=true;if(compact){btn.replaceChildren(makeIcon(ok?'bi-check2':'bi-exclamation-triangle'));btn.setAttribute('aria-label',ok?'Copiado':'Error')}else{setButtonContent(btn,ok?'bi-check2':'bi-exclamation-triangle',ok?'Copiado':'Error')}setTimeout(()=>{btn.innerHTML=btn.dataset.copyOriginalHtml;if(originalLabel===null)btn.removeAttribute('aria-label');else btn.setAttribute('aria-label',originalLabel);btn.disabled=false},1300)}
 async function copyText(value){const sx=window.scrollX,sy=window.scrollY;const active=document.activeElement;let ta=null;try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(String(value||''))}else{ta=document.createElement('textarea');ta.value=String(value||'');ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.top='0';ta.style.left='0';ta.style.width='1px';ta.style.height='1px';ta.style.opacity='0';ta.style.pointerEvents='none';document.body.appendChild(ta);ta.focus({preventScroll:true});ta.select();if(!document.execCommand('copy'))throw new Error('copiado no disponible')}return true}catch(err){throw err}finally{if(ta)ta.remove();if(active&&active.focus)active.focus({preventScroll:true});window.scrollTo(sx,sy)}}
 async function copyCommand(id,btn){try{await copyText(commandCopies[id]||'');copyFeedback(btn,true)}catch(err){copyFeedback(btn,false)}}
 function shortID(id){id=String(id||'');return id.length>10?id.slice(0,6)+'...'+id.slice(-4):id}
