@@ -87,7 +87,7 @@ func TestRenderSSHConnectionsPage(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	renderUIPage(recorder, "ssh_connections.html", data)
 	body := recorder.Body.String()
-	for _, expected := range []string{"Conexiones SSH", "Servidor Pangolite", "Cliente Demo", "Proyecto Demo", "/assets/app/ssh-connections.js"} {
+	for _, expected := range []string{"Conexiones SSH", "Más usados", "Servidor Pangolite", "Cliente Demo", "Proyecto Demo", `data-terminal-target="local"`, `data-terminal-target="agent:agent1"`, "/assets/app/ssh-connections.js"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("render no contiene %q", expected)
 		}
@@ -311,6 +311,45 @@ func TestTerminalDownloadCommandAndCompactToolbarAreEmbedded(t *testing.T) {
 		}
 	}
 	for _, expected := range []string{".terminal-settings-popover", ".terminal-options-menu", ".terminal-icon-btn"} {
+		if !strings.Contains(string(css), expected) {
+			t.Fatalf("panel.css no contiene %q", expected)
+		}
+	}
+}
+
+func TestTerminalResumeAndSSHFrequentUIAreEmbedded(t *testing.T) {
+	page, err := templatesFS.ReadFile("templates/pages/terminal.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalScript, err := assetsFS.ReadFile("assets/app/terminal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshScript, err := assetsFS.ReadFile("assets/app/ssh-connections.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := assetsFS.ReadFile("assets/app/panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`id="terminalResumePath"`, `id="terminalOverlaySecondaryButton"`} {
+		if !strings.Contains(string(page), expected) {
+			t.Fatalf("terminal.html no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{"cwd.request", "cwd.update", "showResumeOverlay", "lastDirForTarget", "buildSizeQuery(workingDir)", "startCWDTracking"} {
+		if !strings.Contains(string(terminalScript), expected) {
+			t.Fatalf("terminal.js no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{"renderFrequentConnections", "connectionCount", "ssh-frequent-card"} {
+		if !strings.Contains(string(sshScript), expected) {
+			t.Fatalf("ssh-connections.js no contiene %q", expected)
+		}
+	}
+	for _, expected := range []string{".ssh-frequent-grid", ".terminal-resume-path", ".terminal-overlay-actions"} {
 		if !strings.Contains(string(css), expected) {
 			t.Fatalf("panel.css no contiene %q", expected)
 		}

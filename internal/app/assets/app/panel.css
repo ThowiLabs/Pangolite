@@ -1796,3 +1796,29 @@ body.modal-open{
   .ssh-card-actions{flex-direction:row!important;align-items:center!important}
   .project-card-actions{justify-content:flex-end}
 }
+
+/* Accesos frecuentes de Conexiones SSH, inspirados en launchers móviles. */
+.ssh-frequent-section{margin-bottom:16px;overflow:hidden}
+.ssh-frequent-header{padding:14px 18px!important}
+.ssh-frequent-header .card-title{display:flex;align-items:center;gap:8px}
+.ssh-frequent-header .card-title i{color:#fde68a}
+.ssh-frequent-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.ssh-frequent-card{min-height:0;border-radius:17px;box-shadow:0 14px 36px rgba(0,0,0,.22)}
+.ssh-frequent-card:hover{transform:translateY(-2px)}
+.ssh-frequent-card .ssh-card-head{align-items:flex-start;padding:13px 13px 0;flex-wrap:wrap}
+.ssh-frequent-card .ssh-device-icon{width:40px;height:40px;border-radius:13px;font-size:18px}
+.ssh-frequent-card .ssh-card-status{display:none}
+.ssh-frequency-badge{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:4px 7px;border:1px solid rgba(251,191,36,.24);border-radius:999px;background:rgba(251,191,36,.09);color:#fde68a;font-size:10px;font-weight:800;white-space:nowrap}
+.ssh-frequent-card .ssh-card-body{padding:11px 13px 8px}
+.ssh-frequent-card .ssh-card-kicker,.ssh-frequent-card .ssh-card-meta{display:none}
+.ssh-frequent-card .ssh-card-body h2{margin-top:0;font-size:16px;line-height:21px}
+.ssh-frequent-card .ssh-card-tags{margin-top:9px}
+.ssh-frequent-card .ssh-card-actions{grid-template-columns:1fr;padding:0 13px 13px}
+.ssh-frequent-card .ssh-card-actions>*:not(:first-child){display:none!important}
+.ssh-frequent-card .ssh-card-actions .btn{width:100%;min-height:38px}
+.terminal-overlay-actions{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.terminal-resume-path{max-width:100%;margin:-.15rem auto .9rem;padding:.55rem .7rem;overflow:hidden;border:1px solid rgba(34,211,238,.25);border-radius:10px;background:rgba(2,132,199,.09);color:#cffafe;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;font-size:.79rem;text-align:left;text-overflow:ellipsis;white-space:nowrap}
+.terminal-overlay.bad .terminal-resume-path{border-color:rgba(248,113,113,.25);background:rgba(127,29,29,.24);color:#fecaca}
+@media(max-width:1180px){.ssh-frequent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){.ssh-frequent-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.ssh-frequent-card .ssh-card-tags{display:none}.ssh-frequency-badge{width:100%;margin-left:0;justify-content:center}.terminal-overlay-actions{align-items:stretch;flex-direction:column}.terminal-overlay-actions .btn{width:100%}}
+@media(max-width:430px){.ssh-frequent-grid{grid-template-columns:1fr 1fr}.ssh-frequent-card .ssh-card-host{font-size:10px}.ssh-frequent-card .ssh-card-actions .btn{min-height:36px}}

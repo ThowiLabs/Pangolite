@@ -51,6 +51,11 @@ func (p *pipeTerminalProcess) Close() error {
 func startTerminalProcess(ctx context.Context, opts terminalStartOptions) (*terminalProcess, error) {
 	shell, args := fallbackTerminalShell(opts.Shell)
 	cmd := exec.CommandContext(ctx, shell, args...)
+	if dir := strings.TrimSpace(opts.WorkingDir); dir != "" {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			cmd.Dir = dir
+		}
+	}
 	cmd.Env = mergeTerminalEnv(os.Environ(), []string{"TERM=xterm-256color", "COLORTERM=truecolor"})
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,18 @@ func TestTerminalControlFilterHandlesSplitFrame(t *testing.T) {
 	}
 	if gotCols != 100 || gotRows != 30 {
 		t.Fatalf("resize recibido = %dx%d, want 100x30", gotCols, gotRows)
+	}
+}
+
+func TestDecodeTerminalControlJSONAcceptsCWDControls(t *testing.T) {
+	for _, raw := range []string{
+		`{"pangoliteTerminal":true,"type":"cwd.request"}`,
+		`{"pangoliteTerminal":true,"type":"cwd.update","path":"/srv/app"}`,
+	} {
+		msg, ok := decodeTerminalControlJSON([]byte(raw))
+		if !ok || !strings.HasPrefix(msg.Type, "cwd.") {
+			t.Fatalf("control cwd rechazado: raw=%s ok=%v msg=%+v", raw, ok, msg)
+		}
 	}
 }
 

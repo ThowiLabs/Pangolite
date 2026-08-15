@@ -9,6 +9,10 @@
   let mobileModifiers={ctrl:false,alt:false};
   let mobileKeyboardFloating=false;
   let mobileLayoutTimer=null;
+  let cwdTimer=null;
+  let overlayAction='connect';
+  let overlayWorkingDir='';
+  const terminalLastDirs={};
   const encoder=new TextEncoder();
   const terminalUploadPrefix=encoder.encode('\x00PANGOLITE-TERMINAL-UPLOAD ');
   const terminalUploadChunkSize=24*1024;
@@ -49,18 +53,21 @@
     if(upload)upload.disabled=mode!=='connected';
     if(options)options.disabled=mode==='idle';
   }
-  function setOverlay(kind,title,text,buttonText,loading){
+  function setOverlay(kind,title,text,buttonText,loading,secondaryText){
     const overlay=el('terminalOverlay');
     if(!overlay)return;
     const spinner=el('terminalOverlaySpinner');
     const titleEl=el('terminalOverlayTitle');
     const textEl=el('terminalOverlayText');
     const button=el('terminalOverlayButton');
+    const secondary=el('terminalOverlaySecondaryButton');
+    const resumePath=el('terminalResumePath');
     overlay.className='terminal-overlay '+(kind||'idle');
     overlay.classList.remove('d-none');
     if(spinner)spinner.classList.toggle('d-none',!loading);
     if(titleEl)titleEl.textContent=title||'';
     if(textEl)textEl.textContent=text||'';
+    if(resumePath)resumePath.classList.add('d-none');
     if(button){
       button.classList.toggle('d-none',!buttonText);
       const span=button.querySelector('span');
@@ -68,12 +75,33 @@
       else button.textContent=buttonText||'';
       button.disabled=!!loading;
     }
+    if(secondary){
+      secondary.classList.toggle('d-none',!secondaryText);
+      const span=secondary.querySelector('span');
+      if(span)span.textContent=secondaryText||'';
+      secondary.disabled=!!loading;
+    }
   }
   function hideOverlay(){
     const overlay=el('terminalOverlay');
     if(overlay)overlay.classList.add('d-none');
   }
+  function currentTerminalTarget(){return (el('terminalTarget')&&el('terminalTarget').value)||'local'}
+  function hydrateTerminalLastDirs(){
+    let usage={};
+    try{usage=(appBoot&&appBoot.terminalUsage)||{}}catch{}
+    Object.entries(usage||{}).forEach(([target,item])=>{
+      const path=String(item&&item.lastDir||'').trim();
+      if(path)terminalLastDirs[target]=path;
+    });
+  }
+  function lastDirForTarget(target){return String(terminalLastDirs[target||currentTerminalTarget()]||'').trim()}
+  function rememberTerminalDir(target,path){
+    target=String(target||'').trim();path=String(path||'').trim();
+    if(target&&path)terminalLastDirs[target]=path;
+  }
   function showIdleOverlay(){
+    overlayAction='connect';overlayWorkingDir='';
     if(currentTargetOS()==='windows'){
       status('Windows no confiable',false,true);
       setOverlay('warning','Terminal Windows no confiable',windowsWarning,'Cerrar aviso');
@@ -82,8 +110,26 @@
     status('Desconectado',false,false);
     setOverlay('idle','Aún no conectado','Selecciona un destino y presiona Conectar para abrir una consola.','Conectar');
   }
-  function showReconnectOverlay(title,text){
+  function showResumeOverlay(dir){
+    dir=String(dir||'').trim();
+    if(!dir){showIdleOverlay();return false}
+    overlayAction='resume';overlayWorkingDir=dir;
+    status('Sesión anterior disponible',false,false);
+    setOverlay('idle','¿Reanudar sesión?','La última sesión de este destino quedó en esta carpeta:','Reanudar',false,'Iniciar desde carpeta predeterminada');
+    const resumePath=el('terminalResumePath');
+    if(resumePath){resumePath.textContent=dir;resumePath.classList.remove('d-none')}
+    return true;
+  }
+  function showReconnectOverlay(title,text,dir){
+    overlayAction='reconnect';overlayWorkingDir=String(dir||'').trim();
     setOverlay('bad',title||'Conexión cerrada',text||'La sesión de consola se cerró o el cliente dejó de responder.','Reconectar');
+    const resumePath=el('terminalResumePath');
+    if(resumePath&&overlayWorkingDir){resumePath.textContent='Se reanudará en '+overlayWorkingDir;resumePath.classList.remove('d-none')}
+  }
+  function requestTerminalConnection(){
+    const dir=lastDirForTarget(currentTerminalTarget());
+    if(dir){showResumeOverlay(dir);return}
+    connectTerminal('');
   }
   function isTerminalFullscreen(){
     const card=el('terminalCard');
@@ -314,6 +360,7 @@
     close();
   }
   function retireCurrentSocket(reason){
+    stopCWDTracking();
     const socket=ws;
     if(!socket)return null;
     ws=null;
@@ -325,6 +372,17 @@
     if(!ws||ws.readyState!==WebSocket.OPEN)return false;
     ws.send(JSON.stringify(Object.assign({pangoliteTerminal:true,type:type},payload||{})));
     return true;
+  }
+  function stopCWDTracking(){if(cwdTimer){clearInterval(cwdTimer);cwdTimer=null}}
+  function requestTerminalCWD(){if(isConnected())sendControl('cwd.request')}
+  function startCWDTracking(){
+    stopCWDTracking();
+    requestTerminalCWD();
+    cwdTimer=setInterval(requestTerminalCWD,2500);
+  }
+  function refreshCWDAfterCommand(){
+    setTimeout(requestTerminalCWD,180);
+    setTimeout(requestTerminalCWD,700);
   }
   function terminalUploadID(){
     if(window.crypto&&typeof window.crypto.randomUUID==='function')return 'up_'+window.crypto.randomUUID().replaceAll('-','_');
@@ -475,9 +533,11 @@
     data=String(data||'');
     if(!data)return;
     let output='';
+    let submitted=false;
     const downloads=[];
     for(const ch of data){
       if(ch==='\r'||ch==='\n'){
+        submitted=true;
         const parsed=terminalCommandTracking&&!terminalUsesAlternateBuffer()?parseTerminalDownloadCommand(terminalCommandBuffer):{matched:false};
         if(parsed.matched){
           output+='\x15';
@@ -503,12 +563,18 @@
     }
     if(output)sendBytes(output);
     downloads.forEach(path=>requestTerminalDownload(path));
+    if(submitted)refreshCWDAfterCommand();
   }
   function handleTerminalControlMessage(data){
     let message;
     try{message=JSON.parse(data)}catch{return false}
     if(!message||message.pangoliteTerminal!==true)return false;
     const type=String(message.type||'');
+    if(type==='cwd.update'){
+      const path=String(message.path||'').trim();
+      if(path&&connectedTarget)rememberTerminalDir(connectedTarget,path);
+      return true;
+    }
     if(type.startsWith('download.')){
       const state=terminalDownloadStates.get(String(message.downloadId||''));
       if(!state)return true;
@@ -710,12 +776,17 @@
     if(target.startsWith('agent:'))return '/api/terminal/agents/'+encodeURIComponent(target.slice(6));
     return '';
   }
-  function buildSizeQuery(){
+  function buildSizeQuery(workingDir){
     if(!term)return '';
-    return '?cols='+encodeURIComponent(term.cols||80)+'&rows='+encodeURIComponent(term.rows||24);
+    const params=new URLSearchParams();
+    params.set('cols',String(term.cols||80));
+    params.set('rows',String(term.rows||24));
+    workingDir=String(workingDir||'').trim();
+    if(workingDir)params.set('cwd',workingDir);
+    return '?'+params.toString();
   }
   function currentTargetOS(){
-    const target=(el('terminalTarget')&&el('terminalTarget').value)||'local';
+    const target=currentTerminalTarget();
     if(target==='local'){
       let boot={};
       try{boot=appBoot||{}}catch{}
@@ -733,7 +804,7 @@
     term.clear();
     term.writeln((bad?'\x1b[31m':'\x1b[90m')+message+'\x1b[0m');
   }
-  function connectTerminal(){
+  function connectTerminal(workingDir=''){
     if(!ensureTerminal())return;
     clearMobileModifiers();
     resetTerminalCommandTracking();
@@ -760,7 +831,7 @@
     setButtons('connecting');
     setOverlay('connecting','Conectando consola','Preparando sesión remota. Esto puede tardar unos segundos.',null,true);
     const serial=++socketSerial;
-    const socket=new WebSocket(wsURL(path,buildSizeQuery()));
+    const socket=new WebSocket(wsURL(path,buildSizeQuery(workingDir)));
     const decoder=new TextDecoder();
     ws=socket;
     socket.binaryType='arraybuffer';
@@ -772,6 +843,7 @@
       term.focus();
       fitTerminal();
       sendResize();
+      startCWDTracking();
     };
     socket.onmessage=(event)=>{
       if(ws!==socket||serial!==socketSerial||!term)return;
@@ -785,6 +857,9 @@
       if(ws!==socket||serial!==socketSerial)return;
       const decoderTail=decoder.decode();
       if(decoderTail&&term)term.write(decoderTail);
+      const closedTarget=connectedTarget||target;
+      const reconnectDir=lastDirForTarget(closedTarget);
+      stopCWDTracking();
       ws=null;
       cancelTerminalUploads('La terminal se desconectó durante la transferencia');
       cancelTerminalDownloads('La terminal se desconectó mientras preparaba una descarga');
@@ -793,10 +868,12 @@
       connectedTarget='';
       status('Sesión cerrada',false,true);
       if(term)term.writeln('\r\n\x1b[31mSesión cerrada.\x1b[0m');
-      showReconnectOverlay('Conexión cerrada','La consola se cerró o el cliente se desconectó. Presiona Reconectar para iniciar otra sesión.');
+      showReconnectOverlay('Conexión cerrada','La consola se cerró o el cliente se desconectó. Al reconectar se conservará tu directorio de trabajo.',reconnectDir);
     };
   }
   function disconnectTerminal(writeMessage=true){
+    const previousTarget=connectedTarget||currentTerminalTarget();
+    requestTerminalCWD();
     cancelTerminalUploads('Transferencia cancelada al desconectar la terminal');
     cancelTerminalDownloads('Descarga cancelada al desconectar la terminal');
     clearMobileModifiers();
@@ -804,7 +881,7 @@
     connectedTarget='';
     setButtons('idle');
     status('Desconectado',false,false);
-    setOverlay('idle','Aún no conectado','La consola está cerrada. Puedes volver a conectar cuando lo necesites.','Conectar');
+    if(!showResumeOverlay(lastDirForTarget(previousTarget)))setOverlay('idle','Aún no conectado','La consola está cerrada. Puedes volver a conectar cuando lo necesites.','Conectar');
     if(socket&&writeMessage&&term)term.writeln('\r\n\x1b[90mDesconectado por el usuario.\x1b[0m');
   }
   async function copySelection(){
@@ -974,7 +1051,7 @@
         if(option)target.value=value;
         else requestedTargetAvailable=false;
       }
-      target.addEventListener('change',()=>{if(!ws)showIdleOverlay()});
+      target.addEventListener('change',()=>{if(!ws&&!showResumeOverlay(lastDirForTarget(currentTerminalTarget())))showIdleOverlay()});
     }
     const theme=el('terminalTheme');
     if(theme){
@@ -986,24 +1063,41 @@
     const disconnect=el('terminalDisconnectBtn');
     const fullscreen=el('terminalFullscreenBtn');
     const overlayButton=el('terminalOverlayButton');
-    if(connect)connect.addEventListener('click',connectTerminal);
+    if(connect)connect.addEventListener('click',requestTerminalConnection);
     if(disconnect)disconnect.addEventListener('click',()=>disconnectTerminal(true));
     if(fullscreen)fullscreen.addEventListener('click',toggleFullscreen);
+    const overlaySecondary=el('terminalOverlaySecondaryButton');
     if(overlayButton)overlayButton.addEventListener('click',()=>{
       if(currentTargetOS()==='windows'){hideOverlay();if(term)term.focus();return;}
-      connectTerminal();
+      if(overlayAction==='resume'||overlayAction==='reconnect'){
+        const dir=overlayWorkingDir;
+        overlayAction='connect';overlayWorkingDir='';
+        connectTerminal(dir);
+        return;
+      }
+      requestTerminalConnection();
     });
+    if(overlaySecondary)overlaySecondary.addEventListener('click',()=>{
+      overlayAction='connect';overlayWorkingDir='';
+      connectTerminal('');
+    });
+    hydrateTerminalLastDirs();
     const terminalReady=ensureTerminal();
     setButtons('idle');
-    showIdleOverlay();
     const params=new URLSearchParams(location.search);
     if(!requestedTargetAvailable){
       status('Cliente no disponible',false,true);
       setOverlay('warning','Cliente no disponible','El cliente solicitado está offline, inactivo o usa un sistema no compatible. Regresa a Conexiones SSH y selecciona otro destino.',null,false);
       return;
     }
+    const previousDir=lastDirForTarget(currentTerminalTarget());
+    if(previousDir){
+      showResumeOverlay(previousDir);
+      return;
+    }
+    showIdleOverlay();
     if(terminalReady&&params.get('autoconnect')==='1'){
-      setTimeout(connectTerminal,80);
+      setTimeout(()=>connectTerminal(''),80);
     }
   }
   document.addEventListener('DOMContentLoaded',initTerminal);

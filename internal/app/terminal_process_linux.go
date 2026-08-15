@@ -50,7 +50,7 @@ func startTerminalProcess(ctx context.Context, opts terminalStartOptions) (*term
 	cols, rows := normalizeTerminalSize(opts.Cols, opts.Rows)
 	_ = resizePTY(master, cols, rows)
 
-	termCmd, err := linuxShellCommand(ctx, opts.Shell)
+	termCmd, err := linuxShellCommand(ctx, opts.Shell, opts.WorkingDir)
 	if err != nil {
 		_ = slave.Close()
 		_ = master.Close()
@@ -217,24 +217,24 @@ func ioctl(fd uintptr, req uintptr, arg uintptr) error {
 	return nil
 }
 
-func linuxShellCommand(ctx context.Context, shell string) (linuxTerminalCommand, error) {
+func linuxShellCommand(ctx context.Context, shell, workingDir string) (linuxTerminalCommand, error) {
 	if shell = strings.TrimSpace(shell); shell != "" {
 		resolved, err := resolveExecutable(shell)
 		if err != nil {
 			return linuxTerminalCommand{}, fmt.Errorf("shell solicitada %q no disponible: %w", shell, err)
 		}
-		return linuxTerminalCommand{Path: resolved, Args: interactiveShellArgs(resolved), Dir: terminalWorkingDir(), Env: terminalIdentityEnv(resolved)}, nil
+		return linuxTerminalCommand{Path: resolved, Args: interactiveShellArgs(resolved), Dir: terminalStartWorkingDir(workingDir), Env: terminalIdentityEnv(resolved)}, nil
 	}
 	if os.Geteuid() != 0 {
 		if sudo, ok := passwordlessSudoPath(ctx); ok {
-			return linuxTerminalCommand{Path: sudo, Args: []string{"-n", "-i"}, Dir: "/", Env: []string{"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}}, nil
+			return linuxTerminalCommand{Path: sudo, Args: []string{"-n", "-i"}, Dir: terminalStartWorkingDir(workingDir), Env: []string{"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}}, nil
 		}
 	}
 	resolved := firstExistingShell(defaultLinuxShellCandidates())
 	if resolved == "" {
 		return linuxTerminalCommand{}, errors.New("no se encontró una shell ejecutable; se buscó SHELL, shells Linux y sh mediante PATH")
 	}
-	return linuxTerminalCommand{Path: resolved, Args: interactiveShellArgs(resolved), Dir: terminalWorkingDir(), Env: terminalIdentityEnv(resolved)}, nil
+	return linuxTerminalCommand{Path: resolved, Args: interactiveShellArgs(resolved), Dir: terminalStartWorkingDir(workingDir), Env: terminalIdentityEnv(resolved)}, nil
 }
 
 func defaultLinuxShellCandidates() []string {
@@ -292,6 +292,14 @@ func interactiveShellArgs(shell string) []string {
 	default:
 		return nil
 	}
+}
+
+func terminalStartWorkingDir(requested string) string {
+	requested = filepath.Clean(strings.TrimSpace(requested))
+	if requested != "." && filepath.IsAbs(requested) && isUsableDir(requested) {
+		return requested
+	}
+	return terminalWorkingDir()
 }
 
 func terminalWorkingDir() string {

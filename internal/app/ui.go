@@ -45,6 +45,7 @@ type uiPageData struct {
 	MaxLogEntries       int
 	TraefikConfig       string
 	SuspensionTemplates []SuspensionTemplate
+	TerminalUsage       map[string]TerminalUsage
 	BootstrapJSON       template.JS
 }
 
@@ -121,6 +122,9 @@ func (s *Server) panelData(r *http.Request, rs requestSession, page panelPage) u
 	if (page.Key == "terminal" && currentID == "") || page.Key == "ssh_connections" {
 		data.Agents = s.store.ListAgents()
 	}
+	if page.Key == "terminal" || page.Key == "ssh_connections" {
+		data.TerminalUsage = terminalUsageMap(s.store.ListTerminalUsage(rs.User.ID))
+	}
 	data.BootstrapJSON = template.JS(mustJSON(map[string]any{
 		"csrfToken":           data.CSRFToken,
 		"user":                publicUser(rs.User),
@@ -145,6 +149,7 @@ func (s *Server) panelData(r *http.Request, rs requestSession, page panelPage) u
 		"serverOS":            data.ServerOS,
 		"serverArch":          data.ServerArch,
 		"serverHostname":      data.ServerHostname,
+		"terminalUsage":       data.TerminalUsage,
 		"path":                data.Path,
 		"pageKey":             data.PageKey,
 	}))

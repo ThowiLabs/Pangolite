@@ -128,6 +128,30 @@ func TestLinuxTerminalCurrentDirTracksShellCD(t *testing.T) {
 	t.Fatalf("terminal cwd = %q err=%v, want %q", cwd, err, dir)
 }
 
+func TestLinuxTerminalStartsInRequestedWorkingDir(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("/bin/sh is not available in the test environment")
+	}
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	term, err := startTerminalProcess(ctx, terminalStartOptions{Shell: "/bin/sh", Cols: 80, Rows: 24, WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		cwd, err := term.CurrentDir()
+		if err == nil && filepath.Clean(cwd) == filepath.Clean(dir) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cwd, err := term.CurrentDir()
+	t.Fatalf("terminal cwd inicial = %q err=%v, want %q", cwd, err, dir)
+}
+
 func shellQuoteForTest(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

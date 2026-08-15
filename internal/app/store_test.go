@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -614,5 +615,51 @@ func TestUpdateUsernameRequiresPasswordAndNormalizes(t *testing.T) {
 	}
 	if _, ok := store.AuthenticateUser("admin", temp); ok {
 		t.Fatal("el usuario anterior no debe seguir autenticando")
+	}
+}
+
+func TestTerminalUsagePersistsPerUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, password, err := store.BootstrapAdmin("admin", filepath.Join(t.TempDir(), "admin-password.txt"))
+	if err != nil || !created {
+		t.Fatalf("crear admin: created=%v err=%v", created, err)
+	}
+	user, ok := store.AuthenticateUser("admin", password)
+	if !ok {
+		t.Fatal("no se pudo autenticar admin")
+	}
+	for i := 0; i < 3; i++ {
+		if err := store.RecordTerminalConnection(user.ID, "agent:demo"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RecordTerminalConnection(user.ID, "local"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateTerminalLastDir(user.ID, "agent:demo", "/srv/apps/demo"); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := store.TerminalUsageByTarget(user.ID, "agent:demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.ConnectionCount != 3 || usage.LastDir != "/srv/apps/demo" || usage.LastConnectedAt.IsZero() {
+		t.Fatalf("uso inesperado: %#v", usage)
+	}
+	list := store.ListTerminalUsage(user.ID)
+	if len(list) != 2 || list[0].Target != "agent:demo" || list[0].ConnectionCount != 3 {
+		t.Fatalf("ranking inesperado: %#v", list)
+	}
+	version, err := store.SchemaVersion(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version < 11 {
+		t.Fatalf("schema version = %d, want >= 11", version)
 	}
 }

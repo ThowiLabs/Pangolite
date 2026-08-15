@@ -30,6 +30,18 @@
     </div>
   </div>
 
+  <div id="sshFrequentSection" class="card ssh-frequent-section soft-enter soft-enter-delay-2 d-none" aria-labelledby="sshFrequentTitle">
+    <div class="card-header ssh-frequent-header">
+      <div>
+        <div class="card-title" id="sshFrequentTitle"><i class="bi bi-lightning-charge"></i> Más usados</div>
+        <div class="text-muted small">Accesos sugeridos según las conexiones que más utilizas.</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div id="sshFrequentGrid" class="ssh-frequent-grid" aria-live="polite"></div>
+    </div>
+  </div>
+
   <div class="card ssh-directory-card soft-enter soft-enter-delay-2">
     <div class="card-header ssh-directory-header">
       <div>
@@ -60,7 +72,7 @@
 
     <div class="card-body">
       <div id="sshConnectionGrid" class="ssh-connection-grid">
-        <article class="ssh-connection-card ssh-connection-local" data-ssh-card data-kind="local" data-online="{{if eq .ServerOS "windows"}}false{{else}}true{{end}}" data-search="pangolite servidor local {{.ServerHostname}} {{.ServerOS}} {{.ServerArch}} {{.Network.PublicIP}} {{.Settings.DashboardDomain}}">
+        <article class="ssh-connection-card ssh-connection-local" data-ssh-card data-kind="local" data-terminal-target="local" data-online="{{if eq .ServerOS "windows"}}false{{else}}true{{end}}" data-search="pangolite servidor local {{.ServerHostname}} {{.ServerOS}} {{.ServerArch}} {{.Network.PublicIP}} {{.Settings.DashboardDomain}}">
           <div class="ssh-card-glow" aria-hidden="true"></div>
           <div class="ssh-card-head">
             <div class="ssh-device-icon local"><i class="bi bi-server"></i></div>
@@ -93,7 +105,7 @@
         </article>
 
         {{range .Agents}}
-        <article class="ssh-connection-card {{if not (agentTerminalReady .)}}is-unavailable{{end}}" data-ssh-card data-kind="agent" data-online="{{agentTerminalReady .}}" data-search="{{.Name}} {{.ID}} {{.Hostname}} {{.PrivateIP}} {{.PublicIP}} {{.OS}} {{.Arch}} {{projectName .ProjectID}} {{projectSlug .ProjectID}}">
+        <article class="ssh-connection-card {{if not (agentTerminalReady .)}}is-unavailable{{end}}" data-ssh-card data-kind="agent" data-terminal-target="agent:{{.ID}}" data-online="{{agentTerminalReady .}}" data-search="{{.Name}} {{.ID}} {{.Hostname}} {{.PrivateIP}} {{.PublicIP}} {{.OS}} {{.Arch}} {{projectName .ProjectID}} {{projectSlug .ProjectID}}">
           <div class="ssh-card-head">
             <div class="ssh-device-icon"><i class="bi bi-hdd-network"></i></div>
             <div class="ssh-card-status {{agentTerminalClass .}}">

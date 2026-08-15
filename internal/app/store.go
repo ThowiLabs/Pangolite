@@ -72,6 +72,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		{Version: 8, Name: "correo de cuenta y recuperacion SMTP", Apply: s.migrateAccountEmailPasswordReset},
 		{Version: 9, Name: "redirecciones permanentes y disponibilidad oculta", Apply: s.migrateHTTPRedirectsAvailability},
 		{Version: 10, Name: "redes administrativas confiables", Apply: s.migrateTrustedAdminNetworks},
+		{Version: 11, Name: "uso y directorio de terminal por usuario", Apply: s.migrateTerminalUsage},
 	}
 	latest := migrations[len(migrations)-1].Version
 	currentVersion, err := s.SchemaVersion(ctx)

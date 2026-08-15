@@ -3,6 +3,41 @@
     return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
   }
 
+  function terminalUsage(){
+    try{return (appBoot&&appBoot.terminalUsage)||{}}catch{return {}}
+  }
+
+  function renderFrequentConnections(cards){
+    const section=document.getElementById('sshFrequentSection');
+    const grid=document.getElementById('sshFrequentGrid');
+    if(!section||!grid)return;
+    const usage=terminalUsage();
+    const ranked=cards.map(card=>{
+      const target=String(card.dataset.terminalTarget||'').trim();
+      const item=usage&&usage[target]||{};
+      return {card,target,count:Number(item.connectionCount)||0,last:String(item.lastConnectedAt||'')};
+    }).filter(item=>item.target&&item.count>0&&item.card.dataset.online==='true')
+      .sort((a,b)=>(b.count-a.count)||(Date.parse(b.last)||0)-(Date.parse(a.last)||0)||a.target.localeCompare(b.target))
+      .slice(0,4);
+    grid.replaceChildren();
+    if(!ranked.length){section.classList.add('d-none');return}
+    ranked.forEach(item=>{
+      const clone=item.card.cloneNode(true);
+      clone.removeAttribute('data-ssh-card');
+      clone.removeAttribute('hidden');
+      clone.classList.add('ssh-frequent-card');
+      const head=clone.querySelector('.ssh-card-head');
+      if(head){
+        const badge=document.createElement('span');
+        badge.className='ssh-frequency-badge';
+        badge.innerHTML='<i class="bi bi-lightning-charge-fill" aria-hidden="true"></i> '+item.count+(item.count===1?' conexión':' conexiones');
+        head.appendChild(badge);
+      }
+      grid.appendChild(clone);
+    });
+    section.classList.remove('d-none');
+  }
+
   function pageItems(current,total){
     if(total<=7)return Array.from({length:total},(_,index)=>index+1);
     const items=[1];
@@ -28,6 +63,7 @@
     const summary=document.getElementById('sshConnectionSummary');
     const pagination=document.getElementById('sshConnectionPagination');
     const params=new URLSearchParams(location.search);
+    renderFrequentConnections(cards);
     let currentPage=Math.max(1,Number.parseInt(params.get('page')||'1',10)||1);
     let searchTimer=null;
 

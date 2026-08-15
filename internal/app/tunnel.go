@@ -19,6 +19,7 @@ const (
 	AgentCapabilityHTTPStreamV1       = "http-stream-v1"
 	AgentCapabilityTerminalUploadV1   = "terminal-upload-v1"
 	AgentCapabilityTerminalDownloadV1 = "terminal-download-v1"
+	AgentCapabilityTerminalCWDV1      = "terminal-cwd-v1"
 	agentCapabilityTTL                = 5 * time.Minute
 	MaxAgentHTTPBodyBytes             = int64(16 << 20)
 	MaxAgentHTTPEnvelopeBytes         = MaxAgentHTTPBodyBytes*4/3 + (2 << 20)
@@ -59,6 +60,7 @@ type AgentStreamJob struct {
 	Cols         int    `json:"cols,omitempty"`
 	Rows         int    `json:"rows,omitempty"`
 	Path         string `json:"path,omitempty"`
+	WorkingDir   string `json:"workingDir,omitempty"`
 }
 
 type StreamSession struct {
