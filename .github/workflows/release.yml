@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version a publicar. Si se deja vacio, incrementa el ultimo tag vX.Y a vX.(Y+1). Ejemplo: 0.1"
+        description: "Version a publicar. Debe coincidir con VERSION del codigo; vacio usa la version declarada."
         required: false
         type: string
 
@@ -27,124 +27,58 @@ jobs:
           go-version: "1.26.x"
           cache: false
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.x"
+
       - name: Resolver modulos
-        shell: bash
-        run: |
-          set -euo pipefail
-          go mod tidy
-          go mod download
+        run: go mod download
 
       - name: Resolver version
         id: version
         shell: bash
         run: |
           set -euo pipefail
+          source_version="$(awk '/^VERSION[[:space:]]*\?=/{print $3; exit}' Makefile)"
+          source_code="$(awk '/^VERSION_CODE[[:space:]]*\?=/{print $3; exit}' Makefile)"
           input="${{ github.event.inputs.version }}"
           input="${input#v}"
-          if [[ -n "$input" ]]; then
-            if [[ ! "$input" =~ ^[0-9]+\.[0-9]+$ ]]; then
-              echo "Version invalida: $input. Usa formato X.Y, ejemplo 0.1" >&2
-              exit 1
-            fi
-            version="$input"
-          else
-            latest="$(git tag --list 'v[0-9]*.[0-9]*' | sed 's/^v//' | sort -V | tail -n 1 || true)"
-            if [[ -z "$latest" ]]; then
-              version="0.1"
-            else
-              major="${latest%%.*}"
-              minor="${latest#*.}"
-              version="${major}.$((minor + 1))"
-            fi
-          fi
-          tag="v${version}"
-          major="${version%%.*}"
-          minor="${version#*.}"
-          version_code=$((10#$major * 100000 + 10#$minor))
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "El tag $tag ya existe" >&2
+
+          if [[ ! "$source_version" =~ ^[0-9]+\.[0-9]+$ || ! "$source_code" =~ ^[0-9]+$ ]]; then
+            echo "Version de desarrollo invalida en Makefile: $source_version (code $source_code)" >&2
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          if [[ -n "$input" && "$input" != "$source_version" ]]; then
+            echo "El release solicitado v${input} no coincide con la version del codigo v${source_version}. Actualiza VERSION/VERSION_CODE antes de publicar." >&2
+            exit 1
+          fi
+
+          major="${source_version%%.*}"
+          minor="${source_version#*.}"
+          expected_code=$((10#$major * 100000 + 10#$minor))
+          if [[ "$source_code" != "$expected_code" ]]; then
+            echo "VERSION_CODE invalido: $source_code; para $source_version debe ser $expected_code" >&2
+            exit 1
+          fi
+
+          tag="v${source_version}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "El tag $tag ya existe. Incrementa VERSION/VERSION_CODE en el codigo antes de publicar otro release." >&2
+            exit 1
+          fi
+          echo "version=$source_version" >> "$GITHUB_OUTPUT"
+          echo "version_code=$source_code" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Publicando $tag"
+          echo "Publicando $tag (code $source_code)"
 
-      - name: Pruebas
-        run: go test ./...
-
-      - name: Compilar paquetes
+      - name: Gate de calidad
         shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          VERSION_CODE: ${{ steps.version.outputs.version_code }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist build/public
-          LDFLAGS="-s -w -X github.com/thowilabs/pangolite/internal/app.Version=${VERSION} -X github.com/thowilabs/pangolite/internal/app.VersionCode=${VERSION_CODE}"
+        run: ./scripts/verify.sh
 
-          build_bin() {
-            local goos="$1"
-            local goarch="$2"
-            local goarm="${3:-}"
-            local pkg="$4"
-            local out="$5"
-            echo "::group::build ${pkg} ${goos}/${goarch}${goarm:+/v$goarm}"
-            env GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" CGO_ENABLED=0 \
-              go build -buildvcs=false -trimpath -ldflags="$LDFLAGS" -o "$out" "$pkg"
-            echo "::endgroup::"
-          }
-
-          build_bin linux amd64 "" ./cmd/pangolite-client build/public/pangolite-client-linux-amd64
-          build_bin linux arm64 "" ./cmd/pangolite-client build/public/pangolite-client-linux-arm64
-          build_bin linux 386 "" ./cmd/pangolite-client build/public/pangolite-client-linux-386
-          build_bin linux arm 7 ./cmd/pangolite-client build/public/pangolite-client-linux-armv7
-          build_bin windows amd64 "" ./cmd/pangolite-client build/public/pangolite-client-windows-amd64.exe
-
-          package_linux() {
-            local arch="$1"
-            local goarch="$2"
-            local goarm="${3:-}"
-            local name="pangolite_linux_${arch}"
-            local pkgdir="build/${name}"
-            rm -rf "$pkgdir"
-            mkdir -p "$pkgdir/public"
-            build_bin linux "$goarch" "$goarm" ./cmd/pangolite "$pkgdir/pangolite"
-            build_bin linux "$goarch" "$goarm" ./cmd/pangolite-client "$pkgdir/pangolite-client"
-            cp build/public/pangolite-client-linux-amd64 "$pkgdir/public/pangolite-client-linux-amd64"
-            cp build/public/pangolite-client-linux-arm64 "$pkgdir/public/pangolite-client-linux-arm64"
-            cp build/public/pangolite-client-linux-386 "$pkgdir/public/pangolite-client-linux-386"
-            cp build/public/pangolite-client-linux-armv7 "$pkgdir/public/pangolite-client-linux-armv7"
-            cp build/public/pangolite-client-windows-amd64.exe "$pkgdir/public/pangolite-client-windows-amd64.exe"
-            cp install.sh README.md LICENSE "$pkgdir/"
-            printf '%s\n' "$VERSION" > "$pkgdir/VERSION"
-            printf '%s\n' "$VERSION_CODE" > "$pkgdir/VERSION_CODE"
-            tar -C "$pkgdir" -czf "dist/${name}.tar.gz" .
-          }
-
-          package_linux amd64 amd64
-          package_linux arm64 arm64
-          package_linux 386 386
-          package_linux armv7 arm 7
-
-          cp build/public/pangolite-client-linux-amd64 dist/pangolite-client_linux_amd64
-          cp build/public/pangolite-client-linux-arm64 dist/pangolite-client_linux_arm64
-          cp build/public/pangolite-client-linux-386 dist/pangolite-client_linux_386
-          cp build/public/pangolite-client-linux-armv7 dist/pangolite-client_linux_armv7
-          cp build/public/pangolite-client-windows-amd64.exe dist/pangolite-client_windows_amd64.exe
-
-          required_assets=(
-            dist/pangolite_linux_arm64.tar.gz
-            dist/pangolite-client_linux_arm64
-          )
-          for asset in "${required_assets[@]}"; do
-            if [[ ! -s "$asset" ]]; then
-              echo "No se genero el artefacto ARM64 requerido: $asset" >&2
-              exit 1
-            fi
-          done
-
-          (cd dist && sha256sum * > checksums.txt)
+      - name: Compilar y validar todos los artefactos
+        shell: bash
+        run: ./scripts/build-release.sh "${{ steps.version.outputs.version }}" "${{ steps.version.outputs.version_code }}"
 
       - name: Notas del release
         shell: bash

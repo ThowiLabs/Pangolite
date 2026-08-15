@@ -10,7 +10,7 @@ github.com/ThowiLabs/Pangolite
 
 ## Versionado
 
-Pangolite usa una versión visible y un código de versión monotónico compartidos por el servidor y `pangolite-client`. La versión de desarrollo actual es `0.27` con código `27`.
+Pangolite usa una versión visible y un código de versión monotónico compartidos por el servidor y `pangolite-client`. La versión de desarrollo actual es `0.28` con código `28`.
 
 ```bash
 pangolite --version
@@ -166,14 +166,16 @@ Cuando se cambia la contraseña temporal, el archivo `admin-password.txt` se eli
 
 ## Releases
 
-El proyecto incluye un workflow manual en `.github/workflows/release.yml`.
+El proyecto incluye CI en `.github/workflows/ci.yml` y el workflow manual de publicación en `.github/workflows/release.yml`. Ambos usan los mismos scripts de verificación y build para evitar que el comportamiento local y el runner diverjan.
 
-- Se ejecuta manualmente desde GitHub Actions.
-- Si se indica una versión, publica `vX.Y`.
-- Si se deja vacío, toma el último tag `vX.Y` e incrementa el número menor.
-- Genera paquetes `pangolite_linux_amd64.tar.gz`, `pangolite_linux_arm64.tar.gz`, `pangolite_linux_386.tar.gz` y `pangolite_linux_armv7.tar.gz`.
-- Verifica que el paquete y el cliente Linux ARM64 existan y no estén vacíos antes de publicar.
-- Publica `checksums.txt`.
+- `ci.yml` se ejecuta en `push` a `main`, pull requests y manualmente. Ejecuta el gate completo y compila todas las plataformas soportadas.
+- `release.yml` se ejecuta manualmente y **no publica nada** hasta que el gate completo y el build de todos los artefactos terminan correctamente.
+- La versión publicable sale de `VERSION`/`VERSION_CODE` del `Makefile` y debe coincidir con `internal/app/version.go`.
+- El input manual de versión es opcional, pero si se usa debe coincidir exactamente con la versión declarada en el código.
+- Si el tag de esa versión ya existe, el release se bloquea hasta incrementar `VERSION` y `VERSION_CODE` en un nuevo commit.
+- `scripts/verify.sh` valida `gofmt`, `go mod tidy`, `go vet`, unit tests con cobertura, race detector, JavaScript, scripts shell y que no existan ZIPs trackeados o alcanzables en el historial Git.
+- `scripts/build-release.sh` compila servidor/cliente para Linux amd64, arm64, 386 y armv7, además del cliente Windows amd64; comprueba todos los artefactos, valida los `.tar.gz`, ejecuta smoke tests de versión en amd64 y genera `checksums.txt`.
+- Si cualquier paso devuelve error, GitHub Actions corta la ejecución antes de `gh release create`.
 
 ## Configuración
 
@@ -323,8 +325,21 @@ curl http://127.0.0.1:2424/healthz
 
 ## Desarrollo local
 
+Antes de enviar o publicar cambios, ejecuta el mismo gate que usa GitHub Actions:
+
 ```bash
-go mod tidy
+make verify
+```
+
+Para comprobar además todos los artefactos de release con la versión de desarrollo actual:
+
+```bash
+make release-build
+```
+
+Pruebas rápidas durante desarrollo:
+
+```bash
 go test ./...
 go build -buildvcs=false -trimpath -ldflags='-s -w' -o bin/pangolite ./cmd/pangolite
 go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db

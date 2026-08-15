@@ -60,7 +60,7 @@ SysVinit -> scripts /etc/init.d + update-rc.d/chkconfig si existe
 runit    -> servicios /etc/sv + symlink a /var/service o /service
 ```
 
-El workflow manual de releases genera paquetes Linux `amd64`, `arm64`, `386` y `armv7`, además de clientes descargables para Linux amd64 y Windows amd64.
+El workflow manual de releases genera paquetes Linux `amd64`, `arm64`, `386` y `armv7`, además de clientes descargables para Linux amd64, arm64, 386, armv7 y Windows amd64. Antes de publicar ejecuta `scripts/verify.sh` y `scripts/build-release.sh`; cualquier error detiene el job antes de crear el release. El mismo gate se ejecuta anticipadamente desde `.github/workflows/ci.yml` en `main` y pull requests.
 
 ## Suspensión y protección de recursos web
 
