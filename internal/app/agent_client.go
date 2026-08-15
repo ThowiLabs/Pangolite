@@ -638,7 +638,7 @@ func handleAgentTerminalStream(ctx context.Context, client *http.Client, base, c
 	}
 	ws.SetReadLimit(128 << 10)
 
-	term, err := startTerminalProcess(ctx, terminalStartOptions{Shell: job.Shell, Cols: job.Cols, Rows: job.Rows})
+	term, err := startTerminalProcess(ctx, terminalStartOptions{Shell: job.Shell, Cols: job.Cols, Rows: job.Rows, WorkingDir: job.WorkingDir})
 	if err != nil {
 		logger.Warn("terminal remota no disponible", "stream", job.ID, "error", err.Error())
 		_ = ws.Write(ctx, websocket.MessageText, []byte("No se pudo iniciar la terminal remota en el cliente: "+err.Error()+"\r\n"))
@@ -648,7 +648,7 @@ func handleAgentTerminalStream(ctx context.Context, client *http.Client, base, c
 	defer term.Close()
 
 	logger.Info("terminal remota conectada", "stream", job.ID, "os", runtime.GOOS)
-	if err := bridgeWebSocketTerminalProcess(ctx, ws, term, terminalControlFramed); err != nil {
+	if err := bridgeWebSocketTerminalProcess(ctx, ws, term, terminalControlFramed, nil); err != nil {
 		logger.Debug("terminal remota cerrada", "stream", job.ID, "error", err.Error())
 	}
 }
@@ -711,7 +711,7 @@ func setAgentAuthHeaderWithEndpoint(h http.Header, cfg AgentClientConfig, server
 	h.Set("X-Pangolite-Agent", cfg.AgentID)
 	h.Set("User-Agent", "pangolite-client/0.5")
 	h.Set("X-Pangolite-Client-Version", Version)
-	h.Set("X-Pangolite-Capabilities", strings.Join([]string{AgentCapabilityHTTPStreamV1, AgentCapabilityTerminalUploadV1, AgentCapabilityTerminalDownloadV1}, ","))
+	h.Set("X-Pangolite-Capabilities", strings.Join([]string{AgentCapabilityHTTPStreamV1, AgentCapabilityTerminalUploadV1, AgentCapabilityTerminalDownloadV1, AgentCapabilityTerminalCWDV1}, ","))
 	h.Set("X-Pangolite-Client-OS", runtime.GOOS)
 	h.Set("X-Pangolite-Client-Arch", runtime.GOARCH)
 	if strings.TrimSpace(serverURL) != "" {

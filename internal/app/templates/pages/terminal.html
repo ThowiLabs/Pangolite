@@ -53,7 +53,11 @@
             <div id="terminalOverlaySpinner" class="terminal-overlay-spinner d-none" aria-hidden="true"></div>
             <div id="terminalOverlayTitle" class="terminal-overlay-title">Aún no conectado</div>
             <p id="terminalOverlayText" class="terminal-overlay-text">Selecciona un destino y presiona Conectar para abrir una consola.</p>
-            <button id="terminalOverlayButton" class="btn btn-sm btn-primary" type="button"><i class="bi bi-plug"></i> <span>Conectar</span></button>
+            <div id="terminalResumePath" class="terminal-resume-path d-none" aria-label="Último directorio de trabajo"></div>
+            <div class="terminal-overlay-actions">
+              <button id="terminalOverlayButton" class="btn btn-sm btn-primary" type="button"><i class="bi bi-plug"></i> <span>Conectar</span></button>
+              <button id="terminalOverlaySecondaryButton" class="btn btn-sm btn-outline-secondary d-none" type="button"><i class="bi bi-house"></i> <span>Iniciar desde carpeta predeterminada</span></button>
+            </div>
           </div>
         </div>
       </div>

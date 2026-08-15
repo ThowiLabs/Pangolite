@@ -18,9 +18,10 @@ import (
 )
 
 type terminalStartOptions struct {
-	Shell string
-	Cols  int
-	Rows  int
+	Shell      string
+	Cols       int
+	Rows       int
+	WorkingDir string
 }
 
 type terminalProcess struct {
@@ -117,7 +118,8 @@ func (s *Server) localTerminalSocket(w http.ResponseWriter, r *http.Request) {
 	ws.SetReadLimit(128 << 10)
 
 	cols, rows := terminalSizeFromRequest(r)
-	term, err := startTerminalProcess(r.Context(), terminalStartOptions{Cols: cols, Rows: rows})
+	workingDir := terminalWorkingDirFromRequest(r)
+	term, err := startTerminalProcess(r.Context(), terminalStartOptions{Cols: cols, Rows: rows, WorkingDir: workingDir})
 	if err != nil {
 		_ = ws.Write(r.Context(), websocket.MessageText, []byte("No se pudo iniciar la terminal local: "+err.Error()+"\r\n"))
 		return
@@ -126,8 +128,10 @@ func (s *Server) localTerminalSocket(w http.ResponseWriter, r *http.Request) {
 	if s.log != nil {
 		s.log.Info("terminal local abierta", "user", rs.User.Username, "remote", r.RemoteAddr)
 	}
+	_ = s.store.RecordTerminalConnection(rs.User.ID, terminalUsageTargetLocal)
 	s.recordAudit(r, rs, "terminal.open", "terminal", "local", "", map[string]any{"target": "local"})
-	if err := bridgeWebSocketTerminalProcess(r.Context(), ws, term, terminalControlJSON); err != nil && s.log != nil {
+	onWorkingDir := func(dir string) { _ = s.store.UpdateTerminalLastDir(rs.User.ID, terminalUsageTargetLocal, dir) }
+	if err := bridgeWebSocketTerminalProcess(r.Context(), ws, term, terminalControlJSON, onWorkingDir); err != nil && s.log != nil {
 		s.log.Debug("terminal local cerrada", "user", rs.User.Username, "error", err.Error())
 	}
 }
@@ -174,21 +178,30 @@ func (s *Server) agentTerminalSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cols, rows := terminalSizeFromRequest(r)
+	workingDir := terminalWorkingDirFromRequest(r)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	job := AgentStreamJob{ID: streamID, Mode: AgentStreamModeTerminal, Cols: cols, Rows: rows}
+	cwdAllowed := s.hub.AgentSupports(agentID, AgentCapabilityTerminalCWDV1)
+	jobWorkingDir := workingDir
+	if !cwdAllowed {
+		jobWorkingDir = ""
+	}
+	job := AgentStreamJob{ID: streamID, Mode: AgentStreamModeTerminal, Cols: cols, Rows: rows, WorkingDir: jobWorkingDir}
 	errCh := make(chan error, 2)
 	go func() {
 		errCh <- s.hub.SubmitStream(ctx, agentID, job, left)
 	}()
 	uploadAllowed := s.hub.AgentSupports(agentID, AgentCapabilityTerminalUploadV1)
 	downloadAllowed := s.hub.AgentSupports(agentID, AgentCapabilityTerminalDownloadV1)
+	target := "agent:" + agentID
+	onWorkingDir := func(dir string) { _ = s.store.UpdateTerminalLastDir(rs.User.ID, target, dir) }
 	go func() {
-		errCh <- bridgeWebSocketRemoteTerminal(ctx, ws, right, uploadAllowed, downloadAllowed)
+		errCh <- bridgeWebSocketRemoteTerminal(ctx, ws, right, uploadAllowed, downloadAllowed, cwdAllowed, onWorkingDir)
 	}()
 	if s.log != nil {
 		s.log.Info("terminal remota solicitada", "user", rs.User.Username, "agent", agentID, "name", agent.Name)
 	}
+	_ = s.store.RecordTerminalConnection(rs.User.ID, target)
 	s.recordAudit(r, rs, "terminal.open", "agent", agentID, agent.ProjectID, map[string]any{"target": agent.Name, "os": agent.OS, "hostname": agent.Hostname})
 	err = <-errCh
 	cancel()
@@ -240,6 +253,17 @@ func terminalSizeFromRequest(r *http.Request) (int, int) {
 	return cols, rows
 }
 
+func terminalWorkingDirFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	dir := strings.TrimSpace(r.URL.Query().Get("cwd"))
+	if len(dir) > 4096 {
+		return ""
+	}
+	return dir
+}
+
 func decodeTerminalControlJSON(data []byte) (terminalControlMessage, bool) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || data[0] != '{' {
@@ -253,7 +277,7 @@ func decodeTerminalControlJSON(data []byte) (terminalControlMessage, bool) {
 		return terminalControlMessage{}, false
 	}
 	switch msg.Type {
-	case "resize", "upload.start", "upload.finish", "upload.cancel", "upload.ready", "upload.progress", "upload.done", "upload.error", "download.request", "download.offer", "download.error":
+	case "resize", "cwd.request", "cwd.update", "upload.start", "upload.finish", "upload.cancel", "upload.ready", "upload.progress", "upload.done", "upload.error", "download.request", "download.offer", "download.error":
 		return msg, true
 	default:
 		return terminalControlMessage{}, false
@@ -415,7 +439,7 @@ func writeTerminalPayload(w io.Writer, data []byte) error {
 	return nil
 }
 
-func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn net.Conn, uploadAllowed, downloadAllowed bool) error {
+func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn net.Conn, uploadAllowed, downloadAllowed, cwdAllowed bool, onWorkingDir func(string)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
@@ -427,6 +451,9 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 			if n > 0 {
 				var controlErr error
 				payloads := filter.Process(buf[:n], func(msg terminalControlMessage) bool {
+					if msg.Type == "cwd.update" && onWorkingDir != nil && strings.TrimSpace(msg.Path) != "" {
+						onWorkingDir(strings.TrimSpace(msg.Path))
+					}
 					payload, marshalErr := jsonTerminalControlMessage(msg)
 					if marshalErr != nil {
 						controlErr = marshalErr
@@ -467,6 +494,9 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 			}
 			if typ == websocket.MessageText {
 				if msg, ok := decodeTerminalControlJSON(data); ok {
+					if msg.Type == "cwd.request" && !cwdAllowed {
+						continue
+					}
 					if strings.HasPrefix(msg.Type, "upload.") && !uploadAllowed {
 						if msg.Type == "upload.start" {
 							payload, marshalErr := jsonTerminalControlMessage(terminalControlMessage{Type: "upload.error", UploadID: msg.UploadID, Error: "actualiza pangolite-client para habilitar transferencias de archivos"})
@@ -524,7 +554,7 @@ func bridgeWebSocketRemoteTerminal(ctx context.Context, ws *websocket.Conn, conn
 	return err
 }
 
-func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, term *terminalProcess, controlMode terminalControlMode) error {
+func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, term *terminalProcess, controlMode terminalControlMode, onWorkingDir func(string)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error, 2)
@@ -540,6 +570,17 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 	}
 	uploads := newTerminalUploadManager(term, notify)
 	defer uploads.Close()
+	reportWorkingDir := func() {
+		dir, err := term.CurrentDir()
+		if err != nil || strings.TrimSpace(dir) == "" {
+			return
+		}
+		dir = strings.TrimSpace(dir)
+		if onWorkingDir != nil {
+			onWorkingDir(dir)
+		}
+		_ = notify(terminalControlMessage{Type: "cwd.update", Path: dir})
+	}
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
@@ -560,6 +601,10 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 		var inputFilter terminalInputFilter
 		writeInput := func(data []byte) error {
 			payloads, err := inputFilter.Payloads(data, controlMode&terminalControlFramed != 0, func(msg terminalControlMessage) bool {
+				if msg.Type == "cwd.request" {
+					reportWorkingDir()
+					return true
+				}
 				if msg.Type == "download.request" {
 					_ = notify(prepareTerminalDownloadOffer(term, msg))
 					return true
@@ -590,7 +635,9 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 			}
 			if typ == websocket.MessageText && controlMode&terminalControlJSON != 0 {
 				if msg, ok := decodeTerminalControlJSON(data); ok {
-					if msg.Type == "download.request" {
+					if msg.Type == "cwd.request" {
+						reportWorkingDir()
+					} else if msg.Type == "download.request" {
 						_ = notify(prepareTerminalDownloadOffer(term, msg))
 					} else {
 						uploads.HandleControl(msg)
