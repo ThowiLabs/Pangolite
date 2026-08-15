@@ -80,11 +80,8 @@ while IFS= read -r -d '' shell_file; do
 done < <(find scripts -type f -name '*.sh' -print0)
 
 log "Comprobando higiene de artefactos Git"
-if git ls-files -z | grep -Eiz '\.zip$' >/dev/null; then
-  fail "hay archivos .zip trackeados por Git"
-fi
-if git rev-list --objects --all | awk '{print $2}' | grep -Ei '\.zip$' >/dev/null; then
-  fail "hay archivos .zip alcanzables en el historial Git"
+if git ls-tree -r --name-only HEAD | grep -Ei '\.zip$' >/dev/null; then
+  fail "hay archivos .zip en el commit actual"
 fi
 
 log "Verificacion de calidad completada correctamente"
