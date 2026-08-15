@@ -58,11 +58,15 @@ jobs:
             fi
           fi
           tag="v${version}"
+          major="${version%%.*}"
+          minor="${version#*.}"
+          version_code=$((10#$major * 100000 + 10#$minor))
           if git rev-parse "$tag" >/dev/null 2>&1; then
             echo "El tag $tag ya existe" >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Publicando $tag"
 
@@ -73,10 +77,11 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: |
           set -euo pipefail
           mkdir -p dist build/public
-          LDFLAGS="-s -w -X github.com/thowilabs/pangolite/internal/app.Version=${VERSION}"
+          LDFLAGS="-s -w -X github.com/thowilabs/pangolite/internal/app.Version=${VERSION} -X github.com/thowilabs/pangolite/internal/app.VersionCode=${VERSION_CODE}"
 
           build_bin() {
             local goos="$1"
@@ -113,6 +118,7 @@ jobs:
             cp build/public/pangolite-client-windows-amd64.exe "$pkgdir/public/pangolite-client-windows-amd64.exe"
             cp install.sh README.md LICENSE "$pkgdir/"
             printf '%s\n' "$VERSION" > "$pkgdir/VERSION"
+            printf '%s\n' "$VERSION_CODE" > "$pkgdir/VERSION_CODE"
             tar -C "$pkgdir" -czf "dist/${name}.tar.gz" .
           }
 
@@ -148,6 +154,7 @@ jobs:
           sha="$(git rev-parse --short HEAD)"
           {
             echo "Release ${{ steps.version.outputs.tag }}"
+            echo "Código de versión: ${{ steps.version.outputs.version_code }}"
             echo
             echo "Ultimo commit incluido:"
             echo "- ${sha} ${subject}"

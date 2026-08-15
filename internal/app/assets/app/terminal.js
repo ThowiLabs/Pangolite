@@ -87,13 +87,23 @@
     if(overlay)overlay.classList.add('d-none');
   }
   function currentTerminalTarget(){return (el('terminalTarget')&&el('terminalTarget').value)||'local'}
-  function hydrateTerminalLastDirs(){
-    let usage={};
-    try{usage=(appBoot&&appBoot.terminalUsage)||{}}catch{}
+  function hydrateTerminalLastDirs(usageOverride){
+    let usage=usageOverride||{};
+    if(!usageOverride){try{usage=(appBoot&&appBoot.terminalUsage)||{}}catch{}}
     Object.entries(usage||{}).forEach(([target,item])=>{
       const path=String(item&&item.lastDir||'').trim();
       if(path)terminalLastDirs[target]=path;
     });
+  }
+  async function refreshTerminalLastDirs(){
+    try{
+      const response=await fetch('/api/terminal/state',{headers:{'Accept':'application/json'},cache:'no-store'});
+      if(!response.ok)return;
+      const data=await response.json();
+      const usage=data&&data.usage||{};
+      if(appBoot)appBoot.terminalUsage=usage;
+      hydrateTerminalLastDirs(usage);
+    }catch{}
   }
   function lastDirForTarget(target){return String(terminalLastDirs[target||currentTerminalTarget()]||'').trim()}
   function rememberTerminalDir(target,path){
@@ -1038,7 +1048,7 @@
     window.addEventListener('resize',()=>{if(popover.classList.contains('open'))positionTerminalSettings()});
     window.addEventListener('scroll',()=>closeTerminalSettings(),true);
   }
-  function initTerminal(){
+  async function initTerminal(){
     if(!el('terminalBox'))return;
     let requestedTargetAvailable=true;
     const target=el('terminalTarget');
@@ -1084,6 +1094,8 @@
     hydrateTerminalLastDirs();
     const terminalReady=ensureTerminal();
     setButtons('idle');
+    showIdleOverlay();
+    await refreshTerminalLastDirs();
     const params=new URLSearchParams(location.search);
     if(!requestedTargetAvailable){
       status('Cliente no disponible',false,true);
@@ -1100,5 +1112,5 @@
       setTimeout(()=>connectTerminal(''),80);
     }
   }
-  document.addEventListener('DOMContentLoaded',initTerminal);
+  document.addEventListener('DOMContentLoaded',()=>{initTerminal().catch(err=>console.warn('terminal init',err))});
 })();

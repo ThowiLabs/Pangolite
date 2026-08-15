@@ -15,3 +15,7 @@
 acme.json
 admin-password.txt
 pangolite.env
+
+# Los paquetes de entrega nunca se versionan ni se conservan en Git.
+*.zip
+*.ZIP

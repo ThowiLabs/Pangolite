@@ -339,17 +339,17 @@ func TestTerminalResumeAndSSHFrequentUIAreEmbedded(t *testing.T) {
 			t.Fatalf("terminal.html no contiene %q", expected)
 		}
 	}
-	for _, expected := range []string{"cwd.request", "cwd.update", "showResumeOverlay", "lastDirForTarget", "buildSizeQuery(workingDir)", "startCWDTracking"} {
+	for _, expected := range []string{"cwd.request", "cwd.update", "showResumeOverlay", "lastDirForTarget", "buildSizeQuery(workingDir)", "startCWDTracking", "/api/terminal/state", "refreshTerminalLastDirs"} {
 		if !strings.Contains(string(terminalScript), expected) {
 			t.Fatalf("terminal.js no contiene %q", expected)
 		}
 	}
-	for _, expected := range []string{"renderFrequentConnections", "connectionCount", "ssh-frequent-card"} {
+	for _, expected := range []string{"renderFrequentConnections", "connectionCount", "ssh-frequent-card", "/api/terminal/state", "ssh-frequent-empty"} {
 		if !strings.Contains(string(sshScript), expected) {
 			t.Fatalf("ssh-connections.js no contiene %q", expected)
 		}
 	}
-	for _, expected := range []string{".ssh-frequent-grid", ".terminal-resume-path", ".terminal-overlay-actions"} {
+	for _, expected := range []string{".ssh-frequent-grid", ".ssh-frequent-empty", ".terminal-resume-path", ".terminal-overlay-actions", ".app-version"} {
 		if !strings.Contains(string(css), expected) {
 			t.Fatalf("panel.css no contiene %q", expected)
 		}
@@ -398,5 +398,46 @@ func TestCompactIconActionLanguageIsEmbedded(t *testing.T) {
 	}
 	if !strings.Contains(string(logsPage), `aria-label="Descargar logs"`) {
 		t.Fatal("logs.html no contiene la barra compacta de acciones")
+	}
+}
+
+func TestTerminalStateAPIAndVersionAreVisible(t *testing.T) {
+	server, store := testServerWithStore(t)
+	cookie := panelSessionCookie(t, store)
+	user, err := store.UserByUsername("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordTerminalConnection(user.ID, "local"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateTerminalLastDir(user.ID, "local", "/srv/pangolite"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://panel.example.test/api/terminal/state", nil)
+	req.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/terminal/state = %d body=%q", recorder.Code, recorder.Body.String())
+	}
+	for _, expected := range []string{`"local"`, `"lastDir":"/srv/pangolite"`, `"version":"` + NormalizedVersion() + `"`, `"versionCode":"` + NormalizedVersionCode() + `"`} {
+		if !strings.Contains(recorder.Body.String(), expected) {
+			t.Fatalf("estado de terminal no contiene %q: %s", expected, recorder.Body.String())
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "https://panel.example.test/ssh", nil)
+	req.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /ssh = %d", recorder.Code)
+	}
+	for _, expected := range []string{"Más usados", "Pangolite v" + NormalizedVersion(), "code " + NormalizedVersionCode()} {
+		if !strings.Contains(recorder.Body.String(), expected) {
+			t.Fatalf("/ssh no contiene %q", expected)
+		}
 	}
 }

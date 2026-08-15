@@ -24,6 +24,10 @@ func main() {
 }
 
 func run(args []string, stdout io.Writer) error {
+	if len(args) > 0 && (args[0] == "version" || args[0] == "--version" || args[0] == "-v") {
+		fmt.Fprintln(stdout, app.VersionSummary(clientName))
+		return nil
+	}
 	var install bool
 	var remove bool
 	var service bool
@@ -75,6 +79,7 @@ func run(args []string, stdout io.Writer) error {
 	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintln(stdout, `Uso:
+  pangolite-client --version
   pangolite-client --install --server-url https://panel.example.com --fallback-url http://IP_DEL_VPS:2424 --agent-id ID --token TOKEN
   pangolite-client --remove
   pangolite-client --server-url https://panel.example.com --fallback-url http://IP_DEL_VPS:2424 --agent-id ID --token TOKEN`)

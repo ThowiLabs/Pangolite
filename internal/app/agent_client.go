@@ -709,8 +709,9 @@ func setAgentAuthHeader(h http.Header, cfg AgentClientConfig) {
 func setAgentAuthHeaderWithEndpoint(h http.Header, cfg AgentClientConfig, serverURL, fallbackURL string) {
 	h.Set("Authorization", "Bearer "+cfg.Token)
 	h.Set("X-Pangolite-Agent", cfg.AgentID)
-	h.Set("User-Agent", "pangolite-client/0.5")
-	h.Set("X-Pangolite-Client-Version", Version)
+	h.Set("User-Agent", "pangolite-client/"+NormalizedVersion())
+	h.Set("X-Pangolite-Client-Version", NormalizedVersion())
+	h.Set("X-Pangolite-Client-Version-Code", NormalizedVersionCode())
 	h.Set("X-Pangolite-Capabilities", strings.Join([]string{AgentCapabilityHTTPStreamV1, AgentCapabilityTerminalUploadV1, AgentCapabilityTerminalDownloadV1, AgentCapabilityTerminalCWDV1}, ","))
 	h.Set("X-Pangolite-Client-OS", runtime.GOOS)
 	h.Set("X-Pangolite-Client-Arch", runtime.GOARCH)

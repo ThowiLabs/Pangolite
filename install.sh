@@ -392,6 +392,11 @@ install_binaries() {
   else
     echo "latest" > "$INSTALL_DIR/VERSION"
   fi
+  if [ -f "$TMP_DIR/extract/VERSION_CODE" ]; then
+    cp "$TMP_DIR/extract/VERSION_CODE" "$INSTALL_DIR/VERSION_CODE"
+  else
+    rm -f "$INSTALL_DIR/VERSION_CODE"
+  fi
 }
 
 set_env_value() {
@@ -733,12 +738,15 @@ print_credentials() {
 
 print_summary() {
   version_installed="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo desconocida)"
+  version_code_installed="$(cat "$INSTALL_DIR/VERSION_CODE" 2>/dev/null || echo desconocido)"
   cat <<INFO
 
 Instalacion completada.
 
 Version instalada:
   $version_installed
+Codigo de version:
+  $version_code_installed
 
 Panel directo:
   http://${SERVER_IP:-IP_DEL_SERVIDOR}:2424

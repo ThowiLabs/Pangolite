@@ -43,8 +43,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return healthcheck(args)
 	case "smoke-backend":
 		return smokeBackend(args, stdout)
-	case "version":
-		fmt.Fprintln(stdout, "pangolite "+app.Version)
+	case "version", "--version", "-v":
+		fmt.Fprintln(stdout, app.VersionSummary("pangolite"))
 		return nil
 	case "help", "-h", "--help":
 		printHelp(stdout)
@@ -221,6 +221,7 @@ func printHelp(w io.Writer) {
   pangolite doctor [flags]
   pangolite healthcheck [--url http://127.0.0.1:2424/healthz]
   pangolite smoke-backend [--addr 127.0.0.1:18081]
+  pangolite --version
 
 Flags comunes:
   --addr                   direccion interna del panel

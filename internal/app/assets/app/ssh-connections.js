@@ -7,11 +7,22 @@
     try{return (appBoot&&appBoot.terminalUsage)||{}}catch{return {}}
   }
 
-  function renderFrequentConnections(cards){
+  async function refreshTerminalUsage(cards){
+    try{
+      const response=await fetch('/api/terminal/state',{headers:{'Accept':'application/json'},cache:'no-store'});
+      if(!response.ok)return;
+      const data=await response.json();
+      const usage=data&&data.usage||{};
+      if(appBoot)appBoot.terminalUsage=usage;
+      renderFrequentConnections(cards,usage);
+    }catch{}
+  }
+
+  function renderFrequentConnections(cards,usageOverride){
     const section=document.getElementById('sshFrequentSection');
     const grid=document.getElementById('sshFrequentGrid');
     if(!section||!grid)return;
-    const usage=terminalUsage();
+    const usage=usageOverride||terminalUsage();
     const ranked=cards.map(card=>{
       const target=String(card.dataset.terminalTarget||'').trim();
       const item=usage&&usage[target]||{};
@@ -20,7 +31,14 @@
       .sort((a,b)=>(b.count-a.count)||(Date.parse(b.last)||0)-(Date.parse(a.last)||0)||a.target.localeCompare(b.target))
       .slice(0,4);
     grid.replaceChildren();
-    if(!ranked.length){section.classList.add('d-none');return}
+    if(!ranked.length){
+      const empty=document.createElement('div');
+      empty.className='ssh-frequent-empty';
+      empty.innerHTML='<i class="bi bi-clock-history" aria-hidden="true"></i><div><strong>Aún no hay conexiones frecuentes</strong><span>Conéctate a tus servidores y Pangolite irá sugiriendo aquí los que más utilizas.</span></div>';
+      grid.appendChild(empty);
+      section.classList.remove('d-none');
+      return
+    }
     ranked.forEach(item=>{
       const clone=item.card.cloneNode(true);
       clone.removeAttribute('data-ssh-card');
@@ -64,6 +82,7 @@
     const pagination=document.getElementById('sshConnectionPagination');
     const params=new URLSearchParams(location.search);
     renderFrequentConnections(cards);
+    refreshTerminalUsage(cards);
     let currentPage=Math.max(1,Number.parseInt(params.get('page')||'1',10)||1);
     let searchTimer=null;
 

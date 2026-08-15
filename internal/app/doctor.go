@@ -23,7 +23,7 @@ func RunDoctor(ctx context.Context, c Config, w io.Writer) error {
 		checks = append(checks, DoctorCheck{Name: name, Status: status, Message: message})
 	}
 
-	add("ok", "version", Version)
+	add("ok", "version", VersionSummary("pangolite"))
 	manager := DetectServiceManager()
 	if manager.Available() {
 		add("ok", "gestor servicios", manager.String())

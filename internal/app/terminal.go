@@ -570,7 +570,7 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 	}
 	uploads := newTerminalUploadManager(term, notify)
 	defer uploads.Close()
-	reportWorkingDir := func() {
+	reportWorkingDir := func(sendUpdate bool) {
 		dir, err := term.CurrentDir()
 		if err != nil || strings.TrimSpace(dir) == "" {
 			return
@@ -579,8 +579,12 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 		if onWorkingDir != nil {
 			onWorkingDir(dir)
 		}
-		_ = notify(terminalControlMessage{Type: "cwd.update", Path: dir})
+		if sendUpdate {
+			_ = notify(terminalControlMessage{Type: "cwd.update", Path: dir})
+		}
 	}
+	// Publica y persiste el cwd inicial sin depender de que el navegador alcance a pedirlo.
+	reportWorkingDir(true)
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
@@ -602,7 +606,7 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 		writeInput := func(data []byte) error {
 			payloads, err := inputFilter.Payloads(data, controlMode&terminalControlFramed != 0, func(msg terminalControlMessage) bool {
 				if msg.Type == "cwd.request" {
-					reportWorkingDir()
+					reportWorkingDir(true)
 					return true
 				}
 				if msg.Type == "download.request" {
@@ -636,7 +640,7 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 			if typ == websocket.MessageText && controlMode&terminalControlJSON != 0 {
 				if msg, ok := decodeTerminalControlJSON(data); ok {
 					if msg.Type == "cwd.request" {
-						reportWorkingDir()
+						reportWorkingDir(true)
 					} else if msg.Type == "download.request" {
 						_ = notify(prepareTerminalDownloadOffer(term, msg))
 					} else {
@@ -654,6 +658,8 @@ func bridgeWebSocketTerminalProcess(ctx context.Context, ws *websocket.Conn, ter
 		}
 	}()
 	err := <-errCh
+	// Si el socket cae entre dos sondeos, intenta conservar el ultimo cwd real antes de cerrar la PTY.
+	reportWorkingDir(false)
 	cancel()
 	_ = ws.Close(websocket.StatusNormalClosure, "")
 	_ = term.Close()

@@ -46,6 +46,8 @@ type uiPageData struct {
 	TraefikConfig       string
 	SuspensionTemplates []SuspensionTemplate
 	TerminalUsage       map[string]TerminalUsage
+	Version             string
+	VersionCode         string
 	BootstrapJSON       template.JS
 }
 
@@ -88,6 +90,8 @@ func (s *Server) panelData(r *http.Request, rs requestSession, page panelPage) u
 		BackupDir:      s.config.BackupDir,
 		LogPath:        s.config.LogPath,
 		MaxLogEntries:  defaultMaxLogLines,
+		Version:        NormalizedVersion(),
+		VersionCode:    NormalizedVersionCode(),
 	}
 	if templates, err := ListSuspensionTemplates(s.config.SuspensionTemplateDir); err == nil {
 		data.SuspensionTemplates = templates
@@ -150,6 +154,8 @@ func (s *Server) panelData(r *http.Request, rs requestSession, page panelPage) u
 		"serverArch":          data.ServerArch,
 		"serverHostname":      data.ServerHostname,
 		"terminalUsage":       data.TerminalUsage,
+		"version":             data.Version,
+		"versionCode":         data.VersionCode,
 		"path":                data.Path,
 		"pageKey":             data.PageKey,
 	}))
@@ -202,6 +208,12 @@ func mustJSON(v any) string {
 }
 
 func renderUIPage(w http.ResponseWriter, page string, data uiPageData) {
+	if strings.TrimSpace(data.Version) == "" {
+		data.Version = NormalizedVersion()
+	}
+	if strings.TrimSpace(data.VersionCode) == "" {
+		data.VersionCode = NormalizedVersionCode()
+	}
 	funcs := template.FuncMap{
 		"projectStats":         projectStats,
 		"totalStat":            totalStat,

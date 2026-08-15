@@ -163,6 +163,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/resources/{id}", s.requireAuth(s.deleteResource))
 	s.mux.HandleFunc("GET /api/agents", s.requireAuth(s.listAgents))
 	s.mux.HandleFunc("GET /api/agents/{id}", s.requireAuth(s.getAgentDetail))
+	s.mux.HandleFunc("GET /api/terminal/state", s.requireAuth(s.terminalState))
 	s.mux.HandleFunc("GET /api/terminal/local", s.localTerminalSocket)
 	s.mux.HandleFunc("GET /api/terminal/agents/{id}", s.agentTerminalSocket)
 	s.mux.HandleFunc("POST /api/terminal/downloads", s.requireAuth(s.createTerminalDownloadTicket))
@@ -184,7 +185,7 @@ func (s *Server) routes() {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": NormalizedVersion(), "versionCode": NormalizedVersionCode()})
 }
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,18 @@ Repositorio previsto:
 github.com/ThowiLabs/Pangolite
 ```
 
+## Versionado
+
+Pangolite usa una versión visible y un código de versión monotónico compartidos por el servidor y `pangolite-client`. La versión de desarrollo actual es `0.27` con código `27`.
+
+```bash
+pangolite --version
+pangolite version
+pangolite-client --version
+```
+
+Los releases inyectan ambos valores durante compilación y el panel los muestra en el pie de página.
+
 ## Estado del proyecto
 
 La base actual incluye:

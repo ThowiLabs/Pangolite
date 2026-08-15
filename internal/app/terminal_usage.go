@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -129,4 +130,13 @@ func terminalUsageMap(usages []TerminalUsage) map[string]TerminalUsage {
 		}
 	}
 	return out
+}
+
+func (s *Server) terminalState(w http.ResponseWriter, r *http.Request, rs requestSession) {
+	usage := terminalUsageMap(s.store.ListTerminalUsage(rs.User.ID))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"usage":       usage,
+		"version":     NormalizedVersion(),
+		"versionCode": NormalizedVersionCode(),
+	})
 }
