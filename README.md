@@ -10,7 +10,7 @@ github.com/ThowiLabs/Pangolite
 
 ## Versionado
 
-Pangolite usa una versión visible y un código de versión monotónico compartidos por el servidor y `pangolite-client`. La versión de desarrollo actual es `0.28` con código `28`.
+Pangolite usa una versión visible y un código de versión monotónico compartidos por el servidor y `pangolite-client`. La versión de desarrollo actual es `0.29` con código `29`.
 
 ```bash
 pangolite --version

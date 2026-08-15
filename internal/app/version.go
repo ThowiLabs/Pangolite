@@ -4,8 +4,8 @@ import "strings"
 
 // Version y VersionCode identifican el mismo build para servidor y pangolite-client.
 // Los releases pueden sobrescribir ambos valores con -ldflags -X.
-var Version = "0.28"
-var VersionCode = "28"
+var Version = "0.29"
+var VersionCode = "29"
 
 func NormalizedVersion() string {
 	v := strings.TrimSpace(Version)

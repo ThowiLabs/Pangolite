@@ -1,5 +1,5 @@
-VERSION ?= 0.28
-VERSION_CODE ?= 28
+VERSION ?= 0.29
+VERSION_CODE ?= 29
 LDFLAGS := -s -w -X github.com/thowilabs/pangolite/internal/app.Version=$(VERSION) -X github.com/thowilabs/pangolite/internal/app.VersionCode=$(VERSION_CODE)
 
 .PHONY: tidy test verify build release-build run

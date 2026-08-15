@@ -42,11 +42,20 @@ fi
 expected_code=$((10#${BASH_REMATCH[1]} * 100000 + 10#${BASH_REMATCH[2]}))
 [[ "$make_version_code" == "$expected_code" ]] || fail "VERSION_CODE esperado para $make_version es $expected_code, no $make_version_code"
 
-log "Comprobando que go.mod/go.sum esten normalizados"
+log "Normalizando y verificando modulos Go"
+module_tmp="$(mktemp)"
+trap 'rm -f "$module_tmp"' EXIT
+cp go.mod "$module_tmp"
 go mod tidy
-if ! git diff --exit-code -- go.mod go.sum; then
-  fail "go mod tidy modifica go.mod o go.sum; confirma esos cambios antes de publicar"
+if ! cmp -s "$module_tmp" go.mod; then
+  diff -u "$module_tmp" go.mod >&2 || true
+  fail "go mod tidy modifica go.mod; confirma esos cambios antes de publicar"
 fi
+[[ -s go.sum ]] || fail "go.sum no existe o esta vacio despues de go mod tidy"
+if ! git ls-files --error-unmatch go.sum >/dev/null 2>&1; then
+  fail "go.sum debe estar versionado en Git"
+fi
+go mod verify
 
 log "Ejecutando go vet"
 go vet ./...
