@@ -28,6 +28,13 @@ type AuditEvent struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+type TerminalUsage struct {
+	EntityType string
+	EntityID   string
+	Count      int
+	LastUsed   time.Time
+}
+
 type BackupInfo struct {
 	Name      string    `json:"name"`
 	SizeBytes int64     `json:"sizeBytes"`
@@ -85,6 +92,41 @@ func (s *Store) ListAuditEvents(limit int, projectID string) ([]AuditEvent, erro
 		}
 		ev.CreatedAt = parseTime(created)
 		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListFrequentTerminalTargets(username string, limit int) ([]TerminalUsage, error) {
+	if s == nil || s.db == nil {
+		return nil, sql.ErrConnDone
+	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return []TerminalUsage{}, nil
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 5
+	}
+	rows, err := s.db.Query(`
+		SELECT entity_type, entity_id, COUNT(*) AS use_count, MAX(created_at) AS last_used
+		FROM audit_events
+		WHERE action = 'terminal.open' AND username = ?
+		GROUP BY entity_type, entity_id
+		ORDER BY use_count DESC, last_used DESC
+		LIMIT ?`, username, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]TerminalUsage, 0, limit)
+	for rows.Next() {
+		var item TerminalUsage
+		var lastUsed string
+		if err := rows.Scan(&item.EntityType, &item.EntityID, &item.Count, &lastUsed); err != nil {
+			return nil, err
+		}
+		item.LastUsed = parseTime(lastUsed)
+		out = append(out, item)
 	}
 	return out, rows.Err()
 }

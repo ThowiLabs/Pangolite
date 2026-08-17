@@ -11,6 +11,18 @@ import (
 	"time"
 )
 
+type sshFrequentConnection struct {
+	Kind        string
+	AgentID     string
+	ProjectID   string
+	Name        string
+	ProjectName string
+	Host        string
+	Uses        int
+	LastUsed    time.Time
+	Ready       bool
+}
+
 type uiPageData struct {
 	Title               string
 	Heading             string
@@ -30,6 +42,7 @@ type uiPageData struct {
 	HasProject          bool
 	Resources           []Resource
 	Agents              []AgentPublic
+	FrequentSSH         []sshFrequentConnection
 	Domains             []ManagedDomain
 	Settings            AppSettings
 	Network             NetworkInfo
@@ -120,6 +133,11 @@ func (s *Server) panelData(r *http.Request, rs requestSession, page panelPage) u
 	}
 	if (page.Key == "terminal" && currentID == "") || page.Key == "ssh_connections" {
 		data.Agents = s.store.ListAgents()
+	}
+	if page.Key == "ssh_connections" {
+		if usage, err := s.store.ListFrequentTerminalTargets(rs.User.Username, 5); err == nil {
+			data.FrequentSSH = frequentSSHConnections(usage, data.Agents, data.Projects, data.ServerOS, data.ServerHostname)
+		}
 	}
 	data.BootstrapJSON = template.JS(mustJSON(map[string]any{
 		"csrfToken":           data.CSRFToken,
@@ -397,6 +415,42 @@ func projectSlug(projects []Project) func(string) string {
 	return func(id string) string {
 		return strings.TrimSpace(byID[id])
 	}
+}
+
+func frequentSSHConnections(usage []TerminalUsage, agents []AgentPublic, projects []Project, serverOS, serverHostname string) []sshFrequentConnection {
+	agentByID := make(map[string]AgentPublic, len(agents))
+	for _, agent := range agents {
+		agentByID[agent.ID] = agent
+	}
+	projectByID := make(map[string]string, len(projects))
+	for _, project := range projects {
+		projectByID[project.ID] = project.Name
+	}
+	out := make([]sshFrequentConnection, 0, len(usage))
+	for _, item := range usage {
+		switch {
+		case item.EntityType == "terminal" && item.EntityID == "local":
+			name := strings.TrimSpace(serverHostname)
+			if name == "" {
+				name = "Servidor Pangolite"
+			}
+			out = append(out, sshFrequentConnection{Kind: "local", Name: name, ProjectName: "Pangolite", Host: "Servidor local", Uses: item.Count, LastUsed: item.LastUsed, Ready: !strings.EqualFold(strings.TrimSpace(serverOS), "windows")})
+		case item.EntityType == "agent":
+			agent, ok := agentByID[item.EntityID]
+			if !ok {
+				continue
+			}
+			host := strings.TrimSpace(agent.Hostname)
+			if host == "" {
+				host = strings.TrimSpace(agent.PrivateIP)
+			}
+			if host == "" {
+				host = "Host no reportado"
+			}
+			out = append(out, sshFrequentConnection{Kind: "agent", AgentID: agent.ID, ProjectID: agent.ProjectID, Name: agent.Name, ProjectName: projectByID[agent.ProjectID], Host: host, Uses: item.Count, LastUsed: item.LastUsed, Ready: agentTerminalReady(agent)})
+		}
+	}
+	return out
 }
 
 func connectionTotal(agents []AgentPublic) int {

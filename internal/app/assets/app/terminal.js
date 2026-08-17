@@ -18,6 +18,7 @@
   const terminalUploadStates=new Map();
   const terminalDownloadStates=new Map();
   let terminalCommandBuffer='';
+  let terminalCommandCursor=0;
   let terminalCommandTracking=true;
   const themes={
     black:{background:'#05070a',foreground:'#f8fafc',cursor:'#f8fafc',selectionBackground:'#475569'},
@@ -226,12 +227,11 @@
       clearMobileModifiers();
       return;
     }
-    invalidateTerminalCommandTracking();
     if(Object.prototype.hasOwnProperty.call(button.dataset,'terminalMobileText')){
-      sendBytes(applyMobileModifiersToInput(button.dataset.terminalMobileText||''));
+      handleTerminalInputData(applyMobileModifiersToInput(button.dataset.terminalMobileText||''));
     }else{
       const sequence=mobileKeySequence(key);
-      if(sequence)sendBytes(sequence);
+      if(sequence)handleTerminalInputData(sequence);
     }
     if(term)term.focus();
   }
@@ -414,6 +414,37 @@
   function terminalUsesAlternateBuffer(){
     try{return !!(term&&term.buffer&&term.buffer.active&&term.buffer.active.type==='alternate')}catch{return false}
   }
+  function terminalRenderedCommandLine(){
+    if(!term||terminalUsesAlternateBuffer())return '';
+    try{
+      const buffer=term.buffer.active;
+      let y=(Number(buffer.baseY)||0)+(Number(buffer.cursorY)||0);
+      let line=buffer.getLine(y);
+      if(!line)return '';
+      let text=line.translateToString(true,0,Math.max(0,Number(buffer.cursorX)||0));
+      while(line&&line.isWrapped&&y>0){
+        y--;
+        line=buffer.getLine(y);
+        if(line)text=line.translateToString(true)+text;
+      }
+      return text;
+    }catch{return ''}
+  }
+  function parseTerminalDownloadRenderedLine(line){
+    line=String(line||'');
+    if(!line)return {matched:false};
+    const match=/(?:^|.*(?:[$#>%❯]\s+))(download(?:\s+.*)?)\s*$/.exec(line);
+    if(!match)return {matched:false};
+    return parseTerminalDownloadCommand(match[1]);
+  }
+  function parseRenderedTerminalDownloadCommand(){return parseTerminalDownloadRenderedLine(terminalRenderedCommandLine())}
+  function consumeTerminalDownloadCommand(parsed){
+    if(!parsed||!parsed.matched)return false;
+    sendBytes('\x15');
+    resetTerminalCommandTracking();
+    if(parsed.error)showTerminalUploadAlert(parsed.error,true);else requestTerminalDownload(parsed.path);
+    return true;
+  }
   function parseTerminalDownloadCommand(line){
     const match=/^\s*download(?:\s+(.*))?\s*$/.exec(String(line||''));
     if(!match)return {matched:false};
@@ -424,8 +455,44 @@
     if(!path)return {matched:true,error:'Indica el archivo o directorio a descargar'};
     return {matched:true,path:path};
   }
-  function resetTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandTracking=true}
-  function invalidateTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandTracking=false}
+  function resetTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandCursor=0;terminalCommandTracking=true}
+  function invalidateTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandCursor=0;terminalCommandTracking=false}
+  function insertTerminalCommandText(text){
+    if(!terminalCommandTracking||!text)return;
+    const value=String(text);
+    terminalCommandBuffer=terminalCommandBuffer.slice(0,terminalCommandCursor)+value+terminalCommandBuffer.slice(terminalCommandCursor);
+    terminalCommandCursor+=value.length;
+    if(terminalCommandBuffer.length>4096)invalidateTerminalCommandTracking();
+  }
+  function terminalCommandBackspace(){
+    if(!terminalCommandTracking||terminalCommandCursor<=0)return;
+    terminalCommandBuffer=terminalCommandBuffer.slice(0,terminalCommandCursor-1)+terminalCommandBuffer.slice(terminalCommandCursor);
+    terminalCommandCursor--;
+  }
+  function terminalCommandDelete(){
+    if(!terminalCommandTracking||terminalCommandCursor>=terminalCommandBuffer.length)return;
+    terminalCommandBuffer=terminalCommandBuffer.slice(0,terminalCommandCursor)+terminalCommandBuffer.slice(terminalCommandCursor+1);
+  }
+  function terminalCommandDeleteWord(){
+    if(!terminalCommandTracking||terminalCommandCursor<=0)return;
+    let start=terminalCommandCursor;
+    while(start>0&&/\s/.test(terminalCommandBuffer[start-1]))start--;
+    while(start>0&&!/\s/.test(terminalCommandBuffer[start-1]))start--;
+    terminalCommandBuffer=terminalCommandBuffer.slice(0,start)+terminalCommandBuffer.slice(terminalCommandCursor);
+    terminalCommandCursor=start;
+  }
+  function trackTerminalEscapeSequence(sequence){
+    if(!terminalCommandTracking)return;
+    if(sequence==='\x1b[D'||sequence==='\x1bOD'){terminalCommandCursor=Math.max(0,terminalCommandCursor-1);return}
+    if(sequence==='\x1b[C'||sequence==='\x1bOC'){terminalCommandCursor=Math.min(terminalCommandBuffer.length,terminalCommandCursor+1);return}
+    if(sequence==='\x1b[H'||sequence==='\x1bOH'||sequence==='\x1b[1~'||sequence==='\x1b[7~'){terminalCommandCursor=0;return}
+    if(sequence==='\x1b[F'||sequence==='\x1bOF'||sequence==='\x1b[4~'||sequence==='\x1b[8~'){terminalCommandCursor=terminalCommandBuffer.length;return}
+    if(sequence==='\x1b[3~'){terminalCommandDelete();return}
+    // Secuencias de navegación con modificadores: conserva el seguimiento si su efecto es conocido.
+    if(/^\x1b\[1;\d+D$/.test(sequence)){terminalCommandCursor=Math.max(0,terminalCommandCursor-1);return}
+    if(/^\x1b\[1;\d+C$/.test(sequence)){terminalCommandCursor=Math.min(terminalCommandBuffer.length,terminalCommandCursor+1);return}
+    invalidateTerminalCommandTracking();
+  }
   function requestTerminalDownload(path){
     if(!isConnected()){showTerminalUploadAlert('Conecta la terminal antes de descargar',true);return}
     const id=terminalDownloadID();
@@ -476,30 +543,52 @@
     if(!data)return;
     let output='';
     const downloads=[];
-    for(const ch of data){
+    for(let index=0;index<data.length;){
+      if(data.startsWith('\x1b[200~',index)){output+='\x1b[200~';index+=6;continue}
+      if(data.startsWith('\x1b[201~',index)){output+='\x1b[201~';index+=6;continue}
+      const ch=data[index];
       if(ch==='\r'||ch==='\n'){
-        const parsed=terminalCommandTracking&&!terminalUsesAlternateBuffer()?parseTerminalDownloadCommand(terminalCommandBuffer):{matched:false};
+        let parsed={matched:false};
+        if(!terminalUsesAlternateBuffer())parsed=terminalCommandTracking?parseTerminalDownloadCommand(terminalCommandBuffer):parseRenderedTerminalDownloadCommand();
         if(parsed.matched){
+          // La línea ya fue ecoada/enviada al shell carácter por carácter. Ctrl+U la vacía sin ejecutar "download".
           output+='\x15';
           if(parsed.error)showTerminalUploadAlert(parsed.error,true);else downloads.push(parsed.path);
         }else{
           output+=ch;
         }
         resetTerminalCommandTracking();
+        index++;
+        continue;
+      }
+      if(ch==='\x1b'){
+        let end=index+1;
+        if(data[end]==='['){
+          end++;
+          while(end<data.length&&!/[A-Za-z~]/.test(data[end]))end++;
+          if(end<data.length)end++;
+        }else if(data[end]==='O'&&end+1<data.length){
+          end+=2;
+        }
+        const sequence=data.slice(index,end);
+        output+=sequence;
+        trackTerminalEscapeSequence(sequence);
+        index=end;
         continue;
       }
       output+=ch;
-      if(!terminalCommandTracking)continue;
-      if(ch==='\x7f'||ch==='\b'){
-        terminalCommandBuffer=terminalCommandBuffer.slice(0,-1);
-      }else if(ch==='\x15'||ch==='\x03'){
-        terminalCommandBuffer='';
-      }else if(ch==='\x1b'||(ch<' '&&ch!=='\t')){
-        invalidateTerminalCommandTracking();
-      }else{
-        terminalCommandBuffer+=ch;
-        if(terminalCommandBuffer.length>4096)invalidateTerminalCommandTracking();
+      if(terminalCommandTracking){
+        if(ch==='\x7f'||ch==='\b')terminalCommandBackspace();
+        else if(ch==='\x01')terminalCommandCursor=0;
+        else if(ch==='\x05')terminalCommandCursor=terminalCommandBuffer.length;
+        else if(ch==='\x15'){terminalCommandBuffer=terminalCommandBuffer.slice(terminalCommandCursor);terminalCommandCursor=0}
+        else if(ch==='\x0b')terminalCommandBuffer=terminalCommandBuffer.slice(0,terminalCommandCursor);
+        else if(ch==='\x17')terminalCommandDeleteWord();
+        else if(ch==='\x03')resetTerminalCommandTracking();
+        else if(ch<' '&&ch!=='\t')invalidateTerminalCommandTracking();
+        else insertTerminalCommandText(ch);
       }
+      index++;
     }
     if(output)sendBytes(output);
     downloads.forEach(path=>requestTerminalDownload(path));
@@ -844,6 +933,26 @@
   }
   function handleTerminalKey(event){
     const key=(event.key||'').toLowerCase();
+    if(event.key==='Enter'&&isConnected()&&!terminalUsesAlternateBuffer()){
+      const tracked=terminalCommandTracking?parseTerminalDownloadCommand(terminalCommandBuffer):{matched:false};
+      if(tracked.matched){
+        event.preventDefault();
+        consumeTerminalDownloadCommand(tracked);
+        return false;
+      }
+      if(!terminalCommandTracking){
+        // History/cursores son editados por el shell. Da un instante al eco remoto y lee la línea visible antes de enviar Enter.
+        event.preventDefault();
+        setTimeout(()=>{
+          const rendered=parseRenderedTerminalDownloadCommand();
+          if(!consumeTerminalDownloadCommand(rendered)){
+            sendBytes('\r');
+            resetTerminalCommandTracking();
+          }
+        },35);
+        return false;
+      }
+    }
     if(event.key==='Escape'&&isTerminalFullscreen()&&isConnected()){
       event.preventDefault();
       event.stopPropagation();

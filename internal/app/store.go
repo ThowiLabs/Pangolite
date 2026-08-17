@@ -279,6 +279,7 @@ func (s *Store) migrateBaseSchema(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_events_project_id ON audit_events(project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_events_terminal_usage ON audit_events(action, username, entity_type, entity_id, created_at)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {

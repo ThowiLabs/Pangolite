@@ -87,7 +87,7 @@ func TestRenderSSHConnectionsPage(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	renderUIPage(recorder, "ssh_connections.html", data)
 	body := recorder.Body.String()
-	for _, expected := range []string{"Conexiones SSH", "Servidor Pangolite", "Cliente Demo", "Proyecto Demo", "/assets/app/ssh-connections.js"} {
+	for _, expected := range []string{"Conexiones SSH", "Conexiones frecuentes", "Servidor Pangolite", "Cliente Demo", "Proyecto Demo", "/assets/app/ssh-connections.js"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("render no contiene %q", expected)
 		}
@@ -359,5 +359,38 @@ func TestCompactIconActionLanguageIsEmbedded(t *testing.T) {
 	}
 	if !strings.Contains(string(logsPage), `aria-label="Descargar logs"`) {
 		t.Fatal("logs.html no contiene la barra compacta de acciones")
+	}
+}
+
+func TestFrequentSSHConnectionsResolveExistingTargets(t *testing.T) {
+	project := Project{ID: "project1", Name: "Proyecto Demo"}
+	agent := AgentPublic{ProjectID: project.ID, ID: "agent1", Name: "Servidor Demo", Enabled: true, Online: true, OS: "linux", Hostname: "demo-host"}
+	usage := []TerminalUsage{
+		{EntityType: "agent", EntityID: "agent1", Count: 7, LastUsed: time.Now().UTC()},
+		{EntityType: "terminal", EntityID: "local", Count: 3, LastUsed: time.Now().UTC().Add(-time.Minute)},
+		{EntityType: "agent", EntityID: "eliminado", Count: 99, LastUsed: time.Now().UTC()},
+	}
+	got := frequentSSHConnections(usage, []AgentPublic{agent}, []Project{project}, "linux", "pangolite-host")
+	if len(got) != 2 {
+		t.Fatalf("frecuentes resueltos = %d, want 2", len(got))
+	}
+	if got[0].AgentID != "agent1" || got[0].Uses != 7 || !got[0].Ready || got[0].ProjectName != project.Name {
+		t.Fatalf("agente frecuente inesperado: %#v", got[0])
+	}
+	if got[1].Kind != "local" || got[1].Uses != 3 || !got[1].Ready {
+		t.Fatalf("local frecuente inesperado: %#v", got[1])
+	}
+}
+
+func TestTerminalDownloadTrackingSupportsBracketedPaste(t *testing.T) {
+	script, err := assetsFS.ReadFile("assets/app/terminal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(script)
+	for _, expected := range []string{"\\x1b[200~", "\\x1b[201~", "terminalCommandCursor", "trackTerminalEscapeSequence", "parseTerminalDownloadCommand(terminalCommandBuffer)"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("terminal.js no contiene protección de download esperada: %q", expected)
+		}
 	}
 }

@@ -1796,3 +1796,19 @@ body.modal-open{
   .ssh-card-actions{flex-direction:row!important;align-items:center!important}
   .project-card-actions{justify-content:flex-end}
 }
+
+/* Conexiones SSH frecuentes: compacto, persistente y basado en auditoría real. */
+.ssh-frequent-card{margin-bottom:16px}
+.ssh-frequent-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.ssh-frequent-item{display:grid;grid-template-columns:40px minmax(0,1fr) 38px;align-items:center;gap:11px;padding:11px;border:1px solid rgba(255,255,255,.09);border-radius:14px;background:rgba(255,255,255,.025)}
+.ssh-frequent-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:12px;background:rgba(139,92,246,.14);color:#d8b4fe;font-size:17px}
+.ssh-frequent-icon.local{background:rgba(34,211,238,.12);color:#67e8f9}
+.ssh-frequent-copy{min-width:0;display:grid;gap:2px}
+.ssh-frequent-copy strong,.ssh-frequent-copy span,.ssh-frequent-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ssh-frequent-copy strong{color:#fff;font-size:13px}
+.ssh-frequent-copy span{color:var(--pg-muted);font-size:11px}
+.ssh-frequent-copy small{color:rgba(255,255,255,.48);font-size:10px}
+.ssh-frequent-empty{display:flex;align-items:center;gap:12px;min-height:64px;color:var(--pg-muted)}
+.ssh-frequent-empty>i{width:42px;height:42px;display:grid;place-items:center;flex:0 0 auto;border:1px solid var(--pg-border);border-radius:13px;background:rgba(255,255,255,.04);color:#d8b4fe}
+.ssh-frequent-empty>div{display:grid;gap:2px}.ssh-frequent-empty strong{color:#fff;font-size:13px}.ssh-frequent-empty span{font-size:11px}
+@media(max-width:560px){.ssh-frequent-grid{grid-template-columns:1fr}}

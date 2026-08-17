@@ -616,3 +616,41 @@ func TestUpdateUsernameRequiresPasswordAndNormalizes(t *testing.T) {
 		t.Fatal("el usuario anterior no debe seguir autenticando")
 	}
 }
+
+func TestListFrequentTerminalTargetsUsesAuditHistoryPerUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 3; i++ {
+		if err := store.RecordAudit(t.Context(), AuditEvent{Action: "terminal.open", EntityType: "agent", EntityID: "agent-a", Username: "admin", CreatedAt: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RecordAudit(t.Context(), AuditEvent{Action: "terminal.open", EntityType: "terminal", EntityID: "local", Username: "admin", CreatedAt: base.Add(10 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := store.RecordAudit(t.Context(), AuditEvent{Action: "terminal.open", EntityType: "agent", EntityID: "agent-otro", Username: "otro", CreatedAt: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	usage, err := store.ListFrequentTerminalTargets("admin", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 2 {
+		t.Fatalf("frecuentes = %d, want 2", len(usage))
+	}
+	if usage[0].EntityID != "agent-a" || usage[0].Count != 3 {
+		t.Fatalf("primer frecuente inesperado: %#v", usage[0])
+	}
+	if usage[1].EntityID != "local" || usage[1].Count != 1 {
+		t.Fatalf("segundo frecuente inesperado: %#v", usage[1])
+	}
+}

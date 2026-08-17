@@ -30,6 +30,46 @@
     </div>
   </div>
 
+  <div class="card ssh-frequent-card soft-enter soft-enter-delay-2">
+    <div class="card-header d-flex align-items-center justify-content-between gap-3">
+      <div>
+        <div class="card-title">Conexiones frecuentes</div>
+        <div class="text-muted small">Se calculan con aperturas reales de terminal registradas para tu usuario.</div>
+      </div>
+      <i class="bi bi-clock-history text-muted" aria-hidden="true"></i>
+    </div>
+    <div class="card-body">
+      {{if .FrequentSSH}}
+      <div class="ssh-frequent-grid">
+        {{range .FrequentSSH}}
+        <div class="ssh-frequent-item">
+          <div class="ssh-frequent-icon {{if eq .Kind "local"}}local{{end}}"><i class="bi {{if eq .Kind "local"}}bi-server{{else}}bi-hdd-network{{end}}"></i></div>
+          <div class="ssh-frequent-copy">
+            <strong>{{.Name}}</strong>
+            <span>{{if .ProjectName}}{{.ProjectName}} · {{end}}{{.Host}}</span>
+            <small>{{.Uses}} aperturas · Última {{fmtTime .LastUsed}}</small>
+          </div>
+          {{if .Ready}}
+            {{if eq .Kind "local"}}
+            <a class="btn btn-sm btn-primary pl-icon-action" href="/terminal?target=local&autoconnect=1" aria-label="Conectar a {{.Name}}" title="Conectar"><i class="bi bi-terminal"></i></a>
+            {{else}}
+            <a class="btn btn-sm btn-primary pl-icon-action" href="/terminal?agentId={{.AgentID}}&projectId={{.ProjectID}}&autoconnect=1" aria-label="Conectar a {{.Name}}" title="Conectar"><i class="bi bi-terminal"></i></a>
+            {{end}}
+          {{else}}
+          <button class="btn btn-sm btn-outline-secondary pl-icon-action" type="button" disabled aria-label="{{.Name}} no disponible" title="No disponible"><i class="bi bi-terminal-x"></i></button>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+      {{else}}
+      <div class="ssh-frequent-empty">
+        <i class="bi bi-stars" aria-hidden="true"></i>
+        <div><strong>Aún no hay conexiones frecuentes</strong><span>Conéctate a tus servidores y Pangolite irá sugiriendo aquí los que más utilizas.</span></div>
+      </div>
+      {{end}}
+    </div>
+  </div>
+
   <div class="card ssh-directory-card soft-enter soft-enter-delay-2">
     <div class="card-header ssh-directory-header">
       <div>
