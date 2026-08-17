@@ -229,10 +229,26 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request, rs request
 		return
 	}
 	s.recordAudit(r, rs, "backup.create", "backup", backup.Name, "", map[string]any{"sizeBytes": backup.SizeBytes})
-	if s.log != nil {
-		s.log.Info("respaldo SQLite creado", "name", backup.Name, "user", rs.User.Username, "size", backup.SizeBytes)
+	remoteUploaded := false
+	remoteWarning := ""
+	if cfg := s.store.LoadBackupRemoteConfig(); cfg.Enabled && cfg.AutoUpload {
+		path, pathErr := BackupPath(s.config.BackupDir, backup.Name)
+		if pathErr == nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+			err := uploadBackupRemote(ctx, nil, cfg, path, backup.Name)
+			cancel()
+			if err != nil {
+				remoteWarning = err.Error()
+			} else {
+				remoteUploaded = true
+				s.recordAudit(r, rs, "backup.remote.upload", "backup", backup.Name, "", map[string]any{"provider": cfg.Provider, "automatic": true})
+			}
+		}
 	}
-	writeJSON(w, http.StatusCreated, backup)
+	if s.log != nil {
+		s.log.Info("respaldo SQLite creado", "name", backup.Name, "user", rs.User.Username, "size", backup.SizeBytes, "remote_uploaded", remoteUploaded)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"name": backup.Name, "sizeBytes": backup.SizeBytes, "createdAt": backup.CreatedAt, "remoteUploaded": remoteUploaded, "remoteWarning": remoteWarning})
 }
 
 func (s *Server) downloadBackup(w http.ResponseWriter, r *http.Request, _ requestSession) {
@@ -385,9 +401,26 @@ func (s *Server) startAutomaticBackups(ctx context.Context) {
 					if s.log != nil {
 						s.log.Warn("respaldo automatico fallo", "error", err.Error())
 					}
-				} else if s.log != nil {
+				} else {
 					removed, _ := DeleteOldBackups(s.config.BackupDir, s.config.BackupRetentionDays)
-					s.log.Info("respaldo automatico creado", "name", backup.Name, "size", backup.SizeBytes, "removed_old", removed)
+					remoteUploaded := false
+					if cfg := s.store.LoadBackupRemoteConfig(); cfg.Enabled && cfg.AutoUpload {
+						if backupPath, pathErr := BackupPath(s.config.BackupDir, backup.Name); pathErr == nil {
+							remoteCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+							err := uploadBackupRemote(remoteCtx, nil, cfg, backupPath, backup.Name)
+							cancel()
+							if err != nil {
+								if s.log != nil {
+									s.log.Warn("respaldo remoto automatico fallo", "name", backup.Name, "provider", cfg.Provider, "error", err.Error())
+								}
+							} else {
+								remoteUploaded = true
+							}
+						}
+					}
+					if s.log != nil {
+						s.log.Info("respaldo automatico creado", "name", backup.Name, "size", backup.SizeBytes, "removed_old", removed, "remote_uploaded", remoteUploaded)
+					}
 				}
 				timer.Reset(interval)
 			}

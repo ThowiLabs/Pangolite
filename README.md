@@ -285,7 +285,9 @@ Esto permite pausar un dominio del proyecto sin perder su configuracion.
 La sección **Seguridad** del panel centraliza dos tareas operativas:
 
 - **Auditoría:** registra cambios administrativos como crear/editar/eliminar proyectos, recursos, dominios, clientes NAT, rotar tokens, aplicar Traefik y crear respaldos. No guarda contraseñas ni tokens.
-- **Respaldos SQLite:** crea copias consistentes de la base con `VACUUM INTO` en `PANGOLITE_BACKUP_DIR` o, por defecto, `/opt/pangolite/data/backups`. El panel pide un prefijo opcional con el modal interno de confirmación; cancelar o presionar `Esc` no crea ningún respaldo.
+- **Respaldos SQLite:** crea copias consistentes de la base con `VACUUM INTO` en `PANGOLITE_BACKUP_DIR` o, por defecto, `/opt/pangolite/data/backups`. Cada copia puede verificarse desde la UI sobre una base temporal antes de restaurarla.
+- **Copia remota opcional:** replica respaldos manual o automáticamente hacia WebDAV o cualquier endpoint S3-compatible mediante streaming. La configuración admite endpoints personalizados, prefijos, credenciales conservadas en servidor y prueba de conectividad. Hugging Face Storage Buckets se configura como un endpoint S3-compatible.
+- **Acciones masivas por proyecto:** Recursos permite activar, suspender y ejecutar health checks sobre una selección; Clientes permite mantenimiento, reactivación y reconexión en lote. La pertenencia al proyecto se valida en servidor y Traefik se aplica una sola vez por operación cuando corresponde.
 
 Para restaurar un respaldo, detén Pangolite, copia el archivo `.db` elegido sobre la base activa y vuelve a iniciar el servicio:
 

@@ -12,18 +12,28 @@
         <tr><td class="empty" colspan="4">Sin respaldos todavía.</td></tr>
       {{end}}
       </tbody></table>
-    </div><div class="alert alert-warning mt-3 mb-0"><strong>Restauración segura:</strong> detén Pangolite, copia el respaldo elegido sobre la base activa y reinicia el servicio. Ejemplo: <code>sudo systemctl stop pangolite && sudo cp /opt/pangolite/data/backups/ARCHIVO.db /opt/pangolite/data/pangolite.db && sudo systemctl start pangolite</code>.</div></div></div>
-    <div class="card"><div class="card-header"><div class="toolbar mb-0"><div><div class="card-title">Auditoría</div><div class="text-muted small">Cambios administrativos recientes sin exponer secretos.</div></div><button class="btn btn-outline-secondary pl-icon-action" onclick="loadAudit()" aria-label="Actualizar auditoría" title="Actualizar"><i class="bi bi-arrow-clockwise"></i></button></div></div><div class="card-body"><div id="auditRows" class="table-responsive">
-      <table class="table"><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Entidad</th></tr></thead><tbody>
-      {{if .AuditEvents}}
-        {{range .AuditEvents}}
-        <tr><td>{{fmtTime .CreatedAt}}</td><td>{{.Username}}</td><td>{{.Action}}</td><td>{{.EntityType}} {{.EntityID}}</td></tr>
-        {{end}}
-      {{else}}
-        <tr><td class="empty" colspan="4">Sin eventos de auditoría todavía.</td></tr>
-      {{end}}
-      </tbody></table>
-    </div></div></div>
+    </div><div class="alert alert-warning mt-3 mb-0"><strong>Restauración segura:</strong> usa Verificar antes de restaurar. La comprobación abre una copia temporal, aplica las migraciones actuales y ejecuta <code>PRAGMA integrity_check</code> sin tocar la base activa.</div></div></div>
+
+    <div class="card"><div class="card-header"><div class="toolbar mb-0"><div><div class="card-title">Copia remota</div><div class="text-muted small">WebDAV o almacenamiento S3-compatible sin servicios auxiliares.</div></div><button class="btn btn-outline-secondary pl-icon-action" type="button" onclick="testBackupRemote(this)" aria-label="Probar destino remoto" title="Probar destino"><i class="bi bi-cloud-check"></i></button></div></div><div class="card-body">
+      <form id="backupRemoteForm" onsubmit="return saveBackupRemote(event)">
+        <div class="grid grid-2">
+          <div><label class="form-label">Destino</label><select id="backupRemoteProvider" class="form-select" onchange="paintBackupRemoteProvider()"><option value="">Desactivado</option><option value="webdav">WebDAV</option><option value="s3">S3 compatible</option></select></div>
+          <div><label class="form-label">Carpeta / prefijo</label><input id="backupRemotePrefix" class="form-control" placeholder="pangolite/backups"></div>
+        </div>
+        <div class="form-check mt-3"><input id="backupRemoteEnabled" class="form-check-input" type="checkbox"><label class="form-check-label" for="backupRemoteEnabled">Habilitar destino remoto</label></div>
+        <div class="form-check mt-2"><input id="backupRemoteAuto" class="form-check-input" type="checkbox"><label class="form-check-label" for="backupRemoteAuto">Subir automáticamente los respaldos nuevos</label></div>
+        <div id="backupRemoteWebDAV" class="mt-3 d-none"><div class="grid grid-2"><div><label class="form-label">URL WebDAV</label><input id="backupWebDAVURL" class="form-control" placeholder="https://cloud.example.com/remote.php/dav/files/usuario"></div><div><label class="form-label">Usuario</label><input id="backupWebDAVUsername" class="form-control" autocomplete="username"></div><div><label class="form-label">Contraseña / token</label><input id="backupWebDAVPassword" type="password" class="form-control" autocomplete="new-password" placeholder="Dejar vacío para conservar"></div></div></div>
+        <div id="backupRemoteS3" class="mt-3 d-none"><div class="grid grid-2"><div><label class="form-label">Endpoint S3</label><input id="backupS3Endpoint" class="form-control" placeholder="https://s3.example.com"></div><div><label class="form-label">Región</label><input id="backupS3Region" class="form-control" value="us-east-1"></div><div><label class="form-label">Bucket</label><input id="backupS3Bucket" class="form-control"></div><div><label class="form-label">Access key</label><input id="backupS3AccessKey" class="form-control" autocomplete="off"></div><div><label class="form-label">Secret key</label><input id="backupS3SecretKey" type="password" class="form-control" autocomplete="new-password" placeholder="Dejar vacío para conservar"></div></div><div class="form-text mt-2">Hugging Face Storage Buckets: endpoint <code>https://s3.hf.co/&lt;namespace&gt;</code>, región <code>us-east-1</code> y el nombre del bucket. Pangolite usa direccionamiento path-style.</div></div>
+        <div class="form-check mt-3"><input id="backupRemoteAllowInsecure" class="form-check-input" type="checkbox"><label class="form-check-label" for="backupRemoteAllowInsecure">Permitir HTTP sin TLS (solo redes privadas confiables)</label></div>
+        <div id="backupRemoteStatus" class="form-text mt-2"></div>
+        <div class="d-flex justify-content-end mt-3"><button class="btn btn-primary" type="submit"><i class="bi bi-floppy"></i> Guardar destino</button></div>
+      </form>
+    </div></div>
   </div>
+  <div class="card"><div class="card-header"><div class="toolbar mb-0"><div><div class="card-title">Auditoría</div><div class="text-muted small">Cambios administrativos recientes sin exponer secretos.</div></div><button class="btn btn-outline-secondary pl-icon-action" onclick="loadAudit()" aria-label="Actualizar auditoría" title="Actualizar"><i class="bi bi-arrow-clockwise"></i></button></div></div><div class="card-body"><div id="auditRows" class="table-responsive">
+    <table class="table"><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Entidad</th></tr></thead><tbody>
+    {{if .AuditEvents}}{{range .AuditEvents}}<tr><td>{{fmtTime .CreatedAt}}</td><td>{{.Username}}</td><td>{{.Action}}</td><td>{{.EntityType}} {{.EntityID}}</td></tr>{{end}}{{else}}<tr><td class="empty" colspan="4">Sin eventos de auditoría todavía.</td></tr>{{end}}
+    </tbody></table>
+  </div></div></div>
 </section>
 {{end}}

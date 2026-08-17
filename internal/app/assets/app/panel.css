@@ -1812,3 +1812,8 @@ body.modal-open{
 .ssh-frequent-empty>i{width:42px;height:42px;display:grid;place-items:center;flex:0 0 auto;border:1px solid var(--pg-border);border-radius:13px;background:rgba(255,255,255,.04);color:#d8b4fe}
 .ssh-frequent-empty>div{display:grid;gap:2px}.ssh-frequent-empty strong{color:#fff;font-size:13px}.ssh-frequent-empty span{font-size:11px}
 @media(max-width:560px){.ssh-frequent-grid{grid-template-columns:1fr}}
+
+/* Acciones masivas: toolbar contextual compacta. */
+.bulk-action-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--pg-border);border-radius:14px;background:rgba(139,92,246,.10)}
+.bulk-action-bar>div:first-child{display:flex;flex-direction:column;gap:1px}.pl-select-col{width:38px;text-align:center!important}.pl-select-col .form-check-input{margin:0;cursor:pointer}
+@media(max-width:760px){.bulk-action-bar{align-items:flex-start;flex-direction:column}.bulk-action-bar .d-flex{width:100%;justify-content:flex-end}.resources-table .pl-select-col{display:table-cell!important;width:36px}.resources-table td.pl-select-col:before{display:none}}
