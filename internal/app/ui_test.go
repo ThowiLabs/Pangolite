@@ -394,3 +394,25 @@ func TestTerminalDownloadTrackingSupportsBracketedPaste(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalDownloadShellManagedEditsUseRenderedLine(t *testing.T) {
+	script, err := assetsFS.ReadFile("assets/app/terminal.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(script)
+	for _, expected := range []string{
+		"terminalCommandRenderedBaseline",
+		"submitTerminalEnterAfterShellEdit",
+		"else if(ch==='\\t')invalidateTerminalCommandTracking()",
+		"stableFor>=75",
+		"text+=current.translateToString(!continues)",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("terminal.js no contiene protección de autocompletado esperada: %q", expected)
+		}
+	}
+	if strings.Contains(body, "},35);") {
+		t.Fatal("terminal.js conserva la espera fija de 35 ms para sincronizar líneas administradas por el shell")
+	}
+}

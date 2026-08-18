@@ -20,6 +20,9 @@
   let terminalCommandBuffer='';
   let terminalCommandCursor=0;
   let terminalCommandTracking=true;
+  let terminalCommandRenderedBaseline='';
+  let terminalCommandShellEditAt=0;
+  let terminalRenderedEnterPending=false;
   const themes={
     black:{background:'#05070a',foreground:'#f8fafc',cursor:'#f8fafc',selectionBackground:'#475569'},
     dark:{background:'#002b36',foreground:'#fdf6e3',cursor:'#eee8d5',selectionBackground:'#ffffff33',black:'#073642',red:'#dc322f',green:'#859900',yellow:'#b58900',blue:'#268bd2',magenta:'#d33682',cyan:'#2aa198',white:'#eee8d5'},
@@ -421,11 +424,19 @@
       let y=(Number(buffer.baseY)||0)+(Number(buffer.cursorY)||0);
       let line=buffer.getLine(y);
       if(!line)return '';
-      let text=line.translateToString(true,0,Math.max(0,Number(buffer.cursorX)||0));
       while(line&&line.isWrapped&&y>0){
         y--;
         line=buffer.getLine(y);
-        if(line)text=line.translateToString(true)+text;
+      }
+      if(!line)return '';
+      let text='';
+      for(let row=y;row<buffer.length;row++){
+        const current=buffer.getLine(row);
+        if(!current)break;
+        const next=row+1<buffer.length?buffer.getLine(row+1):null;
+        const continues=!!(next&&next.isWrapped);
+        text+=current.translateToString(!continues);
+        if(!continues)break;
       }
       return text;
     }catch{return ''}
@@ -437,7 +448,6 @@
     if(!match)return {matched:false};
     return parseTerminalDownloadCommand(match[1]);
   }
-  function parseRenderedTerminalDownloadCommand(){return parseTerminalDownloadRenderedLine(terminalRenderedCommandLine())}
   function consumeTerminalDownloadCommand(parsed){
     if(!parsed||!parsed.matched)return false;
     sendBytes('\x15');
@@ -455,8 +465,20 @@
     if(!path)return {matched:true,error:'Indica el archivo o directorio a descargar'};
     return {matched:true,path:path};
   }
-  function resetTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandCursor=0;terminalCommandTracking=true}
-  function invalidateTerminalCommandTracking(){terminalCommandBuffer='';terminalCommandCursor=0;terminalCommandTracking=false}
+  function resetTerminalCommandTracking(){
+    terminalCommandBuffer='';
+    terminalCommandCursor=0;
+    terminalCommandTracking=true;
+    terminalCommandRenderedBaseline='';
+    terminalCommandShellEditAt=0;
+  }
+  function invalidateTerminalCommandTracking(){
+    terminalCommandRenderedBaseline=terminalRenderedCommandLine();
+    terminalCommandShellEditAt=Date.now();
+    terminalCommandBuffer='';
+    terminalCommandCursor=0;
+    terminalCommandTracking=false;
+  }
   function insertTerminalCommandText(text){
     if(!terminalCommandTracking||!text)return;
     const value=String(text);
@@ -492,6 +514,39 @@
     if(/^\x1b\[1;\d+D$/.test(sequence)){terminalCommandCursor=Math.max(0,terminalCommandCursor-1);return}
     if(/^\x1b\[1;\d+C$/.test(sequence)){terminalCommandCursor=Math.min(terminalCommandBuffer.length,terminalCommandCursor+1);return}
     invalidateTerminalCommandTracking();
+  }
+  function submitTerminalEnterAfterShellEdit(){
+    if(terminalRenderedEnterPending||!isConnected())return;
+    terminalRenderedEnterPending=true;
+    const started=Date.now();
+    const baseline=terminalCommandRenderedBaseline;
+    let lastRendered=terminalRenderedCommandLine();
+    let stableSince=started;
+    const finish=()=>{terminalRenderedEnterPending=false;resetTerminalCommandTracking()};
+    const attempt=()=>{
+      if(!isConnected()){finish();return}
+      const now=Date.now();
+      const rendered=terminalRenderedCommandLine();
+      if(rendered!==lastRendered){lastRendered=rendered;stableSince=now}
+      const sinceEdit=now-terminalCommandShellEditAt;
+      const stableFor=now-stableSince;
+      const changed=rendered!==baseline;
+      const settled=sinceEdit>=450||(changed&&sinceEdit>=90&&stableFor>=75);
+      const timedOut=now-started>=900;
+      if(settled||timedOut){
+        const parsed=parseTerminalDownloadRenderedLine(rendered);
+        if(parsed.matched){
+          terminalRenderedEnterPending=false;
+          consumeTerminalDownloadCommand(parsed);
+          return;
+        }
+        sendBytes('\r');
+        finish();
+        return;
+      }
+      setTimeout(attempt,25);
+    };
+    attempt();
   }
   function requestTerminalDownload(path){
     if(!isConnected()){showTerminalUploadAlert('Conecta la terminal antes de descargar',true);return}
@@ -536,6 +591,7 @@
     terminalDownloadStates.forEach(state=>{clearTimeout(state.timer)});
     if(terminalDownloadStates.size&&message)showTerminalUploadAlert(message,true);
     terminalDownloadStates.clear();
+    terminalRenderedEnterPending=false;
     resetTerminalCommandTracking();
   }
   function handleTerminalInputData(data){
@@ -543,13 +599,19 @@
     if(!data)return;
     let output='';
     const downloads=[];
+    let renderedEnter=false;
     for(let index=0;index<data.length;){
       if(data.startsWith('\x1b[200~',index)){output+='\x1b[200~';index+=6;continue}
       if(data.startsWith('\x1b[201~',index)){output+='\x1b[201~';index+=6;continue}
       const ch=data[index];
       if(ch==='\r'||ch==='\n'){
+        if(!terminalUsesAlternateBuffer()&&!terminalCommandTracking){
+          renderedEnter=true;
+          index++;
+          continue;
+        }
         let parsed={matched:false};
-        if(!terminalUsesAlternateBuffer())parsed=terminalCommandTracking?parseTerminalDownloadCommand(terminalCommandBuffer):parseRenderedTerminalDownloadCommand();
+        if(!terminalUsesAlternateBuffer())parsed=parseTerminalDownloadCommand(terminalCommandBuffer);
         if(parsed.matched){
           // La línea ya fue ecoada/enviada al shell carácter por carácter. Ctrl+U la vacía sin ejecutar "download".
           output+='\x15';
@@ -562,6 +624,7 @@
         continue;
       }
       if(ch==='\x1b'){
+        if(!terminalCommandTracking)terminalCommandShellEditAt=Date.now();
         let end=index+1;
         if(data[end]==='['){
           end++;
@@ -577,6 +640,7 @@
         continue;
       }
       output+=ch;
+      if(!terminalCommandTracking)terminalCommandShellEditAt=Date.now();
       if(terminalCommandTracking){
         if(ch==='\x7f'||ch==='\b')terminalCommandBackspace();
         else if(ch==='\x01')terminalCommandCursor=0;
@@ -585,13 +649,15 @@
         else if(ch==='\x0b')terminalCommandBuffer=terminalCommandBuffer.slice(0,terminalCommandCursor);
         else if(ch==='\x17')terminalCommandDeleteWord();
         else if(ch==='\x03')resetTerminalCommandTracking();
-        else if(ch<' '&&ch!=='\t')invalidateTerminalCommandTracking();
+        else if(ch==='\t')invalidateTerminalCommandTracking();
+        else if(ch<' ')invalidateTerminalCommandTracking();
         else insertTerminalCommandText(ch);
       }
       index++;
     }
     if(output)sendBytes(output);
     downloads.forEach(path=>requestTerminalDownload(path));
+    if(renderedEnter)submitTerminalEnterAfterShellEdit();
   }
   function handleTerminalControlMessage(data){
     let message;
@@ -941,15 +1007,9 @@
         return false;
       }
       if(!terminalCommandTracking){
-        // History/cursores son editados por el shell. Da un instante al eco remoto y lee la línea visible antes de enviar Enter.
+        // Autocompletado/historial modifican la línea dentro del shell. Espera a que xterm refleje esa línea real antes de decidir si interceptar download.
         event.preventDefault();
-        setTimeout(()=>{
-          const rendered=parseRenderedTerminalDownloadCommand();
-          if(!consumeTerminalDownloadCommand(rendered)){
-            sendBytes('\r');
-            resetTerminalCommandTracking();
-          }
-        },35);
+        submitTerminalEnterAfterShellEdit();
         return false;
       }
     }
