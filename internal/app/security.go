@@ -149,6 +149,42 @@ func (s *Server) adminIPAllowed(raw string) bool {
 	return allowed
 }
 
+func (s *Server) adminLoginIPAllowed(raw string) bool {
+	mode := strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode))
+	if mode == "" || mode == "off" {
+		return true
+	}
+	if net.ParseIP(strings.TrimSpace(raw)) == nil {
+		return false
+	}
+	if mode == "learn" {
+		return true
+	}
+	return s.adminIPAllowed(raw)
+}
+
+func (s *Server) sessionIPBindingEnabled() bool {
+	mode := strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode))
+	return mode == "learn" || mode == "allowlist"
+}
+
+func (s *Server) adminSessionIPAllowed(raw string) bool {
+	mode := strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode))
+	if mode == "" || mode == "off" || mode == "learn" {
+		return true
+	}
+	return s.adminIPAllowed(raw)
+}
+
+func sameClientIP(expected, actual string) bool {
+	expectedIP := net.ParseIP(strings.TrimSpace(expected))
+	actualIP := net.ParseIP(strings.TrimSpace(actual))
+	if expectedIP == nil || actualIP == nil {
+		return false
+	}
+	return expectedIP.Equal(actualIP)
+}
+
 func (s *Server) rememberAdminIP(raw, username string) {
 	if strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode)) != "learn" {
 		return

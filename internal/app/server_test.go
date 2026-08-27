@@ -437,6 +437,126 @@ func TestAdminAccessLearnModeRemembersNetwork(t *testing.T) {
 	}
 }
 
+func TestAdminLoginLearnModeAllowsPasswordFromNewNetwork(t *testing.T) {
+	server, store := testServerWithStore(t)
+	server.config.AdminAccessMode = "learn"
+	created, password, err := store.BootstrapAdmin("admin", filepath.Join(t.TempDir(), "admin-password.txt"))
+	if err != nil || !created {
+		t.Fatalf("crear administrador: created=%v err=%v", created, err)
+	}
+
+	login := func(ip string) *http.Cookie {
+		t.Helper()
+		body := bytes.NewBufferString(`{"username":"admin","password":"` + password + `"}`)
+		req := httptest.NewRequest(http.MethodPost, "http://panel.example.com/api/login", body)
+		req.RemoteAddr = ip + ":4242"
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("login desde %s = %d, body=%q", ip, rr.Code, rr.Body.String())
+		}
+		for _, cookie := range rr.Result().Cookies() {
+			if cookie.Name == sessionCookieName {
+				return cookie
+			}
+		}
+		t.Fatalf("login desde %s no entrego cookie de sesion", ip)
+		return nil
+	}
+
+	cookie := login("198.51.100.25")
+	if server.adminIPAllowed("203.0.113.10") {
+		t.Fatal("la red nueva no debe considerarse aprendida antes de reautenticar")
+	}
+	cookie = login("203.0.113.10")
+	if !server.adminIPAllowed("203.0.113.10") {
+		t.Fatal("la red nueva debe aprenderse despues de validar la contraseña")
+	}
+	if sess, _, ok := store.SessionWithUser(cookie.Value); !ok || sess.ClientIP != "203.0.113.10" {
+		t.Fatalf("sesion nueva no quedo ligada a la IP reautenticada: %#v", sess)
+	}
+}
+
+func TestSessionRequiresReauthenticationWhenClientIPChanges(t *testing.T) {
+	server, store := testServerWithStore(t)
+	server.config.AdminAccessMode = "learn"
+	created, password, err := store.BootstrapAdmin("admin", filepath.Join(t.TempDir(), "admin-password.txt"))
+	if err != nil || !created {
+		t.Fatalf("crear administrador: created=%v err=%v", created, err)
+	}
+
+	body := bytes.NewBufferString(`{"username":"admin","password":"` + password + `"}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "http://panel.example.com/api/login", body)
+	loginReq.RemoteAddr = "198.51.100.25:4242"
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRR := httptest.NewRecorder()
+	server.Handler().ServeHTTP(loginRR, loginReq)
+	if loginRR.Code != http.StatusOK {
+		t.Fatalf("login inicial = %d, body=%q", loginRR.Code, loginRR.Body.String())
+	}
+	var cookie *http.Cookie
+	for _, candidate := range loginRR.Result().Cookies() {
+		if candidate.Name == sessionCookieName {
+			cookie = candidate
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatal("login inicial no entrego cookie de sesion")
+	}
+
+	panelReq := httptest.NewRequest(http.MethodGet, "http://panel.example.com/", nil)
+	panelReq.RemoteAddr = "198.51.100.99:4242"
+	panelReq.AddCookie(cookie)
+	panelRR := httptest.NewRecorder()
+	server.Handler().ServeHTTP(panelRR, panelReq)
+	if panelRR.Code != http.StatusFound || panelRR.Header().Get("Location") != "/login" {
+		t.Fatalf("cambio de IP debe pedir login: status=%d location=%q", panelRR.Code, panelRR.Header().Get("Location"))
+	}
+
+	body = bytes.NewBufferString(`{"username":"admin","password":"` + password + `"}`)
+	reloginReq := httptest.NewRequest(http.MethodPost, "http://panel.example.com/api/login", body)
+	reloginReq.RemoteAddr = "198.51.100.99:4242"
+	reloginReq.Header.Set("Content-Type", "application/json")
+	reloginRR := httptest.NewRecorder()
+	server.Handler().ServeHTTP(reloginRR, reloginReq)
+	if reloginRR.Code != http.StatusOK {
+		t.Fatalf("relogin tras cambio de IP = %d, body=%q", reloginRR.Code, reloginRR.Body.String())
+	}
+	var newCookie *http.Cookie
+	for _, candidate := range reloginRR.Result().Cookies() {
+		if candidate.Name == sessionCookieName {
+			newCookie = candidate
+			break
+		}
+	}
+	if newCookie == nil || newCookie.Value == cookie.Value {
+		t.Fatal("relogin debe emitir una sesion nueva")
+	}
+
+	sessionReq := httptest.NewRequest(http.MethodGet, "http://panel.example.com/api/session", nil)
+	sessionReq.RemoteAddr = "198.51.100.99:4242"
+	sessionReq.AddCookie(newCookie)
+	sessionRR := httptest.NewRecorder()
+	server.Handler().ServeHTTP(sessionRR, sessionReq)
+	if sessionRR.Code != http.StatusOK || !strings.Contains(sessionRR.Body.String(), `"authenticated":true`) {
+		t.Fatalf("sesion reautenticada no quedo activa: status=%d body=%q", sessionRR.Code, sessionRR.Body.String())
+	}
+}
+
+func TestAdminLoginAllowlistStillRejectsUnknownNetwork(t *testing.T) {
+	server, _ := testServerWithStore(t)
+	server.config.AdminAccessMode = "allowlist"
+	server.adminAllowedNetworks = parseCIDRs("198.51.100.0/24")
+	if !server.adminLoginIPAllowed("198.51.100.20") {
+		t.Fatal("CIDR configurado debe permitir login")
+	}
+	if server.adminLoginIPAllowed("203.0.113.20") {
+		t.Fatal("allowlist debe seguir bloqueando redes no configuradas")
+	}
+}
+
 func TestFixedWindowLimiterBoundsRequests(t *testing.T) {
 	limiter := newFixedWindowLimiter()
 	for i := 0; i < 3; i++ {

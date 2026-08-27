@@ -37,7 +37,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - Recursos y clientes soportan selección/acciones masivas por proyecto con validación de pertenencia, auditoría y aplicación agrupada de Traefik.
 - Seguridad permite verificar realmente un backup SQLite en una copia temporal y replicarlo a WebDAV/S3-compatible; S3 usa Signature V4 con standard library, los secretos no regresan al navegador y el auto-upload es opcional.
 - `pangolite-client --install` reemplaza instalaciones anteriores de forma idempotente en systemd/OpenRC/Windows; en Windows el propio CLI solicita elevación UAC para instalar o eliminar el servicio cuando no fue iniciado como administrador.
-- El acceso administrativo usa por defecto modo `learn`: el primer login correcto registra su red y las sesiones posteriores desde otras redes quedan rechazadas salvo CIDR permitido.
+- El acceso administrativo usa por defecto modo `learn`: cada sesión queda ligada a la IP exacta de login; si la IP cambia se exige contraseña de nuevo, y un login válido desde la IP nueva registra su red sin bloquear al administrador. `allowlist` conserva el bloqueo estricto por CIDR.
 - Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
 - `ui.go` ya no contiene el frontend gigante; ahora renderiza templates.
 - Existen layouts, componentes, páginas y assets en `internal/app/templates/` e `internal/app/assets/app/`.

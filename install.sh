@@ -449,7 +449,8 @@ PANGOLITE_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 PANGOLITE_ADMIN_ACCESS_MODE=learn
 PANGOLITE_AGENT_HTTP_CONCURRENCY=4
 PANGOLITE_AGENT_STREAM_CONCURRENCY=16
-# Recuperacion si cambia tu IP/red: PANGOLITE_ADMIN_ACCESS_MODE=off temporalmente o agrega CIDRs permitidos.
+# En modo learn, un cambio de IP invalida la sesion y permite reautenticar con contraseña desde la IP nueva.
+# En allowlist, agrega el CIDR nuevo o cambia temporalmente el modo si necesitas recuperar acceso.
 # PANGOLITE_ADMIN_ALLOWED_CIDRS=203.0.113.10/32
 PANGOLITE_AUTO_TRAEFIK=1
 PANGOLITE_CLIENT_LINUX_AMD64=$PUBLIC_DIR/pangolite-client-linux-amd64

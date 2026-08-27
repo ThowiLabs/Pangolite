@@ -72,6 +72,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		{Version: 8, Name: "correo de cuenta y recuperacion SMTP", Apply: s.migrateAccountEmailPasswordReset},
 		{Version: 9, Name: "redirecciones permanentes y disponibilidad oculta", Apply: s.migrateHTTPRedirectsAvailability},
 		{Version: 10, Name: "redes administrativas confiables", Apply: s.migrateTrustedAdminNetworks},
+		{Version: 11, Name: "ip de origen por sesion", Apply: s.migrateSessionClientIP},
 	}
 	latest := migrations[len(migrations)-1].Version
 	currentVersion, err := s.SchemaVersion(ctx)
@@ -182,6 +183,7 @@ func (s *Store) migrateBaseSchema(ctx context.Context) error {
 			id_hash TEXT PRIMARY KEY,
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			csrf_token TEXT NOT NULL,
+			client_ip TEXT NOT NULL DEFAULT '',
 			expires_at TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			last_seen TEXT NOT NULL
@@ -490,6 +492,10 @@ func (s *Store) migrateTrustedAdminNetworks(ctx context.Context) error {
 		return fmt.Errorf("crear redes administrativas confiables: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) migrateSessionClientIP(ctx context.Context) error {
+	return s.ensureColumn(ctx, "sessions", "client_ip", "TEXT NOT NULL DEFAULT ''")
 }
 
 func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
@@ -827,6 +833,10 @@ func (s *Store) ChangePassword(userID int64, currentPassword, newPassword, email
 }
 
 func (s *Store) CreateSession(userID int64, ttl time.Duration) (rawID string, session Session, err error) {
+	return s.CreateSessionForIP(userID, ttl, "")
+}
+
+func (s *Store) CreateSessionForIP(userID int64, ttl time.Duration, clientIP string) (rawID string, session Session, err error) {
 	rawID, err = newSecret(32)
 	if err != nil {
 		return "", Session{}, err
@@ -836,8 +846,9 @@ func (s *Store) CreateSession(userID int64, ttl time.Duration) (rawID string, se
 		return "", Session{}, err
 	}
 	now := time.Now().UTC()
-	session = Session{IDHash: hashToken(rawID), UserID: userID, CSRFToken: csrf, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(ttl)}
-	_, err = s.db.Exec(`INSERT INTO sessions(id_hash,user_id,csrf_token,expires_at,created_at,last_seen) VALUES(?,?,?,?,?,?)`, session.IDHash, session.UserID, session.CSRFToken, formatTime(session.ExpiresAt), formatTime(session.CreatedAt), formatTime(session.LastSeen))
+	clientIP = strings.TrimSpace(clientIP)
+	session = Session{IDHash: hashToken(rawID), UserID: userID, CSRFToken: csrf, ClientIP: clientIP, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(ttl)}
+	_, err = s.db.Exec(`INSERT INTO sessions(id_hash,user_id,csrf_token,client_ip,expires_at,created_at,last_seen) VALUES(?,?,?,?,?,?,?)`, session.IDHash, session.UserID, session.CSRFToken, session.ClientIP, formatTime(session.ExpiresAt), formatTime(session.CreatedAt), formatTime(session.LastSeen))
 	if err != nil {
 		return "", Session{}, fmt.Errorf("crear sesion: %w", err)
 	}
@@ -849,14 +860,14 @@ func (s *Store) SessionWithUser(rawID string) (Session, User, bool) {
 		return Session{}, User{}, false
 	}
 	now := time.Now().UTC()
-	row := s.db.QueryRow(`SELECT s.id_hash, s.user_id, s.csrf_token, s.expires_at, s.created_at, s.last_seen,
+	row := s.db.QueryRow(`SELECT s.id_hash, s.user_id, s.csrf_token, s.client_ip, s.expires_at, s.created_at, s.last_seen,
 		u.id, u.username, u.email, u.password_hash, u.force_password_change, u.created_at, u.updated_at
 		FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ?`, hashToken(rawID))
 	var sess Session
 	var user User
 	var expiresAt, sessCreated, lastSeen, userCreated, userUpdated string
 	var force int
-	if err := row.Scan(&sess.IDHash, &sess.UserID, &sess.CSRFToken, &expiresAt, &sessCreated, &lastSeen, &user.ID, &user.Username, &user.Email, &user.PasswordHash, &force, &userCreated, &userUpdated); err != nil {
+	if err := row.Scan(&sess.IDHash, &sess.UserID, &sess.CSRFToken, &sess.ClientIP, &expiresAt, &sessCreated, &lastSeen, &user.ID, &user.Username, &user.Email, &user.PasswordHash, &force, &userCreated, &userUpdated); err != nil {
 		return Session{}, User{}, false
 	}
 	sess.ExpiresAt = parseTime(expiresAt)

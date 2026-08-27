@@ -243,8 +243,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "demasiados intentos de acceso desde este origen; intenta mas tarde")
 		return
 	}
-	if !s.adminIPAllowed(clientIP) {
-		s.log.Warn("login rechazado desde red administrativa no confiable", "user", NormalizeUsername(req.Username), "remote", clientIP)
+	if !s.adminLoginIPAllowed(clientIP) {
+		s.log.Warn("login rechazado desde red administrativa no permitida", "user", NormalizeUsername(req.Username), "remote", clientIP)
 		writeError(w, http.StatusForbidden, "acceso administrativo no permitido desde esta red")
 		return
 	}
@@ -262,7 +262,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordLoginSuccess(req.Username, r)
 	s.rememberAdminIP(clientIP, user.Username)
-	rawID, sess, err := s.store.CreateSession(user.ID, sessionDuration(s.config))
+	rawID, sess, err := s.store.CreateSessionForIP(user.ID, sessionDuration(s.config), clientIP)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "no se pudo crear sesion")
 		return
@@ -2907,15 +2907,19 @@ func (s *Server) authorizePanelRequest(w http.ResponseWriter, r *http.Request, a
 }
 
 func (s *Server) currentSession(r *http.Request) (requestSession, bool) {
-	if !s.adminIPAllowed(s.clientIP(r)) {
-		return requestSession{}, false
-	}
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return requestSession{}, false
 	}
 	sess, user, ok := s.store.SessionWithUser(cookie.Value)
 	if !ok {
+		return requestSession{}, false
+	}
+	clientIP := s.clientIP(r)
+	if s.sessionIPBindingEnabled() && !sameClientIP(sess.ClientIP, clientIP) {
+		return requestSession{}, false
+	}
+	if !s.adminSessionIPAllowed(clientIP) {
 		return requestSession{}, false
 	}
 	return requestSession{Session: sess, User: user, RawID: cookie.Value}, true

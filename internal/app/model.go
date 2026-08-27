@@ -247,6 +247,7 @@ type Session struct {
 	IDHash    string
 	UserID    int64
 	CSRFToken string
+	ClientIP  string
 	ExpiresAt time.Time
 	CreatedAt time.Time
 	LastSeen  time.Time

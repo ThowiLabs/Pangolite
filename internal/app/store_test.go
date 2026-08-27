@@ -59,16 +59,16 @@ func TestBootstrapAdminAndSession(t *testing.T) {
 	if !ok {
 		t.Fatal("credenciales temporales no autenticaron")
 	}
-	raw, sess, err := store.CreateSession(user.ID, sessionDuration(Config{SessionDays: 30}))
+	raw, sess, err := store.CreateSessionForIP(user.ID, sessionDuration(Config{SessionDays: 30}), "198.51.100.10")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw == "" || sess.CSRFToken == "" {
-		t.Fatal("sesion incompleta")
+	if raw == "" || sess.CSRFToken == "" || sess.ClientIP != "198.51.100.10" {
+		t.Fatalf("sesion incompleta: %#v", sess)
 	}
-	_, sessionUser, ok := store.SessionWithUser(raw)
-	if !ok || sessionUser.Username != "admin" {
-		t.Fatal("sesion no encontrada")
+	loadedSession, sessionUser, ok := store.SessionWithUser(raw)
+	if !ok || sessionUser.Username != "admin" || loadedSession.ClientIP != "198.51.100.10" {
+		t.Fatalf("sesion no encontrada o IP no persistida: %#v %#v", loadedSession, sessionUser)
 	}
 }
 
