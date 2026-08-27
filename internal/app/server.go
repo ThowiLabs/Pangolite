@@ -255,7 +255,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.recordLoginSuccess(req.Username, r)
 	rawID, sess, err := s.store.CreateSessionForIP(user.ID, sessionDuration(s.config), clientIP)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "no se pudo crear sesion")
+		s.log.Error("no se pudo crear sesion", "user", user.Username, "remote", clientIP, "error", err.Error())
+		writeError(w, http.StatusInternalServerError, "no se pudo crear sesion; revisa los logs del servidor")
 		return
 	}
 	s.setSessionCookie(w, r, rawID, sess.ExpiresAt)

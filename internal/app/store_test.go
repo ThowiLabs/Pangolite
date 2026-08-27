@@ -754,3 +754,29 @@ func TestResetUserPasswordCanRequireChange(t *testing.T) {
 		t.Fatal("force_password_change no se persistió")
 	}
 }
+
+func TestStoreRepairsSessionClientIPWhenMigrationMetadataIsInconsistent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`ALTER TABLE sessions DROP COLUMN client_ip`); err != nil {
+		_ = store.Close()
+		t.Fatalf("simular esquema inconsistente: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("reabrir Store debe reparar sessions.client_ip: %v", err)
+	}
+	defer repaired.Close()
+	rows, err := repaired.db.Query(`SELECT client_ip FROM sessions LIMIT 0`)
+	if err != nil {
+		t.Fatalf("sessions.client_ip no fue reparada: %v", err)
+	}
+	_ = rows.Close()
+}

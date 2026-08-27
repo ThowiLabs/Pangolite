@@ -803,3 +803,31 @@ func TestPublicAgentHTTPStreamAllowsEarlyBackendResponse(t *testing.T) {
 		t.Fatalf("respuesta temprana inesperada: status=%d body=%q", rr.Code, rr.Body.String())
 	}
 }
+
+func TestAdminLoginSessionCreationFailureReturnsDiagnosableJSON(t *testing.T) {
+	server, store := testServerWithStore(t)
+	created, password, err := store.BootstrapAdmin("admin", filepath.Join(t.TempDir(), "admin-password.txt"))
+	if err != nil || !created {
+		t.Fatalf("crear administrador: created=%v err=%v", created, err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE sessions`); err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"username":"admin","password":"` + password + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "http://panel.example.com/api/login", body)
+	req.RemoteAddr = "198.51.100.25:4242"
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("fallo de sesion = %d, body=%q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("fallo de sesion debe conservar JSON, content-type=%q", got)
+	}
+	if !strings.Contains(rr.Body.String(), "revisa los logs del servidor") {
+		t.Fatalf("respuesta no orienta al diagnostico: %q", rr.Body.String())
+	}
+}

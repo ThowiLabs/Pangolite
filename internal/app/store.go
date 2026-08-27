@@ -100,6 +100,33 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := s.ensureCriticalRuntimeSchema(ctx); err != nil {
+		return fmt.Errorf("verificar esquema SQLite critico: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureCriticalRuntimeSchema(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS sessions (
+		id_hash TEXT PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		csrf_token TEXT NOT NULL,
+		client_ip TEXT NOT NULL DEFAULT '',
+		expires_at TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		last_seen TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("asegurar tabla sessions: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "sessions", "client_ip", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`); err != nil {
+		return fmt.Errorf("asegurar indice sessions.user_id: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`); err != nil {
+		return fmt.Errorf("asegurar indice sessions.expires_at: %w", err)
+	}
 	return nil
 }
 
