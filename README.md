@@ -26,6 +26,7 @@ La base actual incluye:
 - Directorio global de Conexiones SSH para abrir la terminal del servidor Pangolite o de cualquier cliente sin navegar primero por su proyecto; la sección de frecuentes se calcula desde aperturas reales registradas en auditoría y persiste entre dispositivos.
 - Transferencia bidireccional de archivos desde la terminal local o remota: subida por arrastrar/selector con progreso y descarga mediante `download ruta`, incluyendo ZIP seguro de directorios.
 - Recursos HTTP/HTTPS locales o mediante cliente de sistema.
+- Branding de carga Thowilabs opcional por recurso HTTP, desactivado por defecto e inyectado solo en documentos HTML compatibles.
 - Recursos TCP/UDP publicados directamente por el plano L4 dinámico de Pangolite, locales o mediante cliente de sistema.
 - Validación de puerto público contra recursos existentes y contra puertos ocupados en el sistema.
 - Suspension de recursos HTTP/HTTPS con respuesta 403, 404 o HTML personalizado basado en plantillas editables.
@@ -215,6 +216,8 @@ Después de guardar el dominio/correo ACME desde el panel, Pangolite escribe la 
 El correo ACME también puede quedar configurado aunque todavía no publiques el panel con dominio propio. Esto permite crear recursos web con el switch **Usar SSL** activado. Si desactivas el switch en un recurso, Pangolite publica solo HTTP y no elimina certificados que Traefik ya haya generado.
 
 Los recursos TCP/UDP no modifican la configuración estática de Traefik. Pangolite abre y cierra sus sockets públicos directamente; crear un puerto nuevo, cambiar el backend, suspender o eliminar un recurso L4 no reinicia Traefik.
+
+Los recursos HTTP pueden activar individualmente **Mostrar loader Thowilabs**. Al activarlo, Traefik enruta únicamente ese recurso a Pangolite para transformar respuestas `text/html`; JSON, APIs, descargas, HEAD y contenido no HTML no se modifican. Los assets del loader se sirven desde una ruta reservada dentro del mismo prefijo del recurso (`/.pangolite/branding/`). Si el CSP del backend no permite estilos del propio origen, Pangolite omite la inyección en vez de relajar la política de seguridad.
 
 ### Compatibilidad de servicios en Linux
 

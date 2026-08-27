@@ -92,35 +92,36 @@ type AppSettings struct {
 }
 
 type Resource struct {
-	ProjectID            string    `json:"projectId"`
-	ID                   string    `json:"id"`
-	Name                 string    `json:"name"`
-	Mode                 string    `json:"mode"`
-	Domain               string    `json:"domain,omitempty"`
-	PathPrefix           string    `json:"pathPrefix,omitempty"`
-	PublicPort           int       `json:"publicPort,omitempty"`
-	TunnelPort           int       `json:"tunnelPort,omitempty"`
-	BackendScheme        string    `json:"backendScheme,omitempty"`
-	BackendHost          string    `json:"backendHost"`
-	BackendPort          int       `json:"backendPort"`
-	OriginType           string    `json:"originType"`
-	AgentID              string    `json:"agentId,omitempty"`
-	TLS                  bool      `json:"tls"`
-	RedirectEnabled      bool      `json:"redirectEnabled"`
-	RedirectTarget       string    `json:"redirectTarget,omitempty"`
-	RedirectStatusCode   int       `json:"redirectStatusCode,omitempty"`
-	HideWhenUnavailable  bool      `json:"hideWhenUnavailable"`
-	Enabled              bool      `json:"enabled"`
-	DisabledResponseMode string    `json:"disabledResponseMode"`
-	DisabledStatusCode   int       `json:"disabledStatusCode"`
-	DisabledHTML         string    `json:"disabledHtml,omitempty"`
-	DisabledTemplateID   string    `json:"disabledTemplateId,omitempty"`
-	ProtectionMode       string    `json:"protectionMode"`
-	ProtectionLoginMode  string    `json:"protectionLoginMode"`
-	ProtectionHash       string    `json:"-"`
-	ProtectionPassword   string    `json:"protectionPassword,omitempty"`
-	CreatedAt            time.Time `json:"createdAt"`
-	UpdatedAt            time.Time `json:"updatedAt"`
+	ProjectID             string    `json:"projectId"`
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	Mode                  string    `json:"mode"`
+	Domain                string    `json:"domain,omitempty"`
+	PathPrefix            string    `json:"pathPrefix,omitempty"`
+	PublicPort            int       `json:"publicPort,omitempty"`
+	TunnelPort            int       `json:"tunnelPort,omitempty"`
+	BackendScheme         string    `json:"backendScheme,omitempty"`
+	BackendHost           string    `json:"backendHost"`
+	BackendPort           int       `json:"backendPort"`
+	OriginType            string    `json:"originType"`
+	AgentID               string    `json:"agentId,omitempty"`
+	TLS                   bool      `json:"tls"`
+	RedirectEnabled       bool      `json:"redirectEnabled"`
+	RedirectTarget        string    `json:"redirectTarget,omitempty"`
+	RedirectStatusCode    int       `json:"redirectStatusCode,omitempty"`
+	HideWhenUnavailable   bool      `json:"hideWhenUnavailable"`
+	BrandingLoaderEnabled bool      `json:"brandingLoaderEnabled"`
+	Enabled               bool      `json:"enabled"`
+	DisabledResponseMode  string    `json:"disabledResponseMode"`
+	DisabledStatusCode    int       `json:"disabledStatusCode"`
+	DisabledHTML          string    `json:"disabledHtml,omitempty"`
+	DisabledTemplateID    string    `json:"disabledTemplateId,omitempty"`
+	ProtectionMode        string    `json:"protectionMode"`
+	ProtectionLoginMode   string    `json:"protectionLoginMode"`
+	ProtectionHash        string    `json:"-"`
+	ProtectionPassword    string    `json:"protectionPassword,omitempty"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
 }
 
 type Agent struct {
@@ -496,6 +497,7 @@ func (r *Resource) Normalize(now time.Time) {
 		r.ProtectionLoginMode = ProtectionLoginHTML
 	}
 	if r.Mode != ModeHTTP {
+		r.BrandingLoaderEnabled = false
 		r.ProtectionMode = ProtectionNone
 		r.ProtectionLoginMode = ProtectionLoginHTML
 		r.ProtectionHash = ""
@@ -517,6 +519,7 @@ func (r *Resource) Normalize(now time.Time) {
 		r.RedirectStatusCode = RedirectStatusPermanent
 	}
 	if r.RedirectEnabled && r.Mode == ModeHTTP {
+		r.BrandingLoaderEnabled = false
 		r.OriginType = OriginLocal
 		r.AgentID = ""
 		r.HideWhenUnavailable = false

@@ -148,7 +148,7 @@ func BuildTraefikConfig(resources []Resource) TraefikConfig {
 			}
 		}
 		serviceURL := r.ServiceURL()
-		if r.UsesAgent() || !r.Enabled || r.RedirectEnabled || r.HideWhenUnavailable || r.ProtectionMode != ProtectionNone {
+		if r.UsesAgent() || !r.Enabled || r.RedirectEnabled || r.HideWhenUnavailable || r.BrandingLoaderEnabled || r.ProtectionMode != ProtectionNone {
 			serviceURL = "http://127.0.0.1:2424"
 		}
 		cfg.HTTP.Services[svc] = HTTPService{LoadBalancer: HTTPLoadBalancer{Servers: []HTTPServer{{URL: serviceURL}}}}

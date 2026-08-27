@@ -76,6 +76,8 @@ Para evitar inyección accidental, el panel valida HTML de suspensión antes de 
 
 La protección de recursos HTTP se implementa haciendo que Traefik envíe esos recursos a Pangolite en vez de enviarlos directo al backend. Pangolite valida contraseña específica, sesión activa del panel o prompt básico según configuración, y luego reenvía el tráfico al backend local o al cliente de sistema remoto.
 
+El branding de carga HTTP usa el mismo patrón de gateway, pero solo cuando `branding_loader_enabled=1` en un recurso concreto. Pangolite solicita una representación no comprimida para navegaciones HTML, conserva el CSP del backend y solo inyecta el loader si la política permite cargar estilos desde el mismo origen. La transformación elimina validadores/tamaños del cuerpo que dejarían de ser válidos, no toca respuestas no HTML y sirve CSS/logo desde una ruta reservada bajo el `path_prefix` del propio recurso. La migración SQLite v13 agrega la bandera con valor `0`, por lo que todas las instalaciones existentes quedan sin branding hasta que un administrador lo active explícitamente.
+
 ## Operación segura agregada
 
 Pangolite mantiene migraciones SQLite versionadas en `schema_migrations`. Antes de aplicar migraciones pendientes crea un respaldo pre-migración en `data/backups/migrations/` usando `VACUUM INTO`.

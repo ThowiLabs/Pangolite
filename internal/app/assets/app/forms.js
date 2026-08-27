@@ -106,14 +106,14 @@ function syncHTTPResourceKind(){
   document.querySelectorAll('.resource-app-only').forEach(el=>el.classList.toggle('d-none',!isHTTP||isRedirect));
   document.querySelectorAll('.resource-backend-only').forEach(el=>el.classList.toggle('d-none',isHTTP&&isRedirect));
   document.querySelectorAll('.redirect-only').forEach(el=>el.classList.toggle('d-none',!isRedirect));
-  if(isRedirect){setIfExists('hideWhenUnavailable',false);setIfExists('protectionMode','none');setIfExists('backendScheme','http');syncProtectionFields();refreshWidgetSelect('protectionMode');refreshWidgetSelect('backendScheme')}
+  if(isRedirect){setIfExists('hideWhenUnavailable',false);setIfExists('brandingLoaderEnabled',false);setIfExists('protectionMode','none');setIfExists('backendScheme','http');syncProtectionFields();refreshWidgetSelect('protectionMode');refreshWidgetSelect('backendScheme')}
   syncDomainMode();
 }
 function syncMode(){
   const mode=fieldValue('mode')||'http';
   classToggleAll('.http-only',mode!=='http');
   classToggleAll('.tcpudp-only',!(mode==='tcp'||mode==='udp'));
-  if(mode!=='http')setIfExists('redirectEnabled',false);
+  if(mode!=='http'){setIfExists('redirectEnabled',false);setIfExists('brandingLoaderEnabled',false)}
   syncHTTPResourceKind();
   syncOrigin();
 }
@@ -144,14 +144,14 @@ function syncEditResourceKind(){
   document.querySelectorAll('.edit-resource-app-only').forEach(el=>el.classList.toggle('d-none',!isHTTP||isRedirect));
   document.querySelectorAll('.edit-resource-backend-only').forEach(el=>el.classList.toggle('d-none',isHTTP&&isRedirect));
   document.querySelectorAll('.edit-redirect-only').forEach(el=>el.classList.toggle('d-none',!isRedirect));
-  if(isRedirect){setIfExists('editHideWhenUnavailable',false);setIfExists('editProtectionMode','none');setIfExists('editBackendScheme','http');syncEditProtectionFields();refreshWidgetSelect('editProtectionMode');refreshWidgetSelect('editBackendScheme')}
+  if(isRedirect){setIfExists('editHideWhenUnavailable',false);setIfExists('editBrandingLoaderEnabled',false);setIfExists('editProtectionMode','none');setIfExists('editBackendScheme','http');syncEditProtectionFields();refreshWidgetSelect('editProtectionMode');refreshWidgetSelect('editBackendScheme')}
 }
 function syncEditRedirectFields(){syncEditResourceKind()}
 function syncEditResourceMode(){
   const mode=fieldValue('editMode')||'http';
   document.querySelectorAll('.edit-http-only').forEach(el=>el.classList.toggle('d-none',mode!=='http'));
   document.querySelectorAll('.edit-tcpudp-only').forEach(el=>el.classList.toggle('d-none',!(mode==='tcp'||mode==='udp')));
-  if(mode!=='http')setIfExists('editRedirectEnabled',false);
+  if(mode!=='http'){setIfExists('editRedirectEnabled',false);setIfExists('editBrandingLoaderEnabled',false)}
   syncEditResourceKind();
   syncEditResourceOrigin();
 }
@@ -260,7 +260,8 @@ function createResourcePayload(prefix=''){
     redirectEnabled: isRedirect,
     redirectTarget: isRedirect ? (isEdit ? fieldValue('editRedirectTarget') : fieldValue('redirectTarget')) : '',
     redirectStatusCode: isRedirect ? (isEdit ? fieldNumber('editRedirectStatusCode')||308 : fieldNumber('redirectStatusCode')||308) : 308,
-    hideWhenUnavailable: isRedirect ? false : (isEdit ? fieldChecked('editHideWhenUnavailable') : fieldChecked('hideWhenUnavailable'))
+    hideWhenUnavailable: isRedirect ? false : (isEdit ? fieldChecked('editHideWhenUnavailable') : fieldChecked('hideWhenUnavailable')),
+    brandingLoaderEnabled: isHTTP && !isRedirect ? (isEdit ? fieldChecked('editBrandingLoaderEnabled') : fieldChecked('brandingLoaderEnabled')) : false
   };
   if(mode==='http'){
     payload.domain=isEdit?fieldValue('editDomain').toLowerCase():buildDomainFromCreateForm();
@@ -277,7 +278,7 @@ function createResourcePayload(prefix=''){
       payload.protectionPassword='';
     }
   }else{
-    payload.domain='';payload.pathPrefix='';payload.backendScheme='';payload.tls=false;payload.protectionMode='none';payload.protectionLoginMode='html';payload.protectionPassword='';payload.redirectEnabled=false;payload.redirectTarget='';payload.redirectStatusCode=308;payload.hideWhenUnavailable=false;
+    payload.domain='';payload.pathPrefix='';payload.backendScheme='';payload.tls=false;payload.protectionMode='none';payload.protectionLoginMode='html';payload.protectionPassword='';payload.redirectEnabled=false;payload.redirectTarget='';payload.redirectStatusCode=308;payload.hideWhenUnavailable=false;payload.brandingLoaderEnabled=false;
     payload.publicPort=fieldNumber(isEdit?'editPublicPort':'publicPort');
   }
   return payload;
@@ -310,7 +311,7 @@ function openEditResource(id){
   fillAgentSelect();setIfExists('editAgentId',r.agentId||'');setIfExists('editAgentIdTcpUdp',r.agentId||'');refreshWidgetSelect('editAgentId');refreshWidgetSelect('editAgentIdTcpUdp');
   const kind=(r.mode||'http')==='http'?(r.redirectEnabled?'redirect':((r.originType||'local')==='agent'?'app-agent':'app-local')):'app-local';
   setIfExists('editHttpResourceKind',kind);
-  setIfExists('editDomain',r.domain||'');setIfExists('editPathPrefix',r.pathPrefix||'/');setIfExists('editTLS',!!r.tls);setIfExists('editBackendScheme',r.backendScheme||'http');setIfExists('editPublicPort',r.publicPort||'');setIfExists('editBackendHost',r.backendHost||'127.0.0.1');setIfExists('editBackendPort',r.backendPort||'');setIfExists('editResourceEnabled',String(!!r.enabled));setIfExists('editDisabledResponseMode',r.disabledResponseMode||'403');setIfExists('editDisabledStatusCode',r.disabledStatusCode||403);setIfExists('editDisabledHtml',r.disabledHtml||'');refreshTemplateSelects();setIfExists('editDisabledPreset',r.disabledTemplateId||'');setIfExists('editProtectionMode',r.protectionMode||'none');setIfExists('editProtectionLoginMode',r.protectionLoginMode||'html');setIfExists('editProtectionPassword','');setIfExists('editRedirectEnabled',!!r.redirectEnabled);setIfExists('editRedirectTarget',r.redirectTarget||'');setIfExists('editRedirectStatusCode',r.redirectStatusCode||308);setIfExists('editHideWhenUnavailable',!!r.hideWhenUnavailable);
+  setIfExists('editDomain',r.domain||'');setIfExists('editPathPrefix',r.pathPrefix||'/');setIfExists('editTLS',!!r.tls);setIfExists('editBackendScheme',r.backendScheme||'http');setIfExists('editPublicPort',r.publicPort||'');setIfExists('editBackendHost',r.backendHost||'127.0.0.1');setIfExists('editBackendPort',r.backendPort||'');setIfExists('editResourceEnabled',String(!!r.enabled));setIfExists('editDisabledResponseMode',r.disabledResponseMode||'403');setIfExists('editDisabledStatusCode',r.disabledStatusCode||403);setIfExists('editDisabledHtml',r.disabledHtml||'');refreshTemplateSelects();setIfExists('editDisabledPreset',r.disabledTemplateId||'');setIfExists('editProtectionMode',r.protectionMode||'none');setIfExists('editProtectionLoginMode',r.protectionLoginMode||'html');setIfExists('editProtectionPassword','');setIfExists('editRedirectEnabled',!!r.redirectEnabled);setIfExists('editRedirectTarget',r.redirectTarget||'');setIfExists('editRedirectStatusCode',r.redirectStatusCode||308);setIfExists('editHideWhenUnavailable',!!r.hideWhenUnavailable);setIfExists('editBrandingLoaderEnabled',!!r.brandingLoaderEnabled);
   refreshAllWidgetSelects();syncEditResourceMode();syncEditDisabledMode();syncEditProtectionFields();syncEditRedirectFields();
   if((r.mode||'http')==='http')fetchCertificateStatus(r.domain,!!r.tls,'certStatusEdit').catch(()=>paintLocalCertificateHint('certStatusEdit',r.domain,!!r.tls));
   $('resourceEditModal').classList.add('open');

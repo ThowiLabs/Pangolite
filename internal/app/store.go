@@ -74,6 +74,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		{Version: 10, Name: "redes administrativas confiables", Apply: s.migrateTrustedAdminNetworks},
 		{Version: 11, Name: "ip de origen por sesion", Apply: s.migrateSessionClientIP},
 		{Version: 12, Name: "retirar redes administrativas confiables", Apply: s.migrateRemoveTrustedAdminNetworks},
+		{Version: 13, Name: "branding opcional por recurso HTTP", Apply: s.migrateResourceBrandingLoader},
 	}
 	latest := migrations[len(migrations)-1].Version
 	currentVersion, err := s.SchemaVersion(ctx)
@@ -126,6 +127,9 @@ func (s *Store) ensureCriticalRuntimeSchema(ctx context.Context) error {
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`); err != nil {
 		return fmt.Errorf("asegurar indice sessions.expires_at: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "resources", "branding_loader_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -290,6 +294,7 @@ func (s *Store) migrateBaseSchema(ctx context.Context) error {
 			redirect_target TEXT NOT NULL DEFAULT '',
 			redirect_status_code INTEGER NOT NULL DEFAULT 308,
 			hide_when_unavailable INTEGER NOT NULL DEFAULT 0,
+			branding_loader_enabled INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -1397,7 +1402,15 @@ func (s *Store) migrateHTTPRedirectsAvailability(ctx context.Context) error {
 	return nil
 }
 
-const resourceSelectSQL = `SELECT id,project_id,name,mode,COALESCE(domain,''),COALESCE(path_prefix,''),COALESCE(public_port,0),COALESCE(tunnel_port,0),COALESCE(backend_scheme,''),backend_host,backend_port,COALESCE(origin_type,'local'),COALESCE(agent_id,''),tls,COALESCE(redirect_enabled,0),COALESCE(redirect_target,''),COALESCE(redirect_status_code,308),COALESCE(hide_when_unavailable,0),enabled,COALESCE(disabled_response_mode,'403'),COALESCE(disabled_status_code,403),COALESCE(disabled_html,''),COALESCE(disabled_template_id,''),COALESCE(protection_mode,'none'),COALESCE(protection_login_mode,'html'),COALESCE(protection_hash,''),created_at,updated_at FROM resources`
+func (s *Store) migrateResourceBrandingLoader(ctx context.Context) error {
+	if err := s.ensureColumn(ctx, "resources", "branding_loader_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE resources SET branding_loader_enabled = 0 WHERE mode <> 'http' OR COALESCE(redirect_enabled,0) = 1`)
+	return nil
+}
+
+const resourceSelectSQL = `SELECT id,project_id,name,mode,COALESCE(domain,''),COALESCE(path_prefix,''),COALESCE(public_port,0),COALESCE(tunnel_port,0),COALESCE(backend_scheme,''),backend_host,backend_port,COALESCE(origin_type,'local'),COALESCE(agent_id,''),tls,COALESCE(redirect_enabled,0),COALESCE(redirect_target,''),COALESCE(redirect_status_code,308),COALESCE(hide_when_unavailable,0),COALESCE(branding_loader_enabled,0),enabled,COALESCE(disabled_response_mode,'403'),COALESCE(disabled_status_code,403),COALESCE(disabled_html,''),COALESCE(disabled_template_id,''),COALESCE(protection_mode,'none'),COALESCE(protection_login_mode,'html'),COALESCE(protection_hash,''),created_at,updated_at FROM resources`
 
 func (s *Store) ListResources() []Resource {
 	rows, err := s.db.Query(resourceSelectSQL + ` ORDER BY created_at ASC`)
@@ -1537,7 +1550,7 @@ func (s *Store) AddResource(r Resource) (Resource, error) {
 			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d: %s (%s)", strings.ToUpper(r.Mode), r.PublicPort, conflict.Name, conflict.ID)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO resources(id,project_id,name,mode,domain,path_prefix,public_port,tunnel_port,backend_scheme,backend_host,backend_port,origin_type,agent_id,tls,redirect_enabled,redirect_target,redirect_status_code,hide_when_unavailable,enabled,disabled_response_mode,disabled_status_code,disabled_html,disabled_template_id,protection_mode,protection_login_mode,protection_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.ProjectID, r.Name, r.Mode, nullableString(r.Domain), nullableString(r.PathPrefix), nullableInt(r.PublicPort), nullableInt(r.TunnelPort), nullableString(r.BackendScheme), r.BackendHost, r.BackendPort, r.OriginType, nullableString(r.AgentID), boolInt(r.TLS), boolInt(r.RedirectEnabled), r.RedirectTarget, r.RedirectStatusCode, boolInt(r.HideWhenUnavailable), boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, r.DisabledTemplateID, r.ProtectionMode, r.ProtectionLoginMode, r.ProtectionHash, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
+	_, err := s.db.Exec(`INSERT INTO resources(id,project_id,name,mode,domain,path_prefix,public_port,tunnel_port,backend_scheme,backend_host,backend_port,origin_type,agent_id,tls,redirect_enabled,redirect_target,redirect_status_code,hide_when_unavailable,branding_loader_enabled,enabled,disabled_response_mode,disabled_status_code,disabled_html,disabled_template_id,protection_mode,protection_login_mode,protection_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.ProjectID, r.Name, r.Mode, nullableString(r.Domain), nullableString(r.PathPrefix), nullableInt(r.PublicPort), nullableInt(r.TunnelPort), nullableString(r.BackendScheme), r.BackendHost, r.BackendPort, r.OriginType, nullableString(r.AgentID), boolInt(r.TLS), boolInt(r.RedirectEnabled), r.RedirectTarget, r.RedirectStatusCode, boolInt(r.HideWhenUnavailable), boolInt(r.BrandingLoaderEnabled), boolInt(r.Enabled), r.DisabledResponseMode, r.DisabledStatusCode, r.DisabledHTML, r.DisabledTemplateID, r.ProtectionMode, r.ProtectionLoginMode, r.ProtectionHash, formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path o puerto publico")
@@ -1614,7 +1627,7 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 			return Resource{}, fmt.Errorf("ya existe un recurso %s usando el puerto publico %d: %s (%s)", strings.ToUpper(next.Mode), next.PublicPort, conflict.Name, conflict.ID)
 		}
 	}
-	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, tunnel_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, redirect_enabled = ?, redirect_target = ?, redirect_status_code = ?, hide_when_unavailable = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, disabled_template_id = ?, protection_mode = ?, protection_login_mode = ?, protection_hash = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableInt(next.TunnelPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.RedirectEnabled), next.RedirectTarget, next.RedirectStatusCode, boolInt(next.HideWhenUnavailable), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, next.DisabledTemplateID, next.ProtectionMode, next.ProtectionLoginMode, next.ProtectionHash, formatTime(next.UpdatedAt), next.ID)
+	_, err = s.db.Exec(`UPDATE resources SET project_id = ?, name = ?, mode = ?, domain = ?, path_prefix = ?, public_port = ?, tunnel_port = ?, backend_scheme = ?, backend_host = ?, backend_port = ?, origin_type = ?, agent_id = ?, tls = ?, redirect_enabled = ?, redirect_target = ?, redirect_status_code = ?, hide_when_unavailable = ?, branding_loader_enabled = ?, enabled = ?, disabled_response_mode = ?, disabled_status_code = ?, disabled_html = ?, disabled_template_id = ?, protection_mode = ?, protection_login_mode = ?, protection_hash = ?, updated_at = ? WHERE id = ?`, next.ProjectID, next.Name, next.Mode, nullableString(next.Domain), nullableString(next.PathPrefix), nullableInt(next.PublicPort), nullableInt(next.TunnelPort), nullableString(next.BackendScheme), next.BackendHost, next.BackendPort, next.OriginType, nullableString(next.AgentID), boolInt(next.TLS), boolInt(next.RedirectEnabled), next.RedirectTarget, next.RedirectStatusCode, boolInt(next.HideWhenUnavailable), boolInt(next.BrandingLoaderEnabled), boolInt(next.Enabled), next.DisabledResponseMode, next.DisabledStatusCode, next.DisabledHTML, next.DisabledTemplateID, next.ProtectionMode, next.ProtectionLoginMode, next.ProtectionHash, formatTime(next.UpdatedAt), next.ID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return Resource{}, errors.New("ya existe un recurso con el mismo dominio/path o puerto publico")
@@ -2268,7 +2281,7 @@ func (s *Store) FindHTTPPanelResource(host, path string) (Resource, bool) {
 	if path == "" {
 		path = "/"
 	}
-	rows, err := s.db.Query(resourceSelectSQL+` WHERE mode = 'http' AND domain = ? AND (enabled = 0 OR COALESCE(origin_type,'local') = 'agent' OR COALESCE(protection_mode,'none') <> 'none' OR COALESCE(redirect_enabled,0) = 1 OR COALESCE(hide_when_unavailable,0) = 1) ORDER BY length(COALESCE(path_prefix,'')) DESC`, host)
+	rows, err := s.db.Query(resourceSelectSQL+` WHERE mode = 'http' AND domain = ? AND (enabled = 0 OR COALESCE(origin_type,'local') = 'agent' OR COALESCE(protection_mode,'none') <> 'none' OR COALESCE(redirect_enabled,0) = 1 OR COALESCE(hide_when_unavailable,0) = 1 OR COALESCE(branding_loader_enabled,0) = 1) ORDER BY length(COALESCE(path_prefix,'')) DESC`, host)
 	if err != nil {
 		return Resource{}, false
 	}
@@ -2508,14 +2521,15 @@ type resourceScanner interface {
 
 func scanResourceRows(row resourceScanner) (Resource, error) {
 	var r Resource
-	var tls, redirectEnabled, hideWhenUnavailable, enabled int
+	var tls, redirectEnabled, hideWhenUnavailable, brandingLoaderEnabled, enabled int
 	var createdAt, updatedAt string
-	if err := row.Scan(&r.ID, &r.ProjectID, &r.Name, &r.Mode, &r.Domain, &r.PathPrefix, &r.PublicPort, &r.TunnelPort, &r.BackendScheme, &r.BackendHost, &r.BackendPort, &r.OriginType, &r.AgentID, &tls, &redirectEnabled, &r.RedirectTarget, &r.RedirectStatusCode, &hideWhenUnavailable, &enabled, &r.DisabledResponseMode, &r.DisabledStatusCode, &r.DisabledHTML, &r.DisabledTemplateID, &r.ProtectionMode, &r.ProtectionLoginMode, &r.ProtectionHash, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.ProjectID, &r.Name, &r.Mode, &r.Domain, &r.PathPrefix, &r.PublicPort, &r.TunnelPort, &r.BackendScheme, &r.BackendHost, &r.BackendPort, &r.OriginType, &r.AgentID, &tls, &redirectEnabled, &r.RedirectTarget, &r.RedirectStatusCode, &hideWhenUnavailable, &brandingLoaderEnabled, &enabled, &r.DisabledResponseMode, &r.DisabledStatusCode, &r.DisabledHTML, &r.DisabledTemplateID, &r.ProtectionMode, &r.ProtectionLoginMode, &r.ProtectionHash, &createdAt, &updatedAt); err != nil {
 		return Resource{}, err
 	}
 	r.TLS = tls == 1
 	r.RedirectEnabled = redirectEnabled == 1
 	r.HideWhenUnavailable = hideWhenUnavailable == 1
+	r.BrandingLoaderEnabled = brandingLoaderEnabled == 1
 	r.Enabled = enabled == 1
 	if r.OriginType == "" {
 		if r.AgentID != "" {

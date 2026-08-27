@@ -130,6 +130,21 @@ func TestBuildTraefikConfigHiddenUnavailableRoutesToPanel(t *testing.T) {
 	}
 }
 
+func TestBuildTraefikConfigBrandingHTTPRoutesToPangolite(t *testing.T) {
+	resources := []Resource{
+		{ID: "brand01", Name: "Intranet", Mode: ModeHTTP, Domain: "brand.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "10.0.0.20", BackendPort: 8080, Enabled: true, BrandingLoaderEnabled: true},
+	}
+	cfg := BuildTraefikConfig(resources)
+	if cfg.HTTP == nil || len(cfg.HTTP.Services) != 1 {
+		t.Fatalf("http config inesperada: %#v", cfg.HTTP)
+	}
+	for _, svc := range cfg.HTTP.Services {
+		if got := svc.LoadBalancer.Servers[0].URL; got != "http://127.0.0.1:2424" {
+			t.Fatalf("recurso con branding debe enrutar a Pangolite, got %s", got)
+		}
+	}
+}
+
 func TestRenderStaticTraefikDoesNotCreateL4EntryPoints(t *testing.T) {
 	t.Setenv("PANGOLITE_SKIP_TRAEFIK_CHECK", "1")
 	dir := t.TempDir()

@@ -328,6 +328,44 @@ func (e *unexpectedAgentJobError) Error() string {
 	return "job HTTP inesperado para agente"
 }
 
+func TestUpdateResourceControlPersistsBrandingLoader(t *testing.T) {
+	server, store := testServerWithStore(t)
+	project, err := store.AddProject(Project{Name: "Proyecto Branding Edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.AddResource(Resource{
+		ProjectID:     project.ID,
+		Name:          "Intranet",
+		Mode:          ModeHTTP,
+		Domain:        "edit-brand.example.com",
+		PathPrefix:    "/",
+		BackendScheme: "http",
+		BackendHost:   "127.0.0.1",
+		BackendPort:   8080,
+		OriginType:    OriginLocal,
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/resources/"+created.ID, bytes.NewBufferString(`{"brandingLoaderEnabled":true}`))
+	req.SetPathValue("id", created.ID)
+	rr := httptest.NewRecorder()
+	server.updateResourceControl(rr, req, requestSession{User: User{Username: "admin"}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status inesperado: %d body=%q", rr.Code, rr.Body.String())
+	}
+	updated, err := store.ResourceByID(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.BrandingLoaderEnabled {
+		t.Fatal("la edicion parcial debe persistir brandingLoaderEnabled")
+	}
+}
+
 func TestPermanentResourceRedirectPreservesPathAndQuery(t *testing.T) {
 	server, store := testServerWithStore(t)
 	project, err := store.AddProject(Project{Name: "Proyecto Redirect"})

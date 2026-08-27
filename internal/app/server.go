@@ -1018,7 +1018,7 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "public_port", created.PublicPort, "tunnel_port", created.TunnelPort, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
-	s.recordAudit(r, rs, "resource.create", "resource", created.ID, created.ProjectID, map[string]any{"name": created.Name, "mode": created.Mode, "origin": created.OriginType, "publicPort": created.PublicPort, "agentId": created.AgentID, "traefik": traefikResult.Message})
+	s.recordAudit(r, rs, "resource.create", "resource", created.ID, created.ProjectID, map[string]any{"name": created.Name, "mode": created.Mode, "origin": created.OriginType, "publicPort": created.PublicPort, "agentId": created.AgentID, "brandingLoader": created.BrandingLoaderEnabled, "traefik": traefikResult.Message})
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 	response := map[string]any{"resource": created, "traefik": traefikResult}
 	if sslWarning != "" {
@@ -1213,30 +1213,31 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	}
 	defer r.Body.Close()
 	var req struct {
-		ProjectID            string `json:"projectId"`
-		Name                 string `json:"name"`
-		Mode                 string `json:"mode"`
-		Domain               string `json:"domain"`
-		PathPrefix           string `json:"pathPrefix"`
-		PublicPort           int    `json:"publicPort"`
-		BackendScheme        string `json:"backendScheme"`
-		BackendHost          string `json:"backendHost"`
-		BackendPort          int    `json:"backendPort"`
-		OriginType           string `json:"originType"`
-		AgentID              string `json:"agentId"`
-		TLS                  *bool  `json:"tls"`
-		RedirectEnabled      *bool  `json:"redirectEnabled"`
-		RedirectTarget       string `json:"redirectTarget"`
-		RedirectStatusCode   int    `json:"redirectStatusCode"`
-		HideWhenUnavailable  *bool  `json:"hideWhenUnavailable"`
-		Enabled              *bool  `json:"enabled"`
-		DisabledResponseMode string `json:"disabledResponseMode"`
-		DisabledStatusCode   int    `json:"disabledStatusCode"`
-		DisabledHTML         string `json:"disabledHtml"`
-		DisabledTemplateID   string `json:"disabledTemplateId"`
-		ProtectionMode       string `json:"protectionMode"`
-		ProtectionLoginMode  string `json:"protectionLoginMode"`
-		ProtectionPassword   string `json:"protectionPassword"`
+		ProjectID             string `json:"projectId"`
+		Name                  string `json:"name"`
+		Mode                  string `json:"mode"`
+		Domain                string `json:"domain"`
+		PathPrefix            string `json:"pathPrefix"`
+		PublicPort            int    `json:"publicPort"`
+		BackendScheme         string `json:"backendScheme"`
+		BackendHost           string `json:"backendHost"`
+		BackendPort           int    `json:"backendPort"`
+		OriginType            string `json:"originType"`
+		AgentID               string `json:"agentId"`
+		TLS                   *bool  `json:"tls"`
+		RedirectEnabled       *bool  `json:"redirectEnabled"`
+		RedirectTarget        string `json:"redirectTarget"`
+		RedirectStatusCode    int    `json:"redirectStatusCode"`
+		HideWhenUnavailable   *bool  `json:"hideWhenUnavailable"`
+		BrandingLoaderEnabled *bool  `json:"brandingLoaderEnabled"`
+		Enabled               *bool  `json:"enabled"`
+		DisabledResponseMode  string `json:"disabledResponseMode"`
+		DisabledStatusCode    int    `json:"disabledStatusCode"`
+		DisabledHTML          string `json:"disabledHtml"`
+		DisabledTemplateID    string `json:"disabledTemplateId"`
+		ProtectionMode        string `json:"protectionMode"`
+		ProtectionLoginMode   string `json:"protectionLoginMode"`
+		ProtectionPassword    string `json:"protectionPassword"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON invalido")
@@ -1247,7 +1248,7 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	fullEdit := req.Name != "" || req.Mode != "" || req.Domain != "" || req.PublicPort != 0 || req.BackendHost != "" || req.BackendPort != 0 || req.OriginType != "" || req.PathPrefix != "" || req.BackendScheme != "" || req.TLS != nil || req.RedirectEnabled != nil || req.RedirectTarget != "" || req.RedirectStatusCode != 0 || req.HideWhenUnavailable != nil || req.ProjectID != "" || req.ProtectionMode != "" || req.ProtectionLoginMode != "" || req.ProtectionPassword != ""
+	fullEdit := req.Name != "" || req.Mode != "" || req.Domain != "" || req.PublicPort != 0 || req.BackendHost != "" || req.BackendPort != 0 || req.OriginType != "" || req.PathPrefix != "" || req.BackendScheme != "" || req.TLS != nil || req.RedirectEnabled != nil || req.RedirectTarget != "" || req.RedirectStatusCode != 0 || req.HideWhenUnavailable != nil || req.BrandingLoaderEnabled != nil || req.ProjectID != "" || req.ProtectionMode != "" || req.ProtectionLoginMode != "" || req.ProtectionPassword != ""
 	beforeResources := s.store.ListResources()
 	if !fullEdit {
 		enabled := current.Enabled
@@ -1353,6 +1354,9 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	if req.HideWhenUnavailable != nil {
 		next.HideWhenUnavailable = *req.HideWhenUnavailable
 	}
+	if req.BrandingLoaderEnabled != nil {
+		next.BrandingLoaderEnabled = *req.BrandingLoaderEnabled
+	}
 	if req.Enabled != nil {
 		next.Enabled = *req.Enabled
 	}
@@ -1406,7 +1410,7 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("recurso editado", "id", id, "mode", updated.Mode, "name", updated.Name, "user", rs.User.Username, "traefik", traefikResult.Message)
-	s.recordAudit(r, rs, "resource.update", "resource", updated.ID, updated.ProjectID, map[string]any{"name": updated.Name, "mode": updated.Mode, "origin": updated.OriginType, "publicPort": updated.PublicPort, "agentId": updated.AgentID, "traefik": traefikResult.Message})
+	s.recordAudit(r, rs, "resource.update", "resource", updated.ID, updated.ProjectID, map[string]any{"name": updated.Name, "mode": updated.Mode, "origin": updated.OriginType, "publicPort": updated.PublicPort, "agentId": updated.AgentID, "brandingLoader": updated.BrandingLoaderEnabled, "traefik": traefikResult.Message})
 	w.Header().Set("X-Pangolite-Traefik", traefikResult.Message)
 	response := map[string]any{"resource": updated, "traefik": traefikResult}
 	if sslWarning != "" {
@@ -2338,6 +2342,9 @@ func (s *Server) servePublicResource(w http.ResponseWriter, r *http.Request) boo
 		s.serveDisabledResource(w, r, resource)
 		return true
 	}
+	if s.serveResourceBrandingAsset(w, r, resource) {
+		return true
+	}
 	if resource.RedirectEnabled {
 		s.servePermanentResourceRedirect(w, r, resource)
 		return true
@@ -2349,7 +2356,7 @@ func (s *Server) servePublicResource(w http.ResponseWriter, r *http.Request) boo
 		s.proxyViaAgent(w, r, resource)
 		return true
 	}
-	if resource.ProtectionMode != ProtectionNone || resource.HideWhenUnavailable {
+	if resource.ProtectionMode != ProtectionNone || resource.HideWhenUnavailable || resource.BrandingLoaderEnabled {
 		s.proxyLocalResource(w, r, resource)
 		return true
 	}
@@ -2569,12 +2576,14 @@ func (s *Server) proxyLocalResource(w http.ResponseWriter, r *http.Request, reso
 		}
 		applyForwardedProxyHeaders(req.Header, r, publicScheme, publicHost)
 		stripInternalProxyHeaders(req.Header)
+		prepareBrandingBackendRequest(req.Header, r, resource)
 		if resource.ProtectionMode != ProtectionNone {
 			req.Header.Del("Authorization")
 		}
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		rewriteProxyResponseHeaders(resp.Header, resource, publicScheme, publicHost)
+		prepareBrandedHTMLResponse(resp, r, resource)
 		return nil
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
@@ -2796,6 +2805,7 @@ func (s *Server) proxyViaAgentStream(w http.ResponseWriter, r *http.Request, res
 	outReq.RequestURI = ""
 	outReq.Header = cloneProxyRequestHeader(r.Header)
 	applyForwardedProxyHeaders(outReq.Header, r, publicScheme, publicHost)
+	prepareBrandingBackendRequest(outReq.Header, r, resource)
 	if resource.ProtectionMode != ProtectionNone {
 		outReq.Header.Del("Authorization")
 	}
@@ -2840,9 +2850,10 @@ func (s *Server) proxyViaAgentStream(w http.ResponseWriter, r *http.Request, res
 		serveUnavailableResource(w, r, resource, http.StatusBadGateway, "upgrade HTTP no soportado por el stream v1")
 		return
 	}
-	respHeader := cloneSafeHeader(resp.Header)
-	rewriteProxyResponseHeaders(respHeader, resource, publicScheme, publicHost)
-	copySafeHeader(w.Header(), respHeader)
+	resp.Header = cloneSafeHeader(resp.Header)
+	rewriteProxyResponseHeaders(resp.Header, resource, publicScheme, publicHost)
+	prepareBrandedHTMLResponse(resp, r, resource)
+	copySafeHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if r.Method == http.MethodHead {
 		return
@@ -2875,6 +2886,7 @@ func (s *Server) proxyViaAgentLegacy(w http.ResponseWriter, r *http.Request, res
 	publicHost := publicHostForRequest(r)
 	headers := cloneProxyRequestHeader(r.Header)
 	applyForwardedProxyHeaders(headers, r, publicScheme, publicHost)
+	prepareBrandingBackendRequest(headers, r, resource)
 	job := AgentJob{
 		ID:           jobID,
 		Kind:         ModeHTTP,
@@ -2903,12 +2915,19 @@ func (s *Server) proxyViaAgentLegacy(w http.ResponseWriter, r *http.Request, res
 		serveUnavailableResource(w, r, resource, http.StatusBadGateway, resp.Error)
 		return
 	}
-	respHeader := cloneSafeHeader(resp.Header)
-	rewriteProxyResponseHeaders(respHeader, resource, publicScheme, publicHost)
-	copySafeHeader(w.Header(), respHeader)
-	w.WriteHeader(resp.StatusCode)
+	httpResp := &http.Response{
+		StatusCode:    resp.StatusCode,
+		Header:        cloneSafeHeader(resp.Header),
+		Body:          io.NopCloser(bytes.NewReader(resp.Body)),
+		ContentLength: int64(len(resp.Body)),
+	}
+	rewriteProxyResponseHeaders(httpResp.Header, resource, publicScheme, publicHost)
+	prepareBrandedHTMLResponse(httpResp, r, resource)
+	defer httpResp.Body.Close()
+	copySafeHeader(w.Header(), httpResp.Header)
+	w.WriteHeader(httpResp.StatusCode)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(resp.Body)
+		_, _ = io.Copy(w, httpResp.Body)
 	}
 }
 

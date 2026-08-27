@@ -53,8 +53,8 @@ func TestMigrationRemovesTrustedAdminNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 12 {
-		t.Fatalf("version de esquema = %d, want 12", version)
+	if version != 13 {
+		t.Fatalf("version de esquema = %d, want 13", version)
 	}
 
 	var count int
@@ -63,6 +63,43 @@ func TestMigrationRemovesTrustedAdminNetworks(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal("la tabla trusted_admin_networks debe eliminarse en la migracion v12")
+	}
+}
+
+func TestStorePersistsHTTPBrandingLoader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	project, err := store.AddProject(Project{Name: "Proyecto Branding"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.AddResource(Resource{ProjectID: project.ID, Name: "Web", Mode: ModeHTTP, Domain: "branding.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8080, Enabled: true, BrandingLoaderEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.ResourceByID(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.BrandingLoaderEnabled {
+		t.Fatal("branding_loader_enabled no se persistio")
+	}
+
+	loaded.Mode = ModeTCP
+	loaded.Domain = ""
+	loaded.PathPrefix = ""
+	loaded.BackendScheme = ""
+	loaded.PublicPort = 23456
+	updated, err := store.UpdateResource(created.ID, loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.BrandingLoaderEnabled {
+		t.Fatal("branding debe desactivarse al convertir un recurso a TCP")
 	}
 }
 
