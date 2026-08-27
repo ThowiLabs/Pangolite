@@ -1,6 +1,6 @@
 # Pangolite
 
-Pangolite es una plataforma de administración de proxys y túneles escrita en Go para servidores Linux. Permite administrar proyectos, dominios, recursos HTTP/HTTPS/TCP/UDP y servidores conectados, usando Traefik instalado directamente en el sistema.
+Pangolite es una plataforma de administración de proxys y túneles escrita en Go para servidores Linux. Permite administrar proyectos, dominios, recursos HTTP/HTTPS/TCP/UDP y servidores conectados. Traefik se mantiene como edge HTTP/HTTPS; Pangolite administra directamente los listeners TCP/UDP públicos para poder aplicarlos en caliente.
 
 Repositorio previsto:
 
@@ -26,14 +26,15 @@ La base actual incluye:
 - Directorio global de Conexiones SSH para abrir la terminal del servidor Pangolite o de cualquier cliente sin navegar primero por su proyecto; la sección de frecuentes se calcula desde aperturas reales registradas en auditoría y persiste entre dispositivos.
 - Transferencia bidireccional de archivos desde la terminal local o remota: subida por arrastrar/selector con progreso y descarga mediante `download ruta`, incluyendo ZIP seguro de directorios.
 - Recursos HTTP/HTTPS locales o mediante cliente de sistema.
-- Recursos TCP/UDP directos del host Pangolite.
+- Recursos TCP/UDP publicados directamente por el plano L4 dinámico de Pangolite, locales o mediante cliente de sistema.
 - Validación de puerto público contra recursos existentes y contra puertos ocupados en el sistema.
 - Suspension de recursos HTTP/HTTPS con respuesta 403, 404 o HTML personalizado basado en plantillas editables.
 - Instalación desde releases con `install.sh`, con detección de sistema/init y configuración de Traefik del sistema.
 - Recarga automática de HTTP/HTTPS mediante file provider con `watch=true`.
 - Aplicación automática de cambios desde la UI; no se pide al usuario aplicar Traefik manualmente.
+- Alta, edición, suspensión y eliminación de listeners TCP/UDP sin reiniciar Traefik ni cortar HTTP/HTTPS u otros puertos activos.
 
-TCP/UDP mediante cliente de sistema ya usa puentes internos y streams/WebSocket persistentes para publicar servicios remotos detrás de NAT.
+TCP remoto mediante cliente de sistema usa streams/WebSocket persistentes directamente desde el listener público de Pangolite hacia `TunnelHub`; UDP remoto usa jobs de datagrama autenticados. Ya no existe un puerto puente local por recurso ni un entrypoint L4 de Traefik.
 
 ## Onboarding inicial
 
@@ -42,27 +43,21 @@ En instalaciones nuevas Pangolite ya no crea un proyecto `default` automáticame
 ## Arquitectura
 
 ```text
-Internet
-  ↓
-Traefik del sistema
-  ↓
-Pangolite / recurso local
-  ↓
-Servicio interno
+HTTP/HTTPS:
+Internet → Traefik → Pangolite o backend HTTP
+
+TCP/UDP:
+Internet → listener L4 de Pangolite → servicio local o túnel remoto
 ```
 
 Para servicios detrás de NAT:
 
 ```text
-Internet
-  ↓
-Traefik del sistema
-  ↓
-Pangolite
-  ↓ conexión saliente
-Cliente de sistema Pangolite
-  ↓
-Servicio interno remoto
+HTTP/HTTPS remoto:
+Internet → Traefik → Pangolite → cliente de sistema → servicio remoto
+
+TCP/UDP remoto:
+Internet → Pangolite L4 → TunnelHub/job → cliente de sistema → servicio remoto
 ```
 
 ## Requisitos
@@ -179,6 +174,8 @@ PANGOLITE_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 PANGOLITE_ADMIN_ACCESS_MODE=learn
 PANGOLITE_AGENT_HTTP_CONCURRENCY=4
 PANGOLITE_AGENT_STREAM_CONCURRENCY=16
+PANGOLITE_L4_TCP_CONCURRENCY=512
+PANGOLITE_L4_UDP_CONCURRENCY=256
 # Opcional: tambien puedes definirlos por env, aunque lo recomendado es hacerlo desde Ajustes.
 # PANGOLITE_DASHBOARD_DOMAIN=panel.midominio.com
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@midominio.com
@@ -217,21 +214,13 @@ Después de guardar el dominio/correo ACME desde el panel, Pangolite escribe la 
 
 El correo ACME también puede quedar configurado aunque todavía no publiques el panel con dominio propio. Esto permite crear recursos web con el switch **Usar SSL** activado. Si desactivas el switch en un recurso, Pangolite publica solo HTTP y no elimina certificados que Traefik ya haya generado.
 
-Solo los cambios que agregan o eliminan puertos TCP/UDP públicos requieren tocar entrypoints estáticos. Pangolite lo detecta y ejecuta un reinicio controlado de Traefik automáticamente.
-
+Los recursos TCP/UDP no modifican la configuración estática de Traefik. Pangolite abre y cierra sus sockets públicos directamente; crear un puerto nuevo, cambiar el backend, suspender o eliminar un recurso L4 no reinicia Traefik.
 
 ### Compatibilidad de servicios en Linux
 
-Pangolite detecta el gestor de servicios disponible y usa el comando correcto para reiniciar Traefik cuando un cambio modifica entrypoints TCP/UDP:
+Pangolite conserva soporte para systemd, OpenRC, SysVinit y runit. El gestor de servicios solo se necesita para reinicios explícitos del propio servicio o para cambios estáticos de Traefik relacionados con el panel/ACME, no para CRUD de TCP/UDP.
 
-```txt
-systemd  -> systemctl restart traefik
-OpenRC   -> rc-service traefik restart
-SysVinit -> service traefik restart
-runit    -> sv restart traefik
-```
-
-En Alpine/OpenRC, HTTP/HTTPS se recarga por `providers.file.watch=true` o por el provider HTTP de Traefik sin reiniciar. Los puertos TCP/UDP nuevos sí requieren reinicio controlado porque Traefik no agrega entrypoints estáticos en caliente.
+En una actualización desde una versión anterior al plano L4 dinámico, el instalador realiza una migración coordinada una sola vez: renderiza `traefik.yml` sin entrypoints TCP/UDP, reinicia Traefik para liberar esos sockets y después reinicia Pangolite para tomarlos. Ese handoff puede interrumpir brevemente conexiones L4 durante la actualización, pero no vuelve a repetirse al administrar recursos. En actualizaciones posteriores el instalador compara `traefik.yml`: si la configuración estática no cambió, no reinicia Traefik.
 
 ## Recarga automática de Traefik
 
@@ -252,7 +241,7 @@ Esto significa:
 - Recursos HTTP/HTTPS: Traefik consulta a Pangolite y se actualiza automáticamente.
 - Dominio del dashboard: se escribe como archivo dinámico y Traefik lo recarga automáticamente.
 - Suspensión 403/404/HTML: se aplica sin reiniciar.
-- TCP/UDP nuevos: requieren entrypoints estáticos; Pangolite valida puertos, escribe la config y reinicia Traefik de forma automática.
+- TCP/UDP: no pasan por Traefik; Pangolite mantiene listeners públicos dinámicos y aplica cambios en caliente.
 
 El usuario no debe ejecutar `render-traefik` para el flujo normal del panel. Ese comando queda como herramienta de reparación/diagnóstico.
 
@@ -333,7 +322,7 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 - `PANGOLITE_ADMIN_ACCESS_MODE=off` desactiva el enlace de la sesión a la IP. No existe una lista administrativa de CIDR: cambiar de ISP, VPN o red no requiere editar el servidor, solo volver a autenticarse.
 - Los WebSockets administrativos usan validación de origen y ya no desactivan la comprobación automática del paquete WebSocket.
 - El servidor limita cabeceras y conexiones ociosas. Los clientes actuales anuncian `http-stream-v1`: uploads y downloads HTTP se transmiten por streaming con buffers pequeños y ya no tienen un límite fijo de 16 MiB. El servidor conserva el protocolo legado de 16 MiB solo para agentes antiguos hasta que se actualicen. `PANGOLITE_AGENT_HTTP_CONCURRENCY` limita las solicitudes HTTP remotas simultáneas (4 por defecto).
-- Los recursos TCP/SSH/SFTP no tienen un timeout de duración fijo: los 30 segundos se usan únicamente para esperar que el agente adjunte el WebSocket. Una vez conectado, la sesión dura mientras los extremos sigan vivos. Pangolite aplica keepalive TCP/WebSocket y `TCP_NODELAY` para tolerar NAT/proxies y sesiones ociosas. `PANGOLITE_AGENT_STREAM_CONCURRENCY` limita globalmente los streams TCP remotos (16 por defecto) para proteger VPS pequeños.
+- Los recursos TCP/SSH/SFTP no tienen un timeout de duración fijo: los 30 segundos se usan únicamente para esperar que el agente adjunte el WebSocket. Una vez conectado, la sesión dura mientras los extremos sigan vivos. Pangolite aplica keepalive TCP/WebSocket y `TCP_NODELAY`. `PANGOLITE_AGENT_STREAM_CONCURRENCY` limita los streams TCP remotos (16 por defecto), mientras `PANGOLITE_L4_TCP_CONCURRENCY` limita conexiones TCP públicas globales (512 por defecto) y `PANGOLITE_L4_UDP_CONCURRENCY` limita trabajos UDP remotos simultáneos (256 por defecto).
 - Traefik aplica al panel un rate limit de 30 solicitudes/s con ráfaga 60 y un máximo de 64 solicitudes simultáneas. Esto reduce abuso HTTP, pero no sustituye protección DDoS volumétrica del proveedor, firewall o red perimetral.
 - La contraseña temporal se elimina al cambiarla, los puertos públicos se validan antes de persistir recursos TCP/UDP y las acciones administrativas críticas quedan registradas en auditoría.
 - Los respaldos SQLite se crean con `VACUUM INTO` desde el panel de Seguridad.
@@ -351,7 +340,7 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 
 **Cliente de sistema**: identidad instalada en un servidor remoto o NAT. Tiene ID y token. No publica nada por sí solo.
 
-**Recurso**: servicio que se expone. Puede ser HTTP/HTTPS/TCP/UDP. Decide si el servicio interno vive en este servidor Pangolite o en un servidor remoto conectado.
+**Recurso**: servicio que se expone. Puede ser HTTP/HTTPS/TCP/UDP. HTTP/HTTPS se publica mediante Traefik; TCP/UDP usa listeners dinámicos del propio Pangolite. El backend puede vivir en este servidor o en un servidor remoto conectado.
 
 **Servicio interno**: host y puerto reales del servicio, por ejemplo `127.0.0.1:22` o `127.0.0.1:8080`.
 
@@ -383,7 +372,7 @@ Pangolite aplica automáticamente cambios HTTP/HTTPS. Si cambias el correo ACME 
 
 ## Edicion de recursos y selector de proyectos
 
-Cada recurso tiene boton **Editar** desde la tabla del proyecto. Los cambios HTTP/HTTPS se aplican por configuracion dinamica de Traefik sin reiniciar. Si cambia un puerto publico TCP/UDP, Pangolite reinicia Traefik de forma controlada porque cambia un entrypoint estatico. El sidebar ahora usa selector desplegable con busqueda y puede ocultarse desde el topbar.
+Cada recurso tiene boton **Editar** desde la tabla del proyecto. Los cambios HTTP/HTTPS se aplican por configuracion dinamica de Traefik. Los cambios TCP/UDP se aplican directamente sobre los listeners de Pangolite; no requieren reiniciar Traefik. El sidebar ahora usa selector desplegable con busqueda y puede ocultarse desde el topbar.
 
 ### Dashboard global y selector de proyecto
 
@@ -431,7 +420,7 @@ Capacidades iniciales del cliente NAT:
 - Rotación de token desde el panel.
 - Instalación y eliminación automática del servicio del cliente.
 
-Para recursos TCP/UDP remotos, Pangolite crea un puerto interno local de puente, Traefik publica el puerto público y el cliente NAT abre una conexión saliente hacia el panel. No se requiere abrir puertos en el servidor remoto.
+Para recursos TCP/UDP remotos, Pangolite escucha directamente en el puerto público. TCP se conecta a `TunnelHub` y viaja como stream WebSocket autenticado hacia el cliente; UDP se transporta como jobs de datagrama autenticados. No se crea un puerto puente interno y no se requiere abrir puertos en el servidor remoto.
 
 ## Logs operativos
 
@@ -459,9 +448,9 @@ Los errores de validacion de puertos TCP/UDP registran modo, puerto publico, ori
 
 ### Nota operativa sobre TCP/UDP
 
-Los recursos TCP/UDP requieren entrypoints estáticos en Traefik. Pangolite escribe la configuración y programa el reinicio controlado de Traefik en segundo plano para que la API responda antes de aplicar el cambio. Los cambios HTTP/HTTPS continúan aplicándose por configuración dinámica sin reinicio.
+Los recursos TCP/UDP son gestionados por `PublicL4Manager` dentro de Pangolite. La sincronización reserva primero todos los sockets nuevos; si alguno no puede abrirse, los listeners ya activos permanecen intactos y el reconciliador vuelve a intentar la aplicación periódicamente. Cambiar solamente el backend no cierra el socket público: las conexiones TCP ya aceptadas pueden terminar con el backend anterior y las nuevas usan el backend actualizado.
 
-Los túneles TCP de clientes NAT usan WebSocket autenticado entre el cliente y Pangolite para transportar el stream bidireccional.
+TCP local usa proxy dúplex con keepalive, `TCP_NODELAY` y half-close. TCP de clientes NAT usa WebSocket autenticado directamente desde el listener público hacia `TunnelHub`. UDP local mantiene pseudo-sesiones por origen con expiración por inactividad; UDP remoto conserva el intercambio autenticado de datagramas con concurrencia acotada.
 
 ## Experiencia del panel
 
@@ -469,11 +458,11 @@ Los túneles TCP de clientes NAT usan WebSocket autenticado entre el cliente y P
 - Las acciones sensibles del panel usan un modal de confirmación propio: eliminar recursos, eliminar dominios, deshabilitar clientes, rotar tokens y suspensión/activación rápida.
 - Al crear o editar recursos, el panel muestra un modal de progreso mientras valida puertos, guarda cambios y aplica Traefik automáticamente.
 
-### Eliminación de recursos y Traefik
+### Eliminación de recursos y aplicación en caliente
 
 La eliminación de recursos es idempotente para evitar errores por doble clic, reintentos del navegador o confirmaciones repetidas. Cuando se elimina un recurso desde el panel, la tabla se actualiza localmente de inmediato y luego se sincroniza con la API.
 
-Para recursos TCP/UDP, Pangolite agrupa los reinicios de Traefik durante unos segundos. Esto evita reinicios repetidos al eliminar varios recursos seguidos y reduce cortes temporales si el panel se usa detrás del mismo Traefik.
+Para TCP/UDP, eliminar o suspender un recurso cierra únicamente su listener público. No se reinicia Traefik ni Pangolite y los demás puertos continúan atendiendo tráfico.
 
 
 ## Clientes NAT
@@ -513,7 +502,7 @@ Pangolite incluye una Zona de peligro por proyecto. Desde ahí se puede renombra
 
 La eliminación de clientes de sistema es una acción fuerte: elimina el cliente de sistema y todos los recursos vinculados a ese cliente de sistema. Para evitar errores, el panel solicita la contraseña del administrador actual antes de ejecutar la eliminación.
 
-Los cambios que eliminan recursos aplican Traefik automáticamente. Si hay puertos TCP/UDP involucrados, Pangolite agrupa el reinicio controlado para reducir cortes y evitar acciones repetidas.
+Los cambios que eliminan recursos HTTP se reflejan por la configuración dinámica de Traefik. Para TCP/UDP, Pangolite retira directamente el listener correspondiente sin reiniciar Traefik ni los demás puertos.
 
 ### Suspensión avanzada y protección de recursos
 

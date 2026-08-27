@@ -1624,7 +1624,7 @@ func (s *Store) UpdateResource(id string, next Resource) (Resource, error) {
 	return next, nil
 }
 
-func (s *Store) prepareTunnelPort(r *Resource, excludeID string) error {
+func (s *Store) prepareTunnelPort(r *Resource, _ string) error {
 	if r == nil {
 		return nil
 	}
@@ -1632,37 +1632,11 @@ func (s *Store) prepareTunnelPort(r *Resource, excludeID string) error {
 		r.TunnelPort = 0
 		return nil
 	}
-	if r.TunnelPort > 0 {
-		return nil
-	}
-	used := map[int]bool{}
-	rows, err := s.db.Query(`SELECT COALESCE(tunnel_port,0) FROM resources WHERE COALESCE(tunnel_port,0) > 0 AND id <> ?`, strings.TrimSpace(excludeID))
-	if err == nil {
-		for rows.Next() {
-			var p int
-			if rows.Scan(&p) == nil && p > 0 {
-				used[p] = true
-			}
-		}
-		_ = rows.Close()
-	}
-	for port := 42000; port <= 49999; port++ {
-		if used[port] {
-			continue
-		}
-		if r.Mode == ModeTCP {
-			if err := TCPPortAvailable(port); err != nil {
-				continue
-			}
-		} else {
-			if err := UDPPortAvailable(port); err != nil {
-				continue
-			}
-		}
-		r.TunnelPort = port
-		return nil
-	}
-	return errors.New("no hay puertos internos disponibles para el puente del cliente NAT")
+	// Desde el plano L4 dinamico Pangolite conecta directamente el listener
+	// publico con TunnelHub. Se conservan valores tunnel_port antiguos para
+	// compatibilidad de datos/rollback, pero los recursos nuevos ya no reservan
+	// ni necesitan un puerto puente 127.0.0.1 adicional.
+	return nil
 }
 
 func (s *Store) DeleteResource(id string) error {
@@ -2001,6 +1975,51 @@ func (s *Store) SuspendAgentResources(agentID string, opts AgentMaintenanceOptio
 		updated = agent
 	}
 	return updated, s.ListResourcesByAgent(agentID), nil
+}
+
+func (s *Store) ResourcesToResumeAgent(agentID string, web bool, tcp bool, udp bool) ([]Resource, error) {
+	agentID = strings.TrimSpace(agentID)
+	if !idRe.MatchString(agentID) {
+		return nil, errors.New("id de agente invalido")
+	}
+	modes := (AgentMaintenanceOptions{Web: web, TCP: tcp, UDP: udp}).modes()
+	if len(modes) == 0 {
+		return nil, errors.New("selecciona web, tcp o udp")
+	}
+	placeholders, modeArgs := maintenanceModeWhere(modes)
+	args := append([]any{agentID}, modeArgs...)
+	rows, err := s.db.Query(`SELECT resource_id FROM agent_maintenance_resources WHERE agent_id = ? AND was_enabled = 1 AND resource_mode IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("consultar recursos a reactivar: %w", err)
+	}
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("leer recurso a reactivar: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("listar recursos a reactivar: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("cerrar consulta de recursos a reactivar: %w", err)
+	}
+	// Store limita SQLite a una sola conexion. Cerramos rows antes de consultar
+	// cada ResourceByID para no bloquear intentando adquirir la misma conexion.
+	out := make([]Resource, 0, len(ids))
+	for _, id := range ids {
+		resource, err := s.ResourceByID(id)
+		if err != nil {
+			continue
+		}
+		resource.Enabled = true
+		out = append(out, resource)
+	}
+	return out, nil
 }
 
 func (s *Store) ResumeAgentResources(agentID string, web bool, tcp bool, udp bool) (AgentPublic, []Resource, error) {

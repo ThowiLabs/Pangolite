@@ -176,7 +176,7 @@
             <label class="form-label">Puerto público</label>
             <input id="publicPort" name="publicPort" type="number" class="form-control" placeholder="2222">
           </div>
-          <div class="main-layout-note d-flex align-items-end">Cambiar puertos TCP/UDP puede reiniciar Traefik porque modifica entrypoints estáticos.</div>
+          <div class="main-layout-note d-flex align-items-end">Los puertos TCP/UDP se publican directamente desde Pangolite y se aplican en caliente sin reiniciar Traefik ni otros listeners.</div>
         </div>
 
         <div class="grid grid-3 mt-3 resource-backend-only">

@@ -1,12 +1,13 @@
 # Arquitectura de Pangolite
 
-Pangolite es un plataforma de administración en Go inspirado en Pangolin. El objetivo es exponer recursos de proyectos usando Traefik como edge proxy y SQLite como almacenamiento local.
+Pangolite es una plataforma de administración en Go inspirada en Pangolin. El objetivo es exponer recursos de proyectos usando Traefik como edge HTTP/HTTPS, un plano L4 dinámico propio para TCP/UDP y SQLite como almacenamiento local.
 
 ## Componentes
 
 - **Pangolite panel:** servidor Go con UI, API, sesiones, proyectos y recursos.
 - **SQLite:** base embebida para datos del panel.
-- **Traefik del sistema:** proxy público HTTP/HTTPS/TCP/UDP.
+- **Traefik del sistema:** edge público HTTP/HTTPS y terminación ACME/TLS.
+- **PublicL4Manager:** listeners públicos TCP/UDP dinámicos administrados por Pangolite.
 - **Cliente de sistema:** agente instalado en servidores NAT/remotos.
 - **Recurso:** servicio publicado, por ejemplo una app web, SSH, TCP o UDP.
 
@@ -15,7 +16,8 @@ Pangolite es un plataforma de administración en Go inspirado en Pangolin. El ob
 ### Recurso local
 
 ```text
-Internet -> Traefik -> servicio alcanzable desde el VPS Pangolite
+HTTP/HTTPS: Internet -> Traefik -> backend HTTP o Pangolite gateway
+TCP/UDP:    Internet -> PublicL4Manager -> servicio alcanzable desde el VPS Pangolite
 ```
 
 ### Recurso remoto HTTP
@@ -27,14 +29,18 @@ Internet -> Traefik -> Pangolite -> cliente de sistema -> servicio remoto HTTP
 ### Recurso TCP remoto
 
 ```text
-Internet -> Traefik TCP entrypoint -> Pangolite bridge 127.0.0.1:<tunnel_port> -> WebSocket stream -> cliente de sistema -> servicio TCP remoto
+Internet -> PublicL4Manager -> TunnelHub -> WebSocket stream -> cliente de sistema -> servicio TCP remoto
 ```
+
+No existe un entrypoint TCP de Traefik ni un puerto puente `127.0.0.1:<tunnel_port>` por recurso.
 
 ### Recurso UDP remoto
 
 ```text
-Internet -> Traefik UDP entrypoint -> Pangolite bridge 127.0.0.1:<tunnel_port> -> job/datagrama autenticado -> cliente de sistema -> servicio UDP remoto
+Internet -> PublicL4Manager -> job/datagrama autenticado -> cliente de sistema -> servicio UDP remoto
 ```
+
+Para backends UDP locales se mantiene una asociación temporal por origen para conservar semántica de sesión sin crear procesos ni sockets públicos adicionales.
 
 ## Seguridad operativa
 
@@ -85,7 +91,9 @@ Los releases publican clientes descargables para Linux amd64, arm64, 386, armv7 
 
 ### Aplicación de cambios por gestor de servicios
 
-Pangolite detecta el gestor de servicios disponible en runtime. En sistemas con systemd usa `systemctl`; en Alpine/OpenRC usa `rc-service`; en SysVinit usa `service` o `/etc/init.d`; y en runit usa `sv`. Los cambios HTTP/HTTPS siguen entrando por configuración dinámica de Traefik sin reinicio. Los cambios que agregan o eliminan entrypoints TCP/UDP requieren reinicio controlado de Traefik porque esos puertos forman parte de la configuración estática.
+Pangolite detecta el gestor de servicios disponible en runtime. En sistemas con systemd usa `systemctl`; en Alpine/OpenRC usa `rc-service`; en SysVinit usa `service` o `/etc/init.d`; y en runit usa `sv`. Los cambios HTTP/HTTPS siguen entrando por configuración dinámica de Traefik. TCP/UDP se reconcilia dentro del proceso Pangolite sin reiniciar servicios.
+
+Al actualizar desde una versión donde Traefik poseía los puertos L4, el instalador hace un handoff único: reemplaza el binario de forma atómica, renderiza `traefik.yml` solo con 80/443, reinicia Traefik para liberar los sockets y después reinicia Pangolite para tomarlos. `pangolite doctor` avisa si detecta entrypoints L4 heredados todavía presentes. En instalaciones ya migradas, los instaladores comparan la configuración estática y evitan reiniciar Traefik cuando `traefik.yml` no cambió.
 
 ## Frontend del panel
 

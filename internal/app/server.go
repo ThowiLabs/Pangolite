@@ -32,12 +32,12 @@ type loginAttempt struct {
 }
 
 type Server struct {
-	config  Config
-	store   *Store
-	hub     *TunnelHub
-	bridges *BridgeManager
-	mux     *http.ServeMux
-	log     *slog.Logger
+	config Config
+	store  *Store
+	hub    *TunnelHub
+	l4     *PublicL4Manager
+	mux    *http.ServeMux
+	log    *slog.Logger
 
 	loginMu       sync.Mutex
 	loginAttempts map[string]loginAttempt
@@ -76,7 +76,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	}
 	c = effective
 	hub := NewTunnelHub(64)
-	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger, c.AgentStreamConcurrency), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency), terminalDownloads: map[string]terminalDownloadTicket{}, terminalDownloadSlots: make(chan struct{}, 2)}
+	s := &Server{config: c, store: store, hub: hub, l4: NewPublicL4Manager(hub, logger, c.L4TCPConcurrency, c.AgentStreamConcurrency, c.L4UDPConcurrency), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency), terminalDownloads: map[string]terminalDownloadTicket{}, terminalDownloadSlots: make(chan struct{}, 2)}
 	s.routes()
 	return s
 }
@@ -87,10 +87,11 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) Run(ctx context.Context) error {
 	s.startAutomaticBackups(ctx)
-	if err := s.refreshBridgeListeners(); err != nil && s.log != nil {
-		s.log.Warn("no se pudieron preparar puentes de clientes NAT", "error", err.Error())
+	if err := s.refreshPublicL4Listeners(); err != nil && s.log != nil {
+		s.log.Warn("no se pudieron preparar listeners publicos TCP/UDP", "error", err.Error())
 	}
-	defer s.bridges.Close()
+	s.startPublicL4Reconciler(ctx)
+	defer s.l4.Close()
 	srv := &http.Server{Addr: s.config.Addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	errc := make(chan error, 1)
 	go func() {
@@ -996,12 +997,24 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	reservation, err := s.reservePublicL4Transition(nil, resource)
+	if err != nil {
+		s.log.Warn("reserva de puerto publico fallo", "mode", resource.Mode, "public_port", resource.PublicPort, "user", rs.User.Username, "error", err.Error())
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if reservation != nil {
+		defer reservation.Abort()
+	}
 	beforeResources := s.store.ListResources()
 	created, err := s.store.AddResource(resource)
 	if err != nil {
 		s.log.Warn("crear recurso fallo", "mode", resource.Mode, "public_port", resource.PublicPort, "origin", resource.OriginType, "agent", resource.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if reservation != nil {
+		reservation.Commit(created)
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("recurso creado", "id", created.ID, "mode", created.Mode, "name", created.Name, "public_port", created.PublicPort, "tunnel_port", created.TunnelPort, "origin", created.OriginType, "agent", created.AgentID, "user", rs.User.Username, "traefik", traefikResult.Message)
@@ -1012,6 +1025,53 @@ func (s *Server) createResource(w http.ResponseWriter, r *http.Request, rs reque
 		response["warning"] = sslWarning
 	}
 	writeJSON(w, http.StatusCreated, response)
+}
+
+func (s *Server) reservePublicL4Transition(current *Resource, next Resource) (*PublicL4Reservation, error) {
+	if s.l4 == nil || !next.Enabled || (next.Mode != ModeTCP && next.Mode != ModeUDP) {
+		return nil, nil
+	}
+	if current != nil && current.Enabled && current.Mode == next.Mode && current.PublicPort == next.PublicPort {
+		return nil, nil
+	}
+	return s.l4.Reserve(next)
+}
+
+func (s *Server) reservePublicL4Resources(resources []Resource) ([]*PublicL4Reservation, error) {
+	reservations := make([]*PublicL4Reservation, 0)
+	for _, resource := range resources {
+		reservation, err := s.l4.Reserve(resource)
+		if err != nil {
+			abortPublicL4Reservations(reservations)
+			return nil, err
+		}
+		if reservation != nil {
+			reservations = append(reservations, reservation)
+		}
+	}
+	return reservations, nil
+}
+
+func abortPublicL4Reservations(reservations []*PublicL4Reservation) {
+	for _, reservation := range reservations {
+		reservation.Abort()
+	}
+}
+
+func commitPublicL4Reservations(reservations []*PublicL4Reservation, resources []Resource) {
+	byKey := make(map[string]Resource, len(resources))
+	for _, resource := range resources {
+		if resource.Enabled && (resource.Mode == ModeTCP || resource.Mode == ModeUDP) {
+			byKey[publicL4Key(resource.Mode, resource.PublicPort)] = resource
+		}
+	}
+	for _, reservation := range reservations {
+		if resource, ok := byKey[reservation.key]; ok {
+			reservation.Commit(resource)
+		} else {
+			reservation.Abort()
+		}
+	}
 }
 
 func (s *Server) validatePublicPortForCreate(resource Resource) error {
@@ -1025,7 +1085,7 @@ func (s *Server) validatePublicPortForUpdate(current, next Resource) error {
 	if next.Mode != ModeTCP && next.Mode != ModeUDP {
 		return nil
 	}
-	mustCheckSystem := current.Mode != next.Mode || current.PublicPort != next.PublicPort
+	mustCheckSystem := current.Mode != next.Mode || current.PublicPort != next.PublicPort || (!current.Enabled && next.Enabled)
 	return s.validatePublicPort(next.Mode, next.PublicPort, next.ID, mustCheckSystem)
 }
 
@@ -1223,10 +1283,23 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 				}
 			}
 		}
+		nextControl := current
+		nextControl.Enabled = enabled
+		reservation, err := s.reservePublicL4Transition(&current, nextControl)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if reservation != nil {
+			defer reservation.Abort()
+		}
 		updated, err := s.store.UpdateResourceControl(id, enabled, mode, status, html, templateID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if reservation != nil {
+			reservation.Commit(updated)
 		}
 		traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 		s.log.Info("control de recurso actualizado", "id", id, "enabled", updated.Enabled, "mode", updated.DisabledResponseMode, "user", rs.User.Username, "traefik", traefikResult.Message)
@@ -1313,11 +1386,23 @@ func (s *Server) updateResourceControl(w http.ResponseWriter, r *http.Request, r
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	reservation, err := s.reservePublicL4Transition(&current, next)
+	if err != nil {
+		s.log.Warn("reserva de puerto publico en edicion fallo", "resource", id, "mode", next.Mode, "public_port", next.PublicPort, "user", rs.User.Username, "error", err.Error())
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if reservation != nil {
+		defer reservation.Abort()
+	}
 	updated, err := s.store.UpdateResource(id, next)
 	if err != nil {
 		s.log.Warn("editar recurso fallo", "resource", id, "mode", next.Mode, "public_port", next.PublicPort, "origin", next.OriginType, "agent", next.AgentID, "user", rs.User.Username, "error", err.Error())
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if reservation != nil {
+		reservation.Commit(updated)
 	}
 	traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 	s.log.Info("recurso editado", "id", id, "mode", updated.Mode, "name", updated.Name, "user", rs.User.Username, "traefik", traefikResult.Message)
@@ -1564,11 +1649,23 @@ func (s *Server) applyAgentMaintenanceRequest(w http.ResponseWriter, r *http.Req
 	}
 	beforeResources := s.store.ListResources()
 	if !*req.Suspended {
+		toResume, err := s.store.ResourcesToResumeAgent(id, req.Web, req.TCP, req.UDP)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		reservations, err := s.reservePublicL4Resources(toResume)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		defer abortPublicL4Reservations(reservations)
 		agent, resources, err := s.store.ResumeAgentResources(id, req.Web, req.TCP, req.UDP)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		commitPublicL4Reservations(reservations, resources)
 		traefikResult := s.applyTraefikAfterResourceChange(beforeResources)
 		s.log.Info("mantenimiento de cliente reactivado", "id", id, "web", req.Web, "tcp", req.TCP, "udp", req.UDP, "user", rs.User.Username, "traefik", traefikResult.Message)
 		s.recordAudit(r, rs, "agent.maintenance.resume", "agent", id, agent.ProjectID, map[string]any{"web": req.Web, "tcp": req.TCP, "udp": req.UDP, "resources": len(resources), "traefik": traefikResult.Message})
@@ -1736,23 +1833,23 @@ func (s *Server) ensureUsableHTTPSSwitches() string {
 	return ""
 }
 
-func (s *Server) applyTraefikAfterResourceChange(before []Resource) TraefikApplyResult {
-	if err := s.refreshBridgeListeners(); err != nil && s.log != nil {
-		s.log.Warn("no se pudieron sincronizar puentes de clientes NAT", "error", err.Error())
+func (s *Server) applyTraefikAfterResourceChange(_ []Resource) TraefikApplyResult {
+	l4Err := s.refreshPublicL4Listeners()
+	if l4Err != nil && s.log != nil {
+		s.log.Warn("no se pudieron sincronizar listeners publicos TCP/UDP", "error", l4Err.Error())
 	}
 	sslWarning := s.ensureUsableHTTPSSwitches()
+	result := TraefikApplyResult{OK: true, Message: "Recursos TCP/UDP aplicados en caliente por Pangolite; Traefik detectara los cambios HTTP/HTTPS dinamicamente", DynamicChanged: true, Warning: sslWarning}
 	if !s.config.AutoTraefik {
-		return TraefikApplyResult{OK: true, Message: "Traefik automatico desactivado", DynamicChanged: false, Warning: sslWarning}
+		result.Message = "Recursos TCP/UDP aplicados en caliente por Pangolite; Traefik automatico desactivado para HTTP/HTTPS"
+		result.DynamicChanged = false
 	}
-	after := s.store.ListResources()
-	if TraefikPortSignature(before) != TraefikPortSignature(after) {
-		result := s.applyTraefikStaticAndRestart()
-		if sslWarning != "" {
-			result.Warning = joinWarnings(result.Warning, sslWarning)
-		}
-		return result
+	if l4Err != nil {
+		result.OK = false
+		result.Message = "El recurso se guardo, pero Pangolite no pudo aplicar todos los listeners TCP/UDP: " + l4Err.Error()
+		result.Warning = joinWarnings(result.Warning, "Los listeners existentes permanecen activos y Pangolite reintentara la sincronizacion automaticamente.")
 	}
-	return TraefikApplyResult{OK: true, Message: "Traefik detectara el cambio por configuracion dinamica", DynamicChanged: true, Warning: sslWarning}
+	return result
 }
 
 func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
@@ -1767,10 +1864,10 @@ func (s *Server) applyTraefikStaticAndRestart() TraefikApplyResult {
 	}
 	manager := DetectServiceManager()
 	if !manager.Available() {
-		return TraefikApplyResult{OK: true, Message: "configuracion estatica escrita; no se detecto gestor de servicios para reiniciar Traefik automaticamente", RestartRequired: true, StaticChanged: true, ServiceManager: manager.String(), Warning: joinWarnings("Este cambio agrego o retiro entrypoints TCP/UDP. Reinicia Traefik manualmente para aplicarlo.", sslWarning)}
+		return TraefikApplyResult{OK: true, Message: "configuracion estatica escrita; no se detecto gestor de servicios para reiniciar Traefik automaticamente", RestartRequired: true, StaticChanged: true, ServiceManager: manager.String(), Warning: joinWarnings("Reinicia Traefik manualmente para aplicar cambios estaticos del panel/ACME. Los listeners TCP/UDP de Pangolite no requieren reinicio.", sslWarning)}
 	}
-	s.scheduleTraefikRestart("cambio de entrypoints TCP/UDP")
-	return TraefikApplyResult{OK: true, Message: fmt.Sprintf("Traefik se reiniciara en segundo plano con %s para aplicar entrypoints TCP/UDP", manager.String()), Restarted: false, RestartRequired: true, StaticChanged: true, DynamicChanged: true, ServiceManager: manager.String(), Warning: joinWarnings("Para agregar o quitar tuneles TCP/UDP Traefik debe reiniciar su servicio global y las conexiones activas podrian cortarse unos segundos.", sslWarning)}
+	s.scheduleTraefikRestart("cambio de configuracion estatica del panel/ACME")
+	return TraefikApplyResult{OK: true, Message: fmt.Sprintf("Traefik se reiniciara en segundo plano con %s para aplicar la configuracion estatica del panel/ACME", manager.String()), Restarted: false, RestartRequired: true, StaticChanged: true, DynamicChanged: true, ServiceManager: manager.String(), Warning: sslWarning}
 }
 
 func (s *Server) scheduleTraefikRestart(reason string) {
@@ -1806,11 +1903,42 @@ func (s *Server) scheduleTraefikRestart(reason string) {
 	})
 }
 
-func (s *Server) refreshBridgeListeners() error {
-	if s.bridges == nil {
+func (s *Server) refreshPublicL4Listeners() error {
+	if s.l4 == nil {
 		return nil
 	}
-	return s.bridges.Sync(s.store.ListResources())
+	return s.l4.Sync(s.store.ListResources())
+}
+
+func (s *Server) startPublicL4Reconciler(ctx context.Context) {
+	if s.l4 == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(publicL4RetryInterval)
+		defer ticker.Stop()
+		lastError := ""
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				err := s.refreshPublicL4Listeners()
+				if err != nil {
+					msg := err.Error()
+					if msg != lastError && s.log != nil {
+						s.log.Warn("reconciliacion de listeners TCP/UDP pendiente", "error", msg)
+					}
+					lastError = msg
+					continue
+				}
+				if lastError != "" && s.log != nil {
+					s.log.Info("listeners TCP/UDP reconciliados correctamente")
+				}
+				lastError = ""
+			}
+		}
+	}()
 }
 
 func (s *Server) resourceHealth(w http.ResponseWriter, r *http.Request, _ requestSession) {
@@ -1893,12 +2021,24 @@ func (s *Server) checkResourceHealth(ctx context.Context, res Resource) (out Res
 		out.Message = fmt.Sprintf("backend responde HTTP %d", resp.StatusCode)
 		return out
 	case ModeTCP:
-		addr := res.ServiceAddress()
+		if s.l4 == nil || !s.l4.Listening(ModeTCP, res.PublicPort) {
+			out.Status = "warning"
+			out.Message = "listener TCP publico no esta activo"
+			return out
+		}
 		if res.UsesAgent() {
-			addr = res.BridgeAddress()
+			agent, err := s.store.AgentByID(res.AgentID)
+			if err != nil || !agent.Online {
+				out.Status = "warning"
+				out.Message = "listener TCP activo, pero el cliente remoto no esta conectado"
+				return out
+			}
+			out.Status = "ok"
+			out.Message = "listener TCP activo y cliente remoto conectado"
+			return out
 		}
 		d := net.Dialer{Timeout: 2 * time.Second}
-		conn, err := d.DialContext(checkCtx, "tcp", addr)
+		conn, err := d.DialContext(checkCtx, "tcp", net.JoinHostPort(res.BackendHost, fmt.Sprint(res.BackendPort)))
 		if err != nil {
 			out.Status = "warning"
 			out.Message = err.Error()
@@ -1906,7 +2046,24 @@ func (s *Server) checkResourceHealth(ctx context.Context, res Resource) (out Res
 		}
 		_ = conn.Close()
 		out.Status = "ok"
-		out.Message = "conexion TCP aceptada"
+		out.Message = "listener publico activo y backend TCP acepta conexiones"
+		return out
+	case ModeUDP:
+		if s.l4 == nil || !s.l4.Listening(ModeUDP, res.PublicPort) {
+			out.Status = "warning"
+			out.Message = "listener UDP publico no esta activo"
+			return out
+		}
+		if res.UsesAgent() {
+			agent, err := s.store.AgentByID(res.AgentID)
+			if err != nil || !agent.Online {
+				out.Status = "warning"
+				out.Message = "listener UDP activo, pero el cliente remoto no esta conectado"
+				return out
+			}
+		}
+		out.Status = "ok"
+		out.Message = "listener UDP publico activo"
 		return out
 	default:
 		out.Status = "unknown"

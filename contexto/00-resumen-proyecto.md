@@ -8,7 +8,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 
 ## Arquitectura actual
 - Backend Go con SQLite, migraciones, auditoría, backups, health checks y `pangolite doctor`.
-- Traefik como reverse proxy global para HTTP/HTTPS y entryPoints TCP/UDP.
+- Traefik como edge estable para HTTP/HTTPS; Pangolite administra directamente listeners TCP/UDP públicos y dinámicos.
 - Clientes de sistema/NAT conectados al servidor para publicar servicios remotos.
 - Frontend autocontenido con `embed.FS`, templates físicas, layouts, componentes, páginas HTML y assets separados.
 - El panel usa rutas reales del navegador, render inicial desde servidor y JavaScript solo para hidratación, modales, acciones, health, logs y copiado.
@@ -39,13 +39,14 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - `pangolite-client --install` reemplaza instalaciones anteriores de forma idempotente en systemd/OpenRC/Windows; en Windows el propio CLI solicita elevación UAC para instalar o eliminar el servicio cuando no fue iniciado como administrador.
 - El acceso administrativo usa por defecto modo `learn`: cada sesión queda ligada a la IP exacta de login; si la IP cambia se exige contraseña de nuevo y un login válido desde cualquier IP nueva crea una sesión nueva. No existe una lista administrativa por CIDR; `off` desactiva el enlace por IP.
 - El mismo binario incorpora `pangolite user reset-password USUARIO` para recuperación local sin iniciar el servidor. Solicita la contraseña oculta y confirmada en Linux, admite `--password-stdin` para automatización, revoca sesiones/tokens de recuperación y deja la jerarquía `pangolite user ...` preparada para futuros usuarios.
+- El plano L4 público es gestionado por `PublicL4Manager`: reserva sockets antes de persistir altas/reactivaciones, mantiene conexiones TCP aceptadas durante cambios de backend/puerto, usa sesiones UDP acotadas y reconcilia fallos por puerto sin bloquear recursos independientes. Las actualizaciones antiguas hacen un handoff único desde los entrypoints L4 de Traefik.
 - Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
 - `ui.go` ya no contiene el frontend gigante; ahora renderiza templates.
 - Existen layouts, componentes, páginas y assets en `internal/app/templates/` e `internal/app/assets/app/`.
 - Header, footer, sidebar y botón global son fijos; el scroll es global del navegador.
 - Los modales deben quedar siempre por encima del header/sidebar/footer.
 - En móvil, el sidebar queda encima del header y se cierra al tocar fuera.
-- HTTP/HTTPS se aplica dinámicamente; TCP/UDP con puerto nuevo requiere reinicio controlado de Traefik.
+- HTTP/HTTPS se aplica dinámicamente mediante Traefik; TCP/UDP se abre, edita, suspende y elimina en caliente desde Pangolite sin reiniciar Traefik ni cortar otros listeners.
 - OpenRC/Alpine y systemd/Debian deben seguir funcionando.
 
 ## Prioridades siguientes sugeridas

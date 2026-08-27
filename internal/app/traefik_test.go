@@ -2,11 +2,14 @@ package app
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestBuildTraefikConfigHTTPAndTCPUDP(t *testing.T) {
+func TestBuildTraefikConfigOnlyPublishesHTTP(t *testing.T) {
 	resources := []Resource{
 		{ID: "http01", Name: "Panel", Mode: ModeHTTP, Domain: "app.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 8081, TLS: true, Enabled: true},
 		{ID: "agent1", Name: "Casa", Mode: ModeHTTP, Domain: "casa.example.com", PathPrefix: "/", BackendScheme: "http", BackendHost: "127.0.0.1", BackendPort: 3000, AgentID: "agent01", TLS: true, Enabled: true},
@@ -17,11 +20,11 @@ func TestBuildTraefikConfigHTTPAndTCPUDP(t *testing.T) {
 	if cfg.HTTP == nil || len(cfg.HTTP.Routers) != 4 || len(cfg.HTTP.Services) != 2 {
 		t.Fatalf("http config inesperada: %#v", cfg.HTTP)
 	}
-	if cfg.TCP == nil || len(cfg.TCP.Routers) != 1 || len(cfg.TCP.Services) != 1 {
-		t.Fatalf("tcp config inesperada: %#v", cfg.TCP)
+	if cfg.TCP != nil {
+		t.Fatalf("Traefik ya no debe publicar TCP: %#v", cfg.TCP)
 	}
-	if cfg.UDP == nil || len(cfg.UDP.Routers) != 1 || len(cfg.UDP.Services) != 1 {
-		t.Fatalf("udp config inesperada: %#v", cfg.UDP)
+	if cfg.UDP != nil {
+		t.Fatalf("Traefik ya no debe publicar UDP: %#v", cfg.UDP)
 	}
 	b, err := json.Marshal(cfg)
 	if err != nil || len(b) == 0 {
@@ -124,5 +127,29 @@ func TestBuildTraefikConfigHiddenUnavailableRoutesToPanel(t *testing.T) {
 		if got := svc.LoadBalancer.Servers[0].URL; got != "http://127.0.0.1:2424" {
 			t.Fatalf("recurso con caída oculta debe enrutar a Pangolite, got %s", got)
 		}
+	}
+}
+
+func TestRenderStaticTraefikDoesNotCreateL4EntryPoints(t *testing.T) {
+	t.Setenv("PANGOLITE_SKIP_TRAEFIK_CHECK", "1")
+	dir := t.TempDir()
+	cfg := Config{TraefikDir: dir}
+	resources := []Resource{
+		{ID: "tcp001", Name: "SSH", Mode: ModeTCP, PublicPort: 2222, BackendHost: "127.0.0.1", BackendPort: 22, Enabled: true},
+		{ID: "udp001", Name: "DNS", Mode: ModeUDP, PublicPort: 5353, BackendHost: "127.0.0.1", BackendPort: 53, Enabled: true},
+	}
+	if err := RenderStaticTraefik(cfg, resources); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "traefik.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if strings.Contains(text, "tcp-2222") || strings.Contains(text, "udp-5353") || strings.Contains(text, ":2222") || strings.Contains(text, ":5353") {
+		t.Fatalf("Traefik no debe conservar entrypoints L4:\n%s", text)
+	}
+	if !strings.Contains(text, `address: ":80"`) || !strings.Contains(text, `address: ":443"`) {
+		t.Fatalf("faltan entrypoints HTTP/HTTPS:\n%s", text)
 	}
 }

@@ -76,6 +76,24 @@ service_stop() {
   esac
 }
 
+service_enable_only() {
+  local name="$1"
+  case "$INIT_SYSTEM" in
+    systemd)
+      systemctl daemon-reload
+      systemctl enable "$name" >/dev/null 2>&1 || true
+      ;;
+    openrc) rc-update add "$name" default >/dev/null 2>&1 || true ;;
+    sysvinit)
+      if have update-rc.d; then update-rc.d "$name" defaults >/dev/null 2>&1 || true; fi
+      ;;
+    runit)
+      mkdir -p /etc/service
+      ln -sfn "/etc/sv/$name" "/etc/service/$name"
+      ;;
+  esac
+}
+
 service_enable_start() {
   local name="$1"
   case "$INIT_SYSTEM" in
@@ -348,6 +366,8 @@ PANGOLITE_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 PANGOLITE_ADMIN_ACCESS_MODE=learn
 PANGOLITE_AGENT_HTTP_CONCURRENCY=4
 PANGOLITE_AGENT_STREAM_CONCURRENCY=16
+PANGOLITE_L4_TCP_CONCURRENCY=512
+PANGOLITE_L4_UDP_CONCURRENCY=256
 # En modo learn, un cambio de IP invalida la sesion y permite reautenticar con contraseña desde la IP nueva.
 # Usa off solo si necesitas desactivar el enlace de la sesion a la IP.
 PANGOLITE_AUTO_TRAEFIK=1
@@ -374,6 +394,8 @@ ENV
   sed -i '/^PANGOLITE_ADMIN_ALLOWED_CIDRS=/d' "$ENV_FILE" 2>/dev/null || true
   if ! grep -q '^PANGOLITE_AGENT_HTTP_CONCURRENCY=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_AGENT_HTTP_CONCURRENCY "4"; fi
   if ! grep -q '^PANGOLITE_AGENT_STREAM_CONCURRENCY=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_AGENT_STREAM_CONCURRENCY "16"; fi
+  if ! grep -q '^PANGOLITE_L4_TCP_CONCURRENCY=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_L4_TCP_CONCURRENCY "512"; fi
+  if ! grep -q '^PANGOLITE_L4_UDP_CONCURRENCY=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_L4_UDP_CONCURRENCY "256"; fi
   if [ -n "$SERVER_IP" ]; then set_env_value PANGOLITE_PUBLIC_IP "$SERVER_IP"; fi
 }
 
@@ -392,15 +414,16 @@ build_and_install() {
   "$GO_BIN" test -timeout 2m ./...
   log "Compilando binario"
   CGO_ENABLED=0 "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$BIN_PATH.tmp" ./cmd/pangolite
-  install -m 0755 "$BIN_PATH.tmp" "$BIN_PATH"
-  rm -f "$BIN_PATH.tmp"
+  chmod 0755 "$BIN_PATH.tmp"
+  mv -f "$BIN_PATH.tmp" "$BIN_PATH"
   log "Binario instalado en $BIN_PATH"
   log "Compilando cliente NAT estatico"
   CGO_ENABLED=0 "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$CLIENT_BIN_PATH.tmp" ./cmd/pangolite-client
-  install -m 0755 "$CLIENT_BIN_PATH.tmp" "$CLIENT_BIN_PATH"
+  chmod 0755 "$CLIENT_BIN_PATH.tmp"
   mkdir -p "$PUBLIC_DIR"
-  install -m 0755 "$CLIENT_BIN_PATH.tmp" "$CLIENT_PUBLIC_BIN"
-  rm -f "$CLIENT_BIN_PATH.tmp"
+  cp "$CLIENT_BIN_PATH.tmp" "$CLIENT_PUBLIC_BIN"
+  chmod 0755 "$CLIENT_PUBLIC_BIN"
+  mv -f "$CLIENT_BIN_PATH.tmp" "$CLIENT_BIN_PATH"
   log "Compilando cliente NAT Windows amd64"
   GOOS=windows GOARCH=amd64 CGO_ENABLED=0 "$GO_BIN" build -buildvcs=false -trimpath -ldflags='-s -w' -o "$CLIENT_PUBLIC_WINDOWS_BIN.tmp" ./cmd/pangolite-client
   install -m 0755 "$CLIENT_PUBLIC_WINDOWS_BIN.tmp" "$CLIENT_PUBLIC_WINDOWS_BIN"
@@ -430,10 +453,18 @@ wait_health() {
 
 configure_traefik_if_available() {
   mkdir -p "$TRAEFIK_DIR" "$TRAEFIK_DIR/dynamic"
-  if [ -f "$TRAEFIK_DIR/traefik.yml" ] && ! grep -q 'managed by Pangolite' "$TRAEFIK_DIR/traefik.yml"; then
-    local backup="$TRAEFIK_DIR/traefik.yml.backup-$(date +%Y%m%d%H%M%S)"
-    cp "$TRAEFIK_DIR/traefik.yml" "$backup"
-    log "Backup de Traefik creado: $backup"
+  local previous="$TRAEFIK_DIR/.traefik-before.$$" had_static=0 had_legacy_l4=0 static_changed=1
+  if [ -f "$TRAEFIK_DIR/traefik.yml" ]; then
+    had_static=1
+    cp "$TRAEFIK_DIR/traefik.yml" "$previous"
+    if grep -Eq '^[[:space:]]+(tcp|udp)-[0-9]+:[[:space:]]*$' "$TRAEFIK_DIR/traefik.yml"; then
+      had_legacy_l4=1
+    fi
+    if ! grep -q 'managed by Pangolite' "$TRAEFIK_DIR/traefik.yml"; then
+      local backup="$TRAEFIK_DIR/traefik.yml.backup-$(date +%Y%m%d%H%M%S)"
+      cp "$TRAEFIK_DIR/traefik.yml" "$backup"
+      log "Backup de Traefik creado: $backup"
+    fi
   fi
   log "Escribiendo configuracion de Traefik con file provider watch"
   set -a
@@ -443,12 +474,29 @@ configure_traefik_if_available() {
   "$BIN_PATH" render-traefik
   touch "$TRAEFIK_DIR/acme.json"
   chmod 600 "$TRAEFIK_DIR/acme.json"
-  service_enable_start traefik
-  service_restart traefik || {
-    service_status_hint traefik
-    fail "Traefik no pudo reiniciarse. Revisa puertos ocupados o configuracion previa."
-  }
-  log "Traefik activo; HTTP/HTTPS se actualizara automaticamente por configuracion dinamica"
+  if [ "$had_static" = "1" ] && cmp -s "$previous" "$TRAEFIK_DIR/traefik.yml"; then
+    static_changed=0
+  fi
+  rm -f "$previous"
+  service_enable_only traefik
+  if [ "$static_changed" = "1" ]; then
+    service_restart traefik || service_enable_start traefik || {
+      service_status_hint traefik
+      fail "Traefik no pudo reiniciarse. Revisa puertos ocupados o configuracion previa."
+    }
+  else
+    service_enable_start traefik || {
+      service_status_hint traefik
+      fail "Traefik no pudo iniciarse. Revisa el servicio y su configuracion."
+    }
+  fi
+  if [ "$had_legacy_l4" = "1" ]; then
+    log "Migracion L4 completada: Traefik libero los puertos TCP/UDP publicos para Pangolite"
+  elif [ "$static_changed" = "1" ]; then
+    log "Configuracion estatica de Traefik aplicada"
+  else
+    log "Traefik ya estaba actualizado; no fue necesario reiniciarlo"
+  fi
 }
 
 print_credentials() {
@@ -473,9 +521,11 @@ main() {
   prepare_runtime_dirs
   ensure_traefik
   build_and_install
+  # En actualizaciones, Traefik debe liberar primero los entrypoints TCP/UDP
+  # heredados; luego el servicio Pangolite nuevo toma esos sockets publicos.
+  configure_traefik_if_available
   write_service
   wait_health
-  configure_traefik_if_available
   print_credentials
   log "Instalacion completada"
   cat <<INFO

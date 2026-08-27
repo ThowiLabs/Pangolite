@@ -169,11 +169,33 @@ func (s *Server) bulkProjectResources(w http.ResponseWriter, r *http.Request, rs
 		return
 	}
 	before := s.store.ListResources()
+	var reservations []*PublicL4Reservation
+	if action == "activate" {
+		selected := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			selected[id] = struct{}{}
+		}
+		toActivate := make([]Resource, 0, len(ids))
+		for _, resource := range before {
+			if _, ok := selected[resource.ID]; !ok || resource.ProjectID != projectID || resource.Enabled {
+				continue
+			}
+			resource.Enabled = true
+			toActivate = append(toActivate, resource)
+		}
+		reservations, err = s.reservePublicL4Resources(toActivate)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		defer abortPublicL4Reservations(reservations)
+	}
 	updated, err := s.store.BulkSetResourcesEnabled(r.Context(), projectID, ids, action == "activate")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	commitPublicL4Reservations(reservations, updated)
 	traefik := s.applyTraefikAfterResourceChange(before)
 	s.recordAudit(r, rs, "resource.bulk."+action, "project", projectID, projectID, map[string]any{"count": len(updated), "ids": ids, "traefik": traefik.Message})
 	writeJSON(w, http.StatusOK, map[string]any{"action": action, "resources": updated, "traefik": traefik})
@@ -259,11 +281,25 @@ func (s *Server) bulkProjectAgents(w http.ResponseWriter, r *http.Request, rs re
 				result.Message = fmt.Sprintf("%d recurso(s) revisados", len(affected))
 			}
 		case "resume":
-			_, affected, err := s.store.ResumeAgentResources(agent.ID, true, true, true)
+			toResume, err := s.store.ResourcesToResumeAgent(agent.ID, true, true, true)
 			if err != nil {
 				result.OK = false
 				result.Message = err.Error()
+				break
+			}
+			reservations, err := s.reservePublicL4Resources(toResume)
+			if err != nil {
+				result.OK = false
+				result.Message = err.Error()
+				break
+			}
+			_, affected, err := s.store.ResumeAgentResources(agent.ID, true, true, true)
+			if err != nil {
+				abortPublicL4Reservations(reservations)
+				result.OK = false
+				result.Message = err.Error()
 			} else {
+				commitPublicL4Reservations(reservations, affected)
 				result.Message = fmt.Sprintf("%d recurso(s) revisados", len(affected))
 			}
 		case "reconnect":

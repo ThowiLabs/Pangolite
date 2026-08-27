@@ -84,6 +84,14 @@ func RunDoctor(ctx context.Context, c Config, w io.Writer) error {
 		}
 	}
 	if c.TraefikDir != "" {
+		legacyL4, err := TraefikHasLegacyL4EntryPoints(c)
+		if err != nil {
+			add("warn", "migracion L4", "no se pudo revisar traefik.yml: "+err.Error())
+		} else if legacyL4 {
+			add("warn", "migracion L4", "Traefik aun contiene entrypoints TCP/UDP heredados; ejecuta pangolite render-traefik, reinicia Traefik y luego Pangolite")
+		} else {
+			add("ok", "migracion L4", "Traefik no conserva entrypoints TCP/UDP gestionados por Pangolite")
+		}
 		for _, file := range []string{"traefik.yml", "acme.json"} {
 			path := filepath.Join(c.TraefikDir, file)
 			if _, err := os.Stat(path); err != nil {

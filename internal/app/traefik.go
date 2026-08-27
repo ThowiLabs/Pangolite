@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -113,69 +112,46 @@ func BuildTraefikConfig(resources []Resource) TraefikConfig {
 	}
 
 	for _, r := range resources {
-		if !r.Enabled && r.Mode != ModeHTTP {
+		// TCP/UDP son publicados directamente por Pangolite. Traefik conserva
+		// exclusivamente el plano HTTP/HTTPS para que su configuracion estatica
+		// no cambie al crear, editar, suspender o eliminar listeners L4.
+		if r.Mode != ModeHTTP {
 			continue
 		}
 		key := safeName(r.ID + "-" + r.Name)
 		svc := key + "-service"
 		router := key + "-router"
-
-		switch r.Mode {
-		case ModeHTTP:
-			entry := "web"
-			var tls *TLSConfig
-			if r.TLS {
-				entry = "websecure"
-				tls = &TLSConfig{CertResolver: "letsencrypt"}
-			}
-			rule := fmt.Sprintf("Host(`%s`)", r.Domain)
-			if r.PathPrefix != "" && r.PathPrefix != "/" {
-				rule += fmt.Sprintf(" && PathPrefix(`%s`)", r.PathPrefix)
-			}
-			cfg.HTTP.Routers[router] = HTTPRouter{
+		entry := "web"
+		var tls *TLSConfig
+		if r.TLS {
+			entry = "websecure"
+			tls = &TLSConfig{CertResolver: "letsencrypt"}
+		}
+		rule := fmt.Sprintf("Host(`%s`)", r.Domain)
+		if r.PathPrefix != "" && r.PathPrefix != "/" {
+			rule += fmt.Sprintf(" && PathPrefix(`%s`)", r.PathPrefix)
+		}
+		cfg.HTTP.Routers[router] = HTTPRouter{
+			Rule:        rule,
+			Service:     svc,
+			EntryPoints: []string{entry},
+			TLS:         tls,
+			Priority:    100,
+		}
+		if r.TLS {
+			cfg.HTTP.Routers[router+"-redirect"] = HTTPRouter{
 				Rule:        rule,
 				Service:     svc,
-				EntryPoints: []string{entry},
-				TLS:         tls,
+				EntryPoints: []string{"web"},
+				Middlewares: []string{"redirect-to-https"},
 				Priority:    100,
 			}
-			if r.TLS {
-				cfg.HTTP.Routers[router+"-redirect"] = HTTPRouter{
-					Rule:        rule,
-					Service:     svc,
-					EntryPoints: []string{"web"},
-					Middlewares: []string{"redirect-to-https"},
-					Priority:    100,
-				}
-			}
-			serviceURL := r.ServiceURL()
-			if r.UsesAgent() || !r.Enabled || r.RedirectEnabled || r.HideWhenUnavailable || r.ProtectionMode != ProtectionNone {
-				serviceURL = "http://127.0.0.1:2424"
-			}
-			cfg.HTTP.Services[svc] = HTTPService{LoadBalancer: HTTPLoadBalancer{Servers: []HTTPServer{{URL: serviceURL}}}}
-		case ModeTCP:
-			if cfg.TCP == nil {
-				cfg.TCP = &TCPConfig{Routers: map[string]TCPRouter{}, Services: map[string]TCPService{}}
-			}
-			ep := fmt.Sprintf("tcp-%d", r.PublicPort)
-			cfg.TCP.Routers[router] = TCPRouter{Rule: "HostSNI(`*`)", EntryPoints: []string{ep}, Service: svc}
-			address := r.ServiceAddress()
-			if r.UsesAgent() {
-				address = r.BridgeAddress()
-			}
-			cfg.TCP.Services[svc] = TCPService{LoadBalancer: TCPUDPLoadBalancer{Servers: []TCPUDPServer{{Address: address}}}}
-		case ModeUDP:
-			if cfg.UDP == nil {
-				cfg.UDP = &UDPConfig{Routers: map[string]UDPRouter{}, Services: map[string]UDPService{}}
-			}
-			ep := fmt.Sprintf("udp-%d", r.PublicPort)
-			cfg.UDP.Routers[router] = UDPRouter{EntryPoints: []string{ep}, Service: svc}
-			address := r.ServiceAddress()
-			if r.UsesAgent() {
-				address = r.BridgeAddress()
-			}
-			cfg.UDP.Services[svc] = UDPService{LoadBalancer: TCPUDPLoadBalancer{Servers: []TCPUDPServer{{Address: address}}}}
 		}
+		serviceURL := r.ServiceURL()
+		if r.UsesAgent() || !r.Enabled || r.RedirectEnabled || r.HideWhenUnavailable || r.ProtectionMode != ProtectionNone {
+			serviceURL = "http://127.0.0.1:2424"
+		}
+		cfg.HTTP.Services[svc] = HTTPService{LoadBalancer: HTTPLoadBalancer{Servers: []HTTPServer{{URL: serviceURL}}}}
 	}
 
 	if len(cfg.HTTP.Routers) == 0 && len(cfg.HTTP.Services) == 0 {
@@ -197,8 +173,6 @@ type StaticTraefikData struct {
 	PanelURL         string
 	PanelEnabled     bool
 	ACMEEnabled      bool
-	TCPPorts         []int
-	UDPPorts         []int
 	DynamicDir       string
 }
 
@@ -272,8 +246,6 @@ func RenderStaticTraefikWithPanelDomains(c Config, resources []Resource, panelDo
 		PanelEnabled:     len(panelDomains) > 0,
 		ACMEEnabled:      ACMEEnabled(c),
 		DynamicDir:       filepath.Join(c.TraefikDir, "dynamic"),
-		TCPPorts:         uniquePorts(resources, ModeTCP),
-		UDPPorts:         uniquePorts(resources, ModeUDP),
 	}
 	if port := ListenPortFromAddr(c.Addr); port > 0 {
 		data.ControlURL = fmt.Sprintf("http://127.0.0.1:%d/api/v1/traefik-config", port)
@@ -354,17 +326,6 @@ func renderDynamicTraefikFile(c Config, panelDomains []string) error {
 	return renderFile(filepath.Join(dynamicDir, "pangolite-dashboard.yml"), dynamicDashboardYAMLTemplate, data, 0o644)
 }
 
-func TraefikPortSignature(resources []Resource) string {
-	var parts []string
-	for _, port := range uniquePorts(resources, ModeTCP) {
-		parts = append(parts, fmt.Sprintf("tcp:%d", port))
-	}
-	for _, port := range uniquePorts(resources, ModeUDP) {
-		parts = append(parts, fmt.Sprintf("udp:%d", port))
-	}
-	return strings.Join(parts, ",")
-}
-
 type traefikFileBackup struct {
 	Path    string
 	Backup  string
@@ -410,6 +371,20 @@ func cleanupTraefikBackups(backups []traefikFileBackup) {
 			_ = os.Remove(item.Backup)
 		}
 	}
+}
+
+var legacyL4EntryPointRe = regexp.MustCompile(`(?m)^\s+(?:tcp|udp)-[0-9]+:\s*$`)
+
+func TraefikHasLegacyL4EntryPoints(c Config) (bool, error) {
+	path := filepath.Join(c.TraefikDir, "traefik.yml")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return legacyL4EntryPointRe.Match(content), nil
 }
 
 func ValidateTraefikConfig(c Config) error {
@@ -545,21 +520,6 @@ func renderFile(path, tpl string, data any, perm os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
-func uniquePorts(resources []Resource, mode string) []int {
-	seen := map[int]bool{}
-	for _, r := range resources {
-		if r.Enabled && r.Mode == mode && r.PublicPort > 0 {
-			seen[r.PublicPort] = true
-		}
-	}
-	ports := make([]int, 0, len(seen))
-	for port := range seen {
-		ports = append(ports, port)
-	}
-	sort.Ints(ports)
-	return ports
-}
-
 func ACMEEnabled(c Config) bool {
 	email := strings.ToLower(strings.TrimSpace(c.LetsEncryptEmail))
 	if email == "" {
@@ -622,14 +582,6 @@ entryPoints:
     address: ":80"
   websecure:
     address: ":443"
-{{- range .TCPPorts }}
-  tcp-{{ . }}:
-    address: ":{{ . }}/tcp"
-{{- end }}
-{{- range .UDPPorts }}
-  udp-{{ . }}:
-    address: ":{{ . }}/udp"
-{{- end }}
 
 ping:
   entryPoint: web

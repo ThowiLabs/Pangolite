@@ -12,6 +12,8 @@ func validServeConfigForTest() Config {
 		AdminAccessMode:        "learn",
 		AgentHTTPConcurrency:   4,
 		AgentStreamConcurrency: 16,
+		L4TCPConcurrency:       512,
+		L4UDPConcurrency:       256,
 	}
 }
 

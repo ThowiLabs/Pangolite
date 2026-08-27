@@ -37,6 +37,8 @@ type Config struct {
 	AdminAccessMode        string
 	AgentHTTPConcurrency   int
 	AgentStreamConcurrency int
+	L4TCPConcurrency       int
+	L4UDPConcurrency       int
 }
 
 func LoadConfigFromEnv() Config {
@@ -63,6 +65,8 @@ func LoadConfigFromEnv() Config {
 		AdminAccessMode:        adminAccessModeFromEnv(),
 		AgentHTTPConcurrency:   envInt("PANGOLITE_AGENT_HTTP_CONCURRENCY", 4),
 		AgentStreamConcurrency: envInt("PANGOLITE_AGENT_STREAM_CONCURRENCY", 16),
+		L4TCPConcurrency:       envInt("PANGOLITE_L4_TCP_CONCURRENCY", 512),
+		L4UDPConcurrency:       envInt("PANGOLITE_L4_UDP_CONCURRENCY", 256),
 	}
 }
 
@@ -103,6 +107,12 @@ func (c Config) ValidateForServe() error {
 	}
 	if c.AgentStreamConcurrency < 1 || c.AgentStreamConcurrency > 256 {
 		return errors.New("PANGOLITE_AGENT_STREAM_CONCURRENCY debe estar entre 1 y 256")
+	}
+	if c.L4TCPConcurrency < 16 || c.L4TCPConcurrency > 32768 {
+		return errors.New("PANGOLITE_L4_TCP_CONCURRENCY debe estar entre 16 y 32768")
+	}
+	if c.L4UDPConcurrency < 16 || c.L4UDPConcurrency > 4096 {
+		return errors.New("PANGOLITE_L4_UDP_CONCURRENCY debe estar entre 16 y 4096")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AdminAccessMode)) {
 	case "off", "learn":
@@ -205,7 +215,7 @@ func PrintServeConfig(c Config) string {
 	if c.InsecureDev {
 		mode = "desarrollo-inseguro"
 	}
-	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s templates=%s backup_interval_hours=%d backup_retention_days=%d mode=%s session_days=%d public_ip=%s admin_access=%s agent_http_concurrency=%d agent_stream_concurrency=%d", c.Addr, c.DataPath, c.LogPath, c.BackupDir, c.SuspensionTemplateDir, c.BackupIntervalHours, c.BackupRetentionDays, mode, c.SessionDays, c.PublicIP, c.AdminAccessMode, c.AgentHTTPConcurrency, c.AgentStreamConcurrency)
+	return fmt.Sprintf("addr=%s db=%s log=%s backups=%s templates=%s backup_interval_hours=%d backup_retention_days=%d mode=%s session_days=%d public_ip=%s admin_access=%s agent_http_concurrency=%d agent_stream_concurrency=%d l4_tcp_concurrency=%d l4_udp_concurrency=%d", c.Addr, c.DataPath, c.LogPath, c.BackupDir, c.SuspensionTemplateDir, c.BackupIntervalHours, c.BackupRetentionDays, mode, c.SessionDays, c.PublicIP, c.AdminAccessMode, c.AgentHTTPConcurrency, c.AgentStreamConcurrency, c.L4TCPConcurrency, c.L4UDPConcurrency)
 }
 
 func sessionDuration(c Config) time.Duration {

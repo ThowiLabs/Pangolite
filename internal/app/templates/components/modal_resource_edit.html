@@ -163,7 +163,7 @@
           <label class="form-label">Puerto público</label>
           <input id="editPublicPort" type="number" class="form-control" placeholder="2222">
         </div>
-        <div class="main-layout-note d-flex align-items-end">Si cambias el puerto público TCP/UDP, Pangolite reiniciará Traefik de forma controlada porque cambia un entrypoint estático.</div>
+        <div class="main-layout-note d-flex align-items-end">Cambiar este puerto se aplica en caliente: Pangolite reserva primero el nuevo listener y mantiene intactos los demás puertos activos.</div>
       </div>
 
       <div class="grid grid-2 mt-3 edit-resource-backend-only">

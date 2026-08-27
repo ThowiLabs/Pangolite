@@ -703,14 +703,7 @@ func (r Resource) ServiceURL() string {
 }
 
 func (r Resource) ServiceAddress() string {
-	return fmt.Sprintf("%s:%d", r.BackendHost, r.BackendPort)
-}
-
-func (r Resource) BridgeAddress() string {
-	if r.TunnelPort <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("127.0.0.1:%d", r.TunnelPort)
+	return net.JoinHostPort(r.BackendHost, fmt.Sprint(r.BackendPort))
 }
 
 func (a *Agent) Normalize(now time.Time) {
