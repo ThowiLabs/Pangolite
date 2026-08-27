@@ -15,6 +15,9 @@ jobs:
   release:
     name: Crear release
     runs-on: ubuntu-latest
+    env:
+      GOPROXY: "https://proxy.golang.org|direct"
+      GOSUMDB: "sum.golang.org"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -25,14 +28,74 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: false
+          cache: true
 
       - name: Resolver modulos
         shell: bash
         run: |
           set -euo pipefail
-          go mod tidy
-          go mod download
+
+          retry_go() {
+            local description="$1"
+            shift
+            local max_attempts=4
+            local attempt=1
+            local status=0
+
+            while (( attempt <= max_attempts )); do
+              echo "::group::${description} (intento ${attempt}/${max_attempts})"
+              if "$@"; then
+                echo "::endgroup::"
+                return 0
+              else
+                status=$?
+              fi
+              echo "::endgroup::"
+
+              if (( attempt == max_attempts )); then
+                echo "${description} fallo despues de ${max_attempts} intentos" >&2
+                return "$status"
+              fi
+
+              echo "${description} fallo; reintentando..." >&2
+              sleep $((attempt * 5))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          retry_go "go mod tidy" go mod tidy
+          retry_go "go mod download" go mod download
+          go mod verify
+
+          if [[ ! -s go.sum ]]; then
+            echo "go mod tidy no genero go.sum" >&2
+            exit 1
+          fi
+
+      - name: Persistir dependencias de Go
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$(git status --porcelain -- go.mod go.sum)" ]]; then
+            echo "go.mod y go.sum ya estan actualizados"
+            exit 0
+          fi
+
+          if [[ "$REF_TYPE" != "branch" ]]; then
+            echo "go.mod/go.sum cambiaron, pero el workflow no se ejecuto desde una rama." >&2
+            echo "Ejecuta el release desde la rama que deba recibir la actualizacion automatica." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add go.mod go.sum
+          git commit -m "Actualizar dependencias de Go"
+          git push origin "HEAD:${REF_NAME}"
 
       - name: Resolver version
         id: version
@@ -169,5 +232,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.version.outputs.tag }}" dist/* \
+            --target "$(git rev-parse HEAD)" \
             --title "Pangolite ${{ steps.version.outputs.tag }}" \
             --notes-file release-notes.md
