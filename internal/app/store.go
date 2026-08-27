@@ -2291,6 +2291,50 @@ func (s *Store) UpdateUserEmail(userID int64, email string) error {
 	return err
 }
 
+func (s *Store) ResetUserPassword(username, newPassword string, requireChange bool) (User, error) {
+	username = NormalizeUsername(username)
+	if err := ValidateUsername(username); err != nil {
+		return User{}, err
+	}
+	if err := ValidatePassword(newPassword); err != nil {
+		return User{}, err
+	}
+	user, err := s.UserByUsername(username)
+	if err != nil {
+		return User{}, errors.New("usuario no encontrado")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return User{}, fmt.Errorf("hashear nueva contraseña: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	force := 0
+	if requireChange {
+		force = 1
+	}
+	if _, err := tx.Exec(`UPDATE users SET password_hash = ?, force_password_change = ?, updated_at = ? WHERE id = ?`, string(hash), force, formatTime(now), user.ID); err != nil {
+		return User{}, fmt.Errorf("restablecer contraseña: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, user.ID); err != nil {
+		return User{}, fmt.Errorf("invalidar sesiones: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM password_reset_tokens WHERE user_id = ?`, user.ID); err != nil {
+		return User{}, fmt.Errorf("invalidar enlaces de recuperación: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
+	user.PasswordHash = string(hash)
+	user.ForcePasswordChange = requireChange
+	user.UpdatedAt = now
+	return user, nil
+}
+
 func (s *Store) CreatePasswordResetToken(userID int64, ttl time.Duration) (string, error) {
 	raw, err := newSecret(32)
 	if err != nil {

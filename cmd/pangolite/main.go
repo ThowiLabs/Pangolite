@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,6 +41,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return renderTraefik(args, stdout)
 	case "doctor":
 		return doctor(args, stdout)
+	case "user":
+		return userCommand(args, os.Stdin, stdout)
 	case "healthcheck":
 		return healthcheck(args)
 	case "smoke-backend":
@@ -53,6 +57,131 @@ func run(args []string, stdout, stderr io.Writer) error {
 		printHelp(stderr)
 		return fmt.Errorf("comando desconocido: %s", cmd)
 	}
+}
+
+func userCommand(args []string, stdin io.Reader, stdout io.Writer) error {
+	if len(args) == 0 {
+		printUserHelp(stdout)
+		return nil
+	}
+	switch args[0] {
+	case "reset-password", "passwd":
+		return resetUserPassword(args[1:], stdin, stdout)
+	case "help", "-h", "--help":
+		printUserHelp(stdout)
+		return nil
+	default:
+		printUserHelp(stdout)
+		return fmt.Errorf("comando de usuario desconocido: %s", args[0])
+	}
+}
+
+func resetUserPassword(args []string, stdin io.Reader, stdout io.Writer) error {
+	cfg := app.LoadConfigFromEnv()
+	fs := flag.NewFlagSet("user reset-password", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+	dataPath := cfg.DataPath
+	passwordStdin := false
+	requireChange := false
+	fs.StringVar(&dataPath, "data", dataPath, "ruta de la base SQLite")
+	fs.BoolVar(&passwordStdin, "password-stdin", false, "leer la nueva contraseña desde stdin")
+	fs.BoolVar(&requireChange, "require-change", false, "obligar a cambiar la contraseña en el siguiente inicio de sesión")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("uso: pangolite user reset-password [--data RUTA] [--password-stdin] [--require-change] USUARIO")
+	}
+	username := app.NormalizeUsername(fs.Arg(0))
+	if err := app.ValidateUsername(username); err != nil {
+		return err
+	}
+	if strings.TrimSpace(dataPath) == "" {
+		return errors.New("ruta de base SQLite requerida")
+	}
+	info, err := os.Stat(dataPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("la base SQLite no existe: %s", dataPath)
+		}
+		return fmt.Errorf("revisar base SQLite: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("la ruta de base SQLite es un directorio: %s", dataPath)
+	}
+
+	store, err := app.NewStore(dataPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if _, err := store.UserByUsername(username); err != nil {
+		return fmt.Errorf("usuario %q no encontrado", username)
+	}
+
+	var password string
+	if passwordStdin {
+		password, err = readPasswordLine(stdin)
+	} else {
+		password, err = readPasswordInteractive("Nueva contraseña: ")
+		if err == nil {
+			var confirmation string
+			confirmation, err = readPasswordInteractive("Repite la contraseña: ")
+			if err == nil && password != confirmation {
+				return errors.New("las contraseñas no coinciden")
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if err := app.ValidatePassword(password); err != nil {
+		return err
+	}
+
+	user, err := store.ResetUserPassword(username, password, requireChange)
+	if err != nil {
+		return err
+	}
+	if err := store.RecordAudit(context.Background(), app.AuditEvent{
+		Action:     "user.password.reset_cli",
+		EntityType: "user",
+		EntityID:   fmt.Sprintf("%d", user.ID),
+		Username:   "system",
+		Metadata:   `{"source":"cli"}`,
+	}); err != nil {
+		fmt.Fprintf(stdout, "Advertencia: contraseña restablecida, pero no se pudo registrar la auditoría: %v\n", err)
+	}
+	fmt.Fprintf(stdout, "Contraseña restablecida para %s. Las sesiones y enlaces de recuperación anteriores fueron invalidados.\n", user.Username)
+	return nil
+}
+
+func readPasswordLine(r io.Reader) (string, error) {
+	reader := bufio.NewReader(io.LimitReader(r, 1024))
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("leer contraseña desde stdin: %w", err)
+	}
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	if line == "" && errors.Is(err, io.EOF) {
+		return "", errors.New("stdin no contiene una contraseña")
+	}
+	return line, nil
+}
+
+func printUserHelp(w io.Writer) {
+	fmt.Fprintln(w, `Uso:
+  pangolite user reset-password [--data RUTA] USUARIO
+  pangolite user reset-password --password-stdin [--data RUTA] USUARIO
+
+Alias:
+  pangolite user passwd ...
+
+Opciones:
+  --data            ruta de la base SQLite; por defecto PANGOLITE_DATA
+  --password-stdin  lee la contraseña desde stdin para automatización
+  --require-change  obliga al usuario a cambiarla tras iniciar sesión`)
 }
 
 func serve(args []string, stdout io.Writer) error {
@@ -219,6 +348,7 @@ func printHelp(w io.Writer) {
   pangolite agent [--server-url https://proxy.example.com --agent-id ID --token TOKEN]
   pangolite render-traefik [flags]
   pangolite doctor [flags]
+  pangolite user reset-password [--data RUTA] USUARIO
   pangolite healthcheck [--url http://127.0.0.1:2424/healthz]
   pangolite smoke-backend [--addr 127.0.0.1:18081]
 

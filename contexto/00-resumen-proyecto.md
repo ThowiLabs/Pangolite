@@ -38,6 +38,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - Seguridad permite verificar realmente un backup SQLite en una copia temporal y replicarlo a WebDAV/S3-compatible; S3 usa Signature V4 con standard library, los secretos no regresan al navegador y el auto-upload es opcional.
 - `pangolite-client --install` reemplaza instalaciones anteriores de forma idempotente en systemd/OpenRC/Windows; en Windows el propio CLI solicita elevación UAC para instalar o eliminar el servicio cuando no fue iniciado como administrador.
 - El acceso administrativo usa por defecto modo `learn`: cada sesión queda ligada a la IP exacta de login; si la IP cambia se exige contraseña de nuevo y un login válido desde cualquier IP nueva crea una sesión nueva. No existe una lista administrativa por CIDR; `off` desactiva el enlace por IP.
+- El mismo binario incorpora `pangolite user reset-password USUARIO` para recuperación local sin iniciar el servidor. Solicita la contraseña oculta y confirmada en Linux, admite `--password-stdin` para automatización, revoca sesiones/tokens de recuperación y deja la jerarquía `pangolite user ...` preparada para futuros usuarios.
 - Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
 - `ui.go` ya no contiene el frontend gigante; ahora renderiza templates.
 - Existen layouts, componentes, páginas y assets en `internal/app/templates/` e `internal/app/assets/app/`.

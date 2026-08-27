@@ -680,3 +680,77 @@ func TestListFrequentTerminalTargetsUsesAuditHistoryPerUser(t *testing.T) {
 		t.Fatalf("segundo frecuente inesperado: %#v", usage[1])
 	}
 }
+
+func TestResetUserPasswordRevokesSessionsAndResetTokens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	created, oldPassword, err := store.BootstrapAdmin("admin", "")
+	if err != nil || !created {
+		t.Fatalf("bootstrap invalido: created=%v err=%v", created, err)
+	}
+	user, ok := store.AuthenticateUser("admin", oldPassword)
+	if !ok {
+		t.Fatal("admin no autentico")
+	}
+	rawSession, _, err := store.CreateSessionForIP(user.ID, time.Hour, "198.51.100.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetToken, err := store.CreatePasswordResetToken(user.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.ResetUserPassword("ADMIN", "clave-nueva-segura", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Username != "admin" || updated.ForcePasswordChange {
+		t.Fatalf("usuario actualizado inesperado: %#v", updated)
+	}
+	if _, ok := store.AuthenticateUser("admin", oldPassword); ok {
+		t.Fatal("la contraseña anterior no debe autenticar")
+	}
+	if _, ok := store.AuthenticateUser("admin", "clave-nueva-segura"); !ok {
+		t.Fatal("la contraseña nueva debe autenticar")
+	}
+	if _, _, ok := store.SessionWithUser(rawSession); ok {
+		t.Fatal("la sesión anterior debe quedar invalidada")
+	}
+	if _, err := store.ConsumePasswordResetToken(resetToken, "otra-clave-segura"); err == nil {
+		t.Fatal("el token de recuperación anterior debe quedar invalidado")
+	}
+}
+
+func TestResetUserPasswordCanRequireChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, _, err := store.BootstrapAdmin("admin", "")
+	if err != nil || !created {
+		t.Fatalf("bootstrap invalido: created=%v err=%v", created, err)
+	}
+
+	updated, err := store.ResetUserPassword("admin", "clave-temporal-segura", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.ForcePasswordChange {
+		t.Fatal("se esperaba forzar cambio de contraseña")
+	}
+	loaded, err := store.UserByUsername("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ForcePasswordChange {
+		t.Fatal("force_password_change no se persistió")
+	}
+}

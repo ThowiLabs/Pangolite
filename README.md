@@ -540,6 +540,26 @@ sudo /opt/pangolite/pangolite doctor
 
 El diagnóstico revisa SQLite, migraciones, rutas escribibles, Traefik, puertos 80/443 y servicios.
 
+### Restablecer contraseña de un usuario desde CLI
+
+El mismo binario del servidor incluye un subcomando de recuperación; no hace falta instalar ni mantener un segundo ejecutable. Para restablecer la contraseña del usuario `admin`:
+
+```bash
+sudo /opt/pangolite/pangolite user reset-password admin
+```
+
+La contraseña se solicita dos veces directamente desde la terminal y no se muestra en pantalla. El comando usa `PANGOLITE_DATA` para localizar SQLite; si necesitas operar sobre otra base puedes indicar `--data /ruta/pangolite.db`.
+
+Para automatización se puede leer la contraseña desde stdin sin exponerla como argumento del proceso:
+
+```bash
+printf '%s\n' "$NUEVA_PASSWORD" | sudo /opt/pangolite/pangolite user reset-password --password-stdin admin
+```
+
+No se admite la nueva contraseña como argumento posicional porque terminaría expuesta con facilidad en el historial de la shell o en herramientas que inspeccionan la línea de comandos. Después del reset, Pangolite invalida todas las sesiones y enlaces de recuperación existentes de ese usuario. `--require-change` permite marcar la contraseña como temporal y exigir otro cambio al iniciar sesión.
+
+La jerarquía `pangolite user ...` queda reservada para futuras operaciones multiusuario como listar, crear, deshabilitar, eliminar o revocar sesiones sin cambiar el modo `serve` ni crear otro binario.
+
 Los respaldos automáticos se configuran con:
 
 ```env
