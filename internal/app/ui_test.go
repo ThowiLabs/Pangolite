@@ -317,6 +317,27 @@ func TestTerminalDownloadCommandAndCompactToolbarAreEmbedded(t *testing.T) {
 	}
 }
 
+func TestModalsUseSingleVerticalScrollSurface(t *testing.T) {
+	css, err := assetsFS.ReadFile("assets/app/panel.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles := string(css)
+	for _, expected := range []string{
+		"overflow-y:auto!important;",
+		".modal-card:not(.agent-credentials-card) > form{",
+		"max-height:none!important;",
+		"overflow:visible!important;",
+	} {
+		if !strings.Contains(styles, expected) {
+			t.Fatalf("panel.css no contiene la regla global de scroll modal %q", expected)
+		}
+	}
+	if strings.Contains(styles, ".resource-edit-grid{max-height:70vh;overflow:auto") {
+		t.Fatal("el formulario de edición de recursos conserva un scroll vertical anidado")
+	}
+}
+
 func TestCompactIconActionLanguageIsEmbedded(t *testing.T) {
 	css, err := assetsFS.ReadFile("assets/app/panel.css")
 	if err != nil {
