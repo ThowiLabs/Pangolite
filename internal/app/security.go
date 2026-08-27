@@ -115,65 +115,8 @@ func (s *Server) clientIP(r *http.Request) string {
 	return peer.String()
 }
 
-func adminNetworkForIP(raw string) string {
-	ip := net.ParseIP(strings.TrimSpace(raw))
-	if ip == nil {
-		return ""
-	}
-	if v4 := ip.To4(); v4 != nil {
-		return (&net.IPNet{IP: v4.Mask(net.CIDRMask(24, 32)), Mask: net.CIDRMask(24, 32)}).String()
-	}
-	return (&net.IPNet{IP: ip.Mask(net.CIDRMask(64, 128)), Mask: net.CIDRMask(64, 128)}).String()
-}
-
-func (s *Server) adminIPAllowed(raw string) bool {
-	mode := strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode))
-	if mode == "" || mode == "off" {
-		return true
-	}
-	ip := net.ParseIP(strings.TrimSpace(raw))
-	if ip == nil {
-		return false
-	}
-	if ipInNetworks(ip, s.adminAllowedNetworks) {
-		return true
-	}
-	s.adminNetworksMu.RLock()
-	learned := s.learnedAdminNetworks
-	allowed := ipInNetworks(ip, learned)
-	hasLearned := len(learned) > 0
-	s.adminNetworksMu.RUnlock()
-	if !hasLearned && mode == "learn" {
-		return true
-	}
-	return allowed
-}
-
-func (s *Server) adminLoginIPAllowed(raw string) bool {
-	mode := strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode))
-	if mode == "" || mode == "off" {
-		return true
-	}
-	if net.ParseIP(strings.TrimSpace(raw)) == nil {
-		return false
-	}
-	if mode == "learn" {
-		return true
-	}
-	return s.adminIPAllowed(raw)
-}
-
 func (s *Server) sessionIPBindingEnabled() bool {
-	mode := strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode))
-	return mode == "learn" || mode == "allowlist"
-}
-
-func (s *Server) adminSessionIPAllowed(raw string) bool {
-	mode := strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode))
-	if mode == "" || mode == "off" || mode == "learn" {
-		return true
-	}
-	return s.adminIPAllowed(raw)
+	return strings.EqualFold(strings.TrimSpace(s.config.AdminAccessMode), "learn")
 }
 
 func sameClientIP(expected, actual string) bool {
@@ -183,24 +126,4 @@ func sameClientIP(expected, actual string) bool {
 		return false
 	}
 	return expectedIP.Equal(actualIP)
-}
-
-func (s *Server) rememberAdminIP(raw, username string) {
-	if strings.ToLower(strings.TrimSpace(s.config.AdminAccessMode)) != "learn" {
-		return
-	}
-	network := adminNetworkForIP(raw)
-	if network == "" {
-		return
-	}
-	if err := s.store.AddTrustedAdminNetwork(network, username); err != nil {
-		if s.log != nil {
-			s.log.Warn("no se pudo recordar red administrativa", "network", network, "error", err.Error())
-		}
-		return
-	}
-	learned := parseCIDRs(strings.Join(s.store.ListTrustedAdminNetworks(), ","))
-	s.adminNetworksMu.Lock()
-	s.learnedAdminNetworks = learned
-	s.adminNetworksMu.Unlock()
 }

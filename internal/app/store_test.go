@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -37,6 +38,31 @@ func TestStoreAddDeletePersists(t *testing.T) {
 	}
 	if len(reloaded.ListResources()) != 0 {
 		t.Fatal("se esperaba borrar recurso")
+	}
+}
+
+func TestMigrationRemovesTrustedAdminNetworks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pangolite.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	version, err := store.SchemaVersion(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != 12 {
+		t.Fatalf("version de esquema = %d, want 12", version)
+	}
+
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='trusted_admin_networks'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("la tabla trusted_admin_networks debe eliminarse en la migracion v12")
 	}
 }
 

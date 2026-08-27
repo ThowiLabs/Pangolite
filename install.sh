@@ -450,8 +450,7 @@ PANGOLITE_ADMIN_ACCESS_MODE=learn
 PANGOLITE_AGENT_HTTP_CONCURRENCY=4
 PANGOLITE_AGENT_STREAM_CONCURRENCY=16
 # En modo learn, un cambio de IP invalida la sesion y permite reautenticar con contraseña desde la IP nueva.
-# En allowlist, agrega el CIDR nuevo o cambia temporalmente el modo si necesitas recuperar acceso.
-# PANGOLITE_ADMIN_ALLOWED_CIDRS=203.0.113.10/32
+# Usa off solo si necesitas desactivar el enlace de la sesion a la IP.
 PANGOLITE_AUTO_TRAEFIK=1
 PANGOLITE_CLIENT_LINUX_AMD64=$PUBLIC_DIR/pangolite-client-linux-amd64
 PANGOLITE_CLIENT_LINUX_ARM64=$PUBLIC_DIR/pangolite-client-linux-arm64
@@ -472,7 +471,11 @@ ENV
   if ! grep -q '^PANGOLITE_BACKUP_RETENTION_DAYS=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_BACKUP_RETENTION_DAYS "14"; fi
   set_env_value PANGOLITE_SUSPENSION_TEMPLATE_DIR "$DATA_DIR/templates/suspension"
   if ! grep -q '^PANGOLITE_TRUSTED_PROXY_CIDRS=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_TRUSTED_PROXY_CIDRS "127.0.0.1/32,::1/128"; fi
-  if ! grep -q '^PANGOLITE_ADMIN_ACCESS_MODE=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_ADMIN_ACCESS_MODE "learn"; fi
+  case "$(sed -n 's/^PANGOLITE_ADMIN_ACCESS_MODE=//p' "$ENV_FILE" 2>/dev/null | tail -n1 | tr '[:upper:]' '[:lower:]')" in
+    off) ;;
+    *) set_env_value PANGOLITE_ADMIN_ACCESS_MODE "learn" ;;
+  esac
+  sed -i '/^PANGOLITE_ADMIN_ALLOWED_CIDRS=/d' "$ENV_FILE" 2>/dev/null || true
   if ! grep -q '^PANGOLITE_AGENT_HTTP_CONCURRENCY=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_AGENT_HTTP_CONCURRENCY "4"; fi
   if ! grep -q '^PANGOLITE_AGENT_STREAM_CONCURRENCY=' "$ENV_FILE" 2>/dev/null; then set_env_value PANGOLITE_AGENT_STREAM_CONCURRENCY "16"; fi
   set_env_value PANGOLITE_CLIENT_LINUX_AMD64 "$PUBLIC_DIR/pangolite-client-linux-amd64"

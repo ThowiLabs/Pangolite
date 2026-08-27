@@ -44,9 +44,6 @@ type Server struct {
 	abuseLimiter  *fixedWindowLimiter
 
 	trustedProxyNetworks []*net.IPNet
-	adminAllowedNetworks []*net.IPNet
-	adminNetworksMu      sync.RWMutex
-	learnedAdminNetworks []*net.IPNet
 	agentHTTPSlots       chan struct{}
 
 	terminalDownloadsMu   sync.Mutex
@@ -79,7 +76,7 @@ func NewServer(c Config, store *Store, logger *slog.Logger) *Server {
 	}
 	c = effective
 	hub := NewTunnelHub(64)
-	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger, c.AgentStreamConcurrency), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), adminAllowedNetworks: parseCIDRs(c.AdminAllowedCIDRs), learnedAdminNetworks: parseCIDRs(strings.Join(store.ListTrustedAdminNetworks(), ",")), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency), terminalDownloads: map[string]terminalDownloadTicket{}, terminalDownloadSlots: make(chan struct{}, 2)}
+	s := &Server{config: c, store: store, hub: hub, bridges: NewBridgeManager(hub, logger, c.AgentStreamConcurrency), mux: http.NewServeMux(), log: logger, loginAttempts: map[string]loginAttempt{}, abuseLimiter: newFixedWindowLimiter(), trustedProxyNetworks: parseCIDRs(c.TrustedProxyCIDRs), agentHTTPSlots: make(chan struct{}, c.AgentHTTPConcurrency), terminalDownloads: map[string]terminalDownloadTicket{}, terminalDownloadSlots: make(chan struct{}, 2)}
 	s.routes()
 	return s
 }
@@ -243,11 +240,6 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "demasiados intentos de acceso desde este origen; intenta mas tarde")
 		return
 	}
-	if !s.adminLoginIPAllowed(clientIP) {
-		s.log.Warn("login rechazado desde red administrativa no permitida", "user", NormalizeUsername(req.Username), "remote", clientIP)
-		writeError(w, http.StatusForbidden, "acceso administrativo no permitido desde esta red")
-		return
-	}
 	if retryAt, blocked := s.loginBlocked(req.Username, r); blocked {
 		s.log.Warn("login bloqueado temporalmente", "user", NormalizeUsername(req.Username), "remote", s.clientIP(r), "retry_at", retryAt.Format(time.RFC3339))
 		writeError(w, http.StatusTooManyRequests, "demasiados intentos fallidos; espera unos minutos antes de intentar otra vez")
@@ -261,7 +253,6 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordLoginSuccess(req.Username, r)
-	s.rememberAdminIP(clientIP, user.Username)
 	rawID, sess, err := s.store.CreateSessionForIP(user.ID, sessionDuration(s.config), clientIP)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "no se pudo crear sesion")
@@ -2917,9 +2908,6 @@ func (s *Server) currentSession(r *http.Request) (requestSession, bool) {
 	}
 	clientIP := s.clientIP(r)
 	if s.sessionIPBindingEnabled() && !sameClientIP(sess.ClientIP, clientIP) {
-		return requestSession{}, false
-	}
-	if !s.adminSessionIPAllowed(clientIP) {
 		return requestSession{}, false
 	}
 	return requestSession{Session: sess, User: user, RawID: cookie.Value}, true

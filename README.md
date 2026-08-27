@@ -179,8 +179,6 @@ PANGOLITE_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 PANGOLITE_ADMIN_ACCESS_MODE=learn
 PANGOLITE_AGENT_HTTP_CONCURRENCY=4
 PANGOLITE_AGENT_STREAM_CONCURRENCY=16
-# Opcional: CIDRs administrativos adicionales (IP o red).
-# PANGOLITE_ADMIN_ALLOWED_CIDRS=203.0.113.10/32
 # Opcional: tambien puedes definirlos por env, aunque lo recomendado es hacerlo desde Ajustes.
 # PANGOLITE_DASHBOARD_DOMAIN=panel.midominio.com
 # PANGOLITE_LETSENCRYPT_EMAIL=admin@midominio.com
@@ -331,9 +329,8 @@ go run ./cmd/pangolite serve --addr 127.0.0.1:2424 --data ./data/pangolite.db
 - El login conserva el bloqueo por usuario y origen (5 fallos durante 10 minutos) y añade un límite por IP de 30 intentos durante 10 minutos antes de ejecutar bcrypt.
 - La recuperación de contraseña tiene límites independientes y solo genera enlaces cuando existe un dominio de dashboard configurado; no se construyen enlaces de recuperación desde un `Host` arbitrario.
 - `PANGOLITE_TRUSTED_PROXY_CIDRS` define qué proxies pueden aportar `X-Forwarded-For`, `X-Real-IP` y `X-Forwarded-Proto`. El valor por defecto solo confía en loopback.
-- `PANGOLITE_ADMIN_ACCESS_MODE=learn` liga cada sesión a la IP exacta con la que se inició. Si la IP cambia, la sesión deja de autorizar el panel y se solicita la contraseña otra vez. Un login correcto desde una IP/red nueva sí está permitido y registra esa red como conocida (`/24` para IPv4, `/64` para IPv6).
-- `PANGOLITE_ADMIN_ALLOWED_CIDRS` permite agregar IPs o redes administrativas conocidas. `PANGOLITE_ADMIN_ACCESS_MODE=allowlist` mantiene un bloqueo estricto: no permite iniciar sesión fuera de las redes autorizadas; `off` desactiva tanto la restricción de red como el enlace de la sesión a la IP.
-- Cambiar de ISP, VPN o red en modo `learn` ya no requiere editar el servidor: vuelve a iniciar sesión con la contraseña desde la IP nueva. Si usas `allowlist`, agrega previamente el CIDR nuevo o cambia temporalmente el modo desde `/opt/pangolite/pangolite.env`.
+- `PANGOLITE_ADMIN_ACCESS_MODE=learn` liga cada sesión a la IP exacta con la que se inició. Si la IP cambia, la sesión deja de autorizar el panel y se solicita la contraseña otra vez. Un login correcto desde cualquier IP nueva está permitido y crea una sesión nueva ligada a esa IP.
+- `PANGOLITE_ADMIN_ACCESS_MODE=off` desactiva el enlace de la sesión a la IP. No existe una lista administrativa de CIDR: cambiar de ISP, VPN o red no requiere editar el servidor, solo volver a autenticarse.
 - Los WebSockets administrativos usan validación de origen y ya no desactivan la comprobación automática del paquete WebSocket.
 - El servidor limita cabeceras y conexiones ociosas. Los clientes actuales anuncian `http-stream-v1`: uploads y downloads HTTP se transmiten por streaming con buffers pequeños y ya no tienen un límite fijo de 16 MiB. El servidor conserva el protocolo legado de 16 MiB solo para agentes antiguos hasta que se actualicen. `PANGOLITE_AGENT_HTTP_CONCURRENCY` limita las solicitudes HTTP remotas simultáneas (4 por defecto).
 - Los recursos TCP/SSH/SFTP no tienen un timeout de duración fijo: los 30 segundos se usan únicamente para esperar que el agente adjunte el WebSocket. Una vez conectado, la sesión dura mientras los extremos sigan vivos. Pangolite aplica keepalive TCP/WebSocket y `TCP_NODELAY` para tolerar NAT/proxies y sesiones ociosas. `PANGOLITE_AGENT_STREAM_CONCURRENCY` limita globalmente los streams TCP remotos (16 por defecto) para proteger VPS pequeños.

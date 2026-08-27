@@ -35,7 +35,6 @@ type Config struct {
 	BackupRetentionDays    int
 	TrustedProxyCIDRs      string
 	AdminAccessMode        string
-	AdminAllowedCIDRs      string
 	AgentHTTPConcurrency   int
 	AgentStreamConcurrency int
 }
@@ -61,8 +60,7 @@ func LoadConfigFromEnv() Config {
 		BackupIntervalHours:    envInt("PANGOLITE_BACKUP_INTERVAL_HOURS", 24),
 		BackupRetentionDays:    envInt("PANGOLITE_BACKUP_RETENTION_DAYS", 14),
 		TrustedProxyCIDRs:      env("PANGOLITE_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"),
-		AdminAccessMode:        strings.ToLower(env("PANGOLITE_ADMIN_ACCESS_MODE", "learn")),
-		AdminAllowedCIDRs:      strings.TrimSpace(os.Getenv("PANGOLITE_ADMIN_ALLOWED_CIDRS")),
+		AdminAccessMode:        adminAccessModeFromEnv(),
 		AgentHTTPConcurrency:   envInt("PANGOLITE_AGENT_HTTP_CONCURRENCY", 4),
 		AgentStreamConcurrency: envInt("PANGOLITE_AGENT_STREAM_CONCURRENCY", 16),
 	}
@@ -107,15 +105,12 @@ func (c Config) ValidateForServe() error {
 		return errors.New("PANGOLITE_AGENT_STREAM_CONCURRENCY debe estar entre 1 y 256")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AdminAccessMode)) {
-	case "", "off", "learn", "allowlist":
+	case "off", "learn":
 	default:
-		return errors.New("PANGOLITE_ADMIN_ACCESS_MODE debe ser off, learn o allowlist")
+		return errors.New("PANGOLITE_ADMIN_ACCESS_MODE debe ser off o learn")
 	}
 	if err := validateCIDRList(c.TrustedProxyCIDRs); err != nil {
 		return fmt.Errorf("PANGOLITE_TRUSTED_PROXY_CIDRS invalido: %w", err)
-	}
-	if err := validateCIDRList(c.AdminAllowedCIDRs); err != nil {
-		return fmt.Errorf("PANGOLITE_ADMIN_ALLOWED_CIDRS invalido: %w", err)
 	}
 	return nil
 }
@@ -168,6 +163,13 @@ func newSecret(bytesLen int) (string, error) {
 		return "", fmt.Errorf("generar secreto: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func adminAccessModeFromEnv() string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("PANGOLITE_ADMIN_ACCESS_MODE")), "off") {
+		return "off"
+	}
+	return "learn"
 }
 
 func env(key, fallback string) string {

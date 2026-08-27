@@ -27,7 +27,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - Las transferencias de terminal deben ser streaming y de memoria acotada. `download ruta` es una pseudo-orden del navegador/Pangolite, no un binario instalado en el sistema; su interceptación debe seguir funcionando con escritura normal, pegado, historial y autocompletado `Tab`. Si el shell modifica la línea, el buffer sombra deja de ser autoridad y se debe esperar una línea renderizada estable de xterm antes de resolver la ruta. Para directorios debe conservarse la política de ZIP seguro (sin raíces sensibles, symlinks ni archivos especiales, con límites de árbol).
 
 ## Estado destacado
-- Hardening de producción aplicado: proxies confiables, rate limit de login/recuperación, redes administrativas confiables, límites HTTP/túnel y protección de concurrencia/rate limit en Traefik.
+- Hardening de producción aplicado: proxies confiables, rate limit de login/recuperación, sesión administrativa ligada a IP exacta, límites HTTP/túnel y protección de concurrencia/rate limit en Traefik.
 - Corregido el corte periódico de SSH/SFTP: se eliminó el timeout global heredado de 20 s y ahora existe un timeout de 30 s solo para el adjunto inicial del agente, nunca para la vida de la sesión. Los streams TCP usan keepalive y concurrencia global acotada.
 - El túnel HTTP de agentes usa `http-stream-v1` en clientes actualizados, con streaming de uploads/downloads y buffers pequeños; agentes anteriores conservan temporalmente el protocolo legado de 16 MiB.
 - La terminal web en Android táctil incluye una barra auxiliar tipo Termux con Esc/Ctrl/Alt/Tab, navegación ANSI, símbolos frecuentes y control del teclado virtual; los modificadores son de un solo uso y no duplican la ruta normal de entrada de xterm.js.
@@ -37,7 +37,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 - Recursos y clientes soportan selección/acciones masivas por proyecto con validación de pertenencia, auditoría y aplicación agrupada de Traefik.
 - Seguridad permite verificar realmente un backup SQLite en una copia temporal y replicarlo a WebDAV/S3-compatible; S3 usa Signature V4 con standard library, los secretos no regresan al navegador y el auto-upload es opcional.
 - `pangolite-client --install` reemplaza instalaciones anteriores de forma idempotente en systemd/OpenRC/Windows; en Windows el propio CLI solicita elevación UAC para instalar o eliminar el servicio cuando no fue iniciado como administrador.
-- El acceso administrativo usa por defecto modo `learn`: cada sesión queda ligada a la IP exacta de login; si la IP cambia se exige contraseña de nuevo, y un login válido desde la IP nueva registra su red sin bloquear al administrador. `allowlist` conserva el bloqueo estricto por CIDR.
+- El acceso administrativo usa por defecto modo `learn`: cada sesión queda ligada a la IP exacta de login; si la IP cambia se exige contraseña de nuevo y un login válido desde cualquier IP nueva crea una sesión nueva. No existe una lista administrativa por CIDR; `off` desactiva el enlace por IP.
 - Go objetivo actualizado a la rama 1.26; instaladores fijan Go 1.26.5 cuando necesitan toolchain temporal.
 - `ui.go` ya no contiene el frontend gigante; ahora renderiza templates.
 - Existen layouts, componentes, páginas y assets en `internal/app/templates/` e `internal/app/assets/app/`.
@@ -52,7 +52,7 @@ Crear una alternativa simple, premium y mantenible para exponer servicios intern
 2. Mejorar widget/listado de proyectos con estado, métricas rápidas y acción primaria clara.
 3. Revisar responsive de tablas, modales y formularios largos en móvil real.
 4. Reforzar mensajes de error operativos para Traefik, puertos, clientes desconectados, SSL y health.
-6. Evaluar MFA y una UI para administrar/revocar redes administrativas confiables si habrá más operadores.
+6. Evaluar MFA para reforzar la reautenticación si habrá más operadores.
 7. Autoalojar dependencias frontend actualmente cargadas desde CDN para reducir dependencia externa y permitir una CSP más estricta.
 
 ## Comandos útiles

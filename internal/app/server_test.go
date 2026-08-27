@@ -417,27 +417,7 @@ func TestClientIPTrustsForwardedOnlyFromConfiguredProxy(t *testing.T) {
 	}
 }
 
-func TestAdminAccessLearnModeRemembersNetwork(t *testing.T) {
-	server, store := testServerWithStore(t)
-	server.config.AdminAccessMode = "learn"
-
-	if !server.adminIPAllowed("198.51.100.25") {
-		t.Fatal("primera red debe permitirse en modo learn")
-	}
-	server.rememberAdminIP("198.51.100.25", "admin")
-	trusted := store.ListTrustedAdminNetworks()
-	if len(trusted) != 1 || trusted[0] != "198.51.100.0/24" {
-		t.Fatalf("red aprendida inesperada: %v", trusted)
-	}
-	if !server.adminIPAllowed("198.51.100.99") {
-		t.Fatal("misma /24 debe seguir permitida")
-	}
-	if server.adminIPAllowed("203.0.113.10") {
-		t.Fatal("otra red no debe permitirse tras aprender la primera")
-	}
-}
-
-func TestAdminLoginLearnModeAllowsPasswordFromNewNetwork(t *testing.T) {
+func TestAdminLoginLearnModeAllowsPasswordFromNewIP(t *testing.T) {
 	server, store := testServerWithStore(t)
 	server.config.AdminAccessMode = "learn"
 	created, password, err := store.BootstrapAdmin("admin", filepath.Join(t.TempDir(), "admin-password.txt"))
@@ -465,14 +445,8 @@ func TestAdminLoginLearnModeAllowsPasswordFromNewNetwork(t *testing.T) {
 		return nil
 	}
 
-	cookie := login("198.51.100.25")
-	if server.adminIPAllowed("203.0.113.10") {
-		t.Fatal("la red nueva no debe considerarse aprendida antes de reautenticar")
-	}
-	cookie = login("203.0.113.10")
-	if !server.adminIPAllowed("203.0.113.10") {
-		t.Fatal("la red nueva debe aprenderse despues de validar la contraseña")
-	}
+	_ = login("198.51.100.25")
+	cookie := login("203.0.113.10")
 	if sess, _, ok := store.SessionWithUser(cookie.Value); !ok || sess.ClientIP != "203.0.113.10" {
 		t.Fatalf("sesion nueva no quedo ligada a la IP reautenticada: %#v", sess)
 	}
@@ -542,18 +516,6 @@ func TestSessionRequiresReauthenticationWhenClientIPChanges(t *testing.T) {
 	server.Handler().ServeHTTP(sessionRR, sessionReq)
 	if sessionRR.Code != http.StatusOK || !strings.Contains(sessionRR.Body.String(), `"authenticated":true`) {
 		t.Fatalf("sesion reautenticada no quedo activa: status=%d body=%q", sessionRR.Code, sessionRR.Body.String())
-	}
-}
-
-func TestAdminLoginAllowlistStillRejectsUnknownNetwork(t *testing.T) {
-	server, _ := testServerWithStore(t)
-	server.config.AdminAccessMode = "allowlist"
-	server.adminAllowedNetworks = parseCIDRs("198.51.100.0/24")
-	if !server.adminLoginIPAllowed("198.51.100.20") {
-		t.Fatal("CIDR configurado debe permitir login")
-	}
-	if server.adminLoginIPAllowed("203.0.113.20") {
-		t.Fatal("allowlist debe seguir bloqueando redes no configuradas")
 	}
 }
 
